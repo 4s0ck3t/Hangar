@@ -275,6 +275,7 @@ function renderGrid(assets, total) {
   assets.forEach((a, i) => {
     const card = document.createElement("div");
     card.className = "card" + (a.favorite ? " is-fav" : "");
+    card.dataset.id = a.id;
     card.style.animationDelay = Math.min(i * 10, 220) + "ms";
     const color = KIND_COLORS[a.kind] || "var(--mute)";
     const ext = a.ext.replace(".", "").toUpperCase();
@@ -321,6 +322,31 @@ function renderGrid(assets, total) {
 
 // ---- detail drawer --------------------------------------------------------
 let allTags = [];
+
+// Load the cached thumbnail into the drawer preview area (in place).
+function loadPreview(a) {
+  const pv = new Image();
+  pv.onload = () => {
+    const ph = $("#dPreview");
+    if (!ph) return;
+    ph.innerHTML = "";
+    ph.appendChild(pv);
+  };
+  pv.src = thumbUrl(a.id);
+}
+
+// Reflect a favourite toggle in the grid + cached list without rebuilding the
+// drawer. Keeps the sidebar count fresh; drops the card if the Favourites
+// filter is active and the asset was just unfavourited.
+function syncFavoriteInGrid(id, fav) {
+  const ca = currentAssets.find((x) => x.id === id);
+  if (ca) ca.favorite = fav;
+  const card = $(`#grid .card[data-id="${id}"]`);
+  if (card) card.classList.toggle("is-fav", fav);
+  if (state.filter.favorite && !fav) refresh();
+  else loadState();
+}
+
 async function openDrawer(id, idx) {
   // idx is the position in currentAssets — used for prev/next navigation.
   if (idx === undefined) idx = currentAssets.findIndex(a => a.id === id);
@@ -370,7 +396,7 @@ async function openDrawer(id, idx) {
       <div class="d-actions">
         <button class="act" id="favAct">
           <span class="act-ico">${a.favorite ? "★" : "☆"}</span>
-          ${a.favorite ? "Remove from favorites" : "Add to favorites"}</button>
+          <span class="act-label">${a.favorite ? "Remove from favorites" : "Add to favorites"}</span></button>
         ${canBlender ? `<button class="act primary" id="blenderAct">
           <span class="act-ico">⤴</span> <span class="act-label">Send to Blender</span></button>` : ""}
         ${isBlend ? `<button class="act" id="renderAct">
@@ -381,21 +407,20 @@ async function openDrawer(id, idx) {
     </div>`;
 
   // Load thumbnail into preview area.
-  const pv = new Image();
-  pv.onload = () => {
-    const ph = $("#dPreview");
-    ph.innerHTML = "";
-    ph.appendChild(pv);
-  };
-  pv.src = thumbUrl(a.id);
+  loadPreview(a);
 
   renderTagEditor(a);
 
   $("#favAct").onclick = async () => {
     const r = await post(`assets/${a.id}/favorite`, { value: !a.favorite });
     a.favorite = r.favorite;
-    toast(r.favorite ? "Added to favorites ★" : "Removed from favorites", "success");
-    openDrawer(id); refresh();
+    // Update the button + grid in place — the drawer stays open (no rebuild/flash).
+    const btn = $("#favAct");
+    btn.querySelector(".act-ico").textContent = a.favorite ? "★" : "☆";
+    btn.querySelector(".act-label").textContent =
+      a.favorite ? "Remove from favorites" : "Add to favorites";
+    syncFavoriteInGrid(a.id, a.favorite);
+    toast(a.favorite ? "Added to favorites ★" : "Removed from favorites", "success");
   };
 
   if (canBlender) {
@@ -420,8 +445,11 @@ async function openDrawer(id, idx) {
       btn.disabled = false; lbl.textContent = prev;
       if (r.ok) {
         thumbBust[a.id] = Date.now();
+        // Reload preview + grid thumbnail in place; drawer stays open.
+        loadPreview(a);
+        const cardImg = $(`#grid .card[data-id="${a.id}"] img`);
+        if (cardImg) cardImg.src = thumbUrl(a.id);
         toast("Preview rendered.", "success");
-        openDrawer(id); refresh();
       } else {
         toast(r.error || "Render failed.", "error");
       }
