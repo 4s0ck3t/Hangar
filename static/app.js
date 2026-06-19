@@ -224,6 +224,74 @@ function updateClearBtn() {
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
+// ---- multi-select ---------------------------------------------------------
+const selection = new Set(); // Set of asset IDs currently selected
+
+function updateBatchBar() {
+  let bar = $("#batchBar");
+  if (selection.size === 0) {
+    if (bar) bar.remove();
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "batchBar";
+    bar.className = "batch-bar";
+    document.getElementById("app").appendChild(bar);
+  }
+  const tags = allTags.length
+    ? allTags.map(t =>
+        `<button class="batch-tag-btn" data-tag="${t.name}" style="border-color:${t.color}40;color:${t.color}">${t.name}</button>`
+      ).join("")
+    : '<span style="color:var(--faint);font-size:11px">No tags yet</span>';
+  bar.innerHTML = `
+    <span class="batch-count">${selection.size} selected</span>
+    <div class="batch-sep"></div>
+    <div class="batch-tags">${tags}</div>
+    <button class="batch-coll-btn" id="batchCollBtn">+ Collection</button>
+    <button class="batch-del-btn" id="batchDelBtn">Remove from Hangar</button>
+    <button class="batch-clear" id="batchClearBtn">✕</button>`;
+
+  bar.querySelectorAll(".batch-tag-btn").forEach(btn => {
+    btn.onclick = async () => {
+      const tag = btn.dataset.tag;
+      await post("assets/batch/tag", { ids: [...selection], tag });
+      toast(`Tagged ${selection.size} asset${selection.size > 1 ? "s" : ""} "${tag}"`, "success");
+      refresh(); loadState();
+    };
+  });
+  $("#batchCollBtn").onclick = async () => {
+    const name = prompt("Add to collection:"); if (!name) return;
+    await post("assets/batch/collection", { ids: [...selection], collection: name });
+    toast(`Added ${selection.size} asset${selection.size > 1 ? "s" : ""} to "${name}"`, "success");
+    refresh(); loadState();
+  };
+  $("#batchDelBtn").onclick = async () => {
+    if (!confirm(`Remove ${selection.size} asset${selection.size > 1 ? "s" : ""} from Hangar? Files stay on disk.`)) return;
+    await post("assets/batch/remove", { ids: [...selection] });
+    toast(`Removed ${selection.size} asset${selection.size > 1 ? "s" : ""} from index`, "success");
+    clearSelection(); refresh(); loadState();
+  };
+  $("#batchClearBtn").onclick = clearSelection;
+}
+
+function clearSelection() {
+  selection.clear();
+  document.querySelectorAll(".card.is-selected").forEach(c => c.classList.remove("is-selected"));
+  updateBatchBar();
+}
+
+function toggleSelect(id, card) {
+  if (selection.has(id)) {
+    selection.delete(id);
+    card.classList.remove("is-selected");
+  } else {
+    selection.add(id);
+    card.classList.add("is-selected");
+  }
+  updateBatchBar();
+}
+
 // ---- 3D viewer ------------------------------------------------------------
 const VIEWER_EXTS = new Set(['.glb', '.gltf']);
 let _viewerMod = null;
@@ -286,7 +354,8 @@ function renderGrid(assets, total) {
   grid.innerHTML = "";
   assets.forEach((a, i) => {
     const card = document.createElement("div");
-    card.className = "card" + (a.favorite ? " is-fav" : "");
+    card.className = "card" + (a.favorite ? " is-fav" : "")
+      + (selection.has(a.id) ? " is-selected" : "");
     card.dataset.id = a.id;
     card.style.animationDelay = Math.min(i * 10, 220) + "ms";
     const color = KIND_COLORS[a.kind] || "var(--mute)";
@@ -315,7 +384,16 @@ function renderGrid(assets, total) {
     img.onerror = () => { /* keep placeholder tile */ };
     img.src = thumbUrl(a.id);
     img.alt = a.name;
-    card.onclick = () => openDrawer(a.id, i);
+    // Ctrl/Cmd-click toggles selection; once a selection is active a plain
+    // click keeps building it. Otherwise a click opens the detail drawer.
+    card.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey || selection.size > 0) {
+        e.preventDefault();
+        toggleSelect(a.id, card);
+      } else {
+        openDrawer(a.id, i);
+      }
+    };
 
     // Drag support — let models be dropped into collections.
     if (a.kind === "model") {
@@ -643,6 +721,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape") {
     if (isDrawerOpen()) closeDrawer();
+    else if (selection.size > 0) clearSelection();
     else if (document.activeElement === $("#search")) $("#search").blur();
     return;
   }

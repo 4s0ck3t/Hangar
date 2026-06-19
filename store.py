@@ -353,6 +353,24 @@ def create_collection(name):
         conn.execute("INSERT OR IGNORE INTO collections(name) VALUES (?)", (name.strip(),))
 
 
+def remove_asset(asset_id):
+    """Remove an asset from the index (file stays on disk)."""
+    with connect() as conn:
+        conn.execute("DELETE FROM assets WHERE id=?", (asset_id,))
+
+
+def batch_add_tag(asset_ids, tag_name):
+    """Add a tag to multiple assets (creates tag if needed)."""
+    with connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", (tag_name.strip(),))
+        tag = conn.execute("SELECT id FROM tags WHERE name=?", (tag_name.strip(),)).fetchone()
+        for aid in asset_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO asset_tags(asset_id, tag_id) VALUES (?, ?)",
+                (aid, tag["id"]),
+            )
+
+
 def set_collection_membership(collection_name, asset_id, add=True):
     with connect() as conn:
         conn.execute("INSERT OR IGNORE INTO collections(name) VALUES (?)", (collection_name,))

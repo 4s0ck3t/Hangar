@@ -231,6 +231,40 @@ def collection_membership(asset_id):
 
 # ---- tags & collections ---------------------------------------------------
 
+@app.post("/api/assets/batch/tag")
+def batch_tag():
+    data = request.get_json(force=True)
+    ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
+    tag = (data.get("tag") or "").strip()
+    if not ids or not tag:
+        return jsonify({"error": "ids and tag required"}), 400
+    store.batch_add_tag(ids, tag)
+    return jsonify({"ok": True, "count": len(ids)})
+
+
+@app.post("/api/assets/batch/collection")
+def batch_collection():
+    data = request.get_json(force=True)
+    ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
+    collection = (data.get("collection") or "").strip()
+    if not ids or not collection:
+        return jsonify({"error": "ids and collection required"}), 400
+    for aid in ids:
+        store.set_collection_membership(collection, aid, add=True)
+    return jsonify({"ok": True, "count": len(ids)})
+
+
+@app.post("/api/assets/batch/remove")
+def batch_remove():
+    data = request.get_json(force=True)
+    ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
+    if not ids:
+        return jsonify({"error": "ids required"}), 400
+    for aid in ids:
+        store.remove_asset(aid)
+    return jsonify({"ok": True, "removed": len(ids)})
+
+
 @app.post("/api/tags")
 def new_tag():
     data = request.get_json(force=True)
