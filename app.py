@@ -246,6 +246,21 @@ def new_collection():
 
 # ---- OS integration -------------------------------------------------------
 
+@app.get("/api/assets/<int:asset_id>/file")
+def serve_asset_file(asset_id):
+    """Stream a GLB/GLTF file to the in-drawer three.js viewer."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return "", 404
+    if asset["ext"] not in (".glb", ".gltf"):
+        return jsonify({"error": "Only GLB/GLTF files are viewable"}), 400
+    path = asset["path"]
+    if not os.path.exists(path):
+        return "", 404
+    mime = "model/gltf-binary" if asset["ext"] == ".glb" else "model/gltf+json"
+    return send_file(path, mimetype=mime)
+
+
 @app.post("/api/assets/<int:asset_id>/reveal")
 def reveal(asset_id):
     asset = store.get_asset(asset_id)

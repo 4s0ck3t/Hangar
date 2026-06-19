@@ -224,6 +224,17 @@ function updateClearBtn() {
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
+// ---- 3D viewer ------------------------------------------------------------
+const VIEWER_EXTS = new Set(['.glb', '.gltf']);
+let _viewerMod = null;
+async function getViewerMod() {
+  if (!_viewerMod) _viewerMod = await import('/viewer.js');
+  return _viewerMod;
+}
+function destroyViewerIfActive() {
+  if (_viewerMod) _viewerMod.destroyViewer();
+}
+
 // ---- grid -----------------------------------------------------------------
 let currentAssets = [];  // last fetched asset list for drawer prev/next
 let drawerIdx = -1;      // position of the open drawer asset in currentAssets
@@ -349,6 +360,7 @@ function syncFavoriteInGrid(id, fav) {
 }
 
 async function openDrawer(id, idx) {
+  destroyViewerIfActive();
   // idx is the position in currentAssets — used for prev/next navigation.
   if (idx === undefined) idx = currentAssets.findIndex(a => a.id === id);
   drawerIdx = idx;
@@ -409,8 +421,12 @@ async function openDrawer(id, idx) {
       </div>
     </div>`;
 
-  // Load thumbnail into preview area.
-  loadPreview(a);
+  // Load preview: 3D viewer for GLB/GLTF, thumbnail for everything else.
+  if (VIEWER_EXTS.has(a.ext)) {
+    getViewerMod().then(mod => mod.startViewer($("#dPreview"), a.id));
+  } else {
+    loadPreview(a);
+  }
 
   renderTagEditor(a);
 
@@ -526,6 +542,7 @@ function renderTagEditor(a) {
 }
 
 function closeDrawer() {
+  destroyViewerIfActive();
   $("#drawer").classList.remove("open");
   $("#scrim").classList.add("hidden");
   drawerIdx = -1;

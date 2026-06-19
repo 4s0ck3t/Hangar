@@ -1,0 +1,114 @@
+// Hangar three.js GLB/GLTF viewer — mounts into the drawer preview area.
+import * as THREE from '/three.min.js';
+import { GLTFLoader } from '/GLTFLoader.js';
+import { OrbitControls } from '/OrbitControls.js';
+
+let renderer, scene, camera, controls, animId, resizeObs;
+
+export function startViewer(container, assetId) {
+  destroyViewer();
+
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;display:block;';
+  container.innerHTML = '';
+  container.style.position = 'relative';
+  container.appendChild(canvas);
+
+  const spinner = document.createElement('div');
+  spinner.className = 'v3d-loading';
+  spinner.textContent = 'Loading 3D…';
+  container.appendChild(spinner);
+
+  const w = container.clientWidth || 380;
+  const h = container.clientHeight || 380;
+
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.2;
+
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x131418);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 2.0));
+  const sun = new THREE.DirectionalLight(0xfff5e0, 2.5);
+  sun.position.set(3, 6, 4);
+  scene.add(sun);
+  const fill = new THREE.DirectionalLight(0x8899cc, 0.8);
+  fill.position.set(-4, 1, -3);
+  scene.add(fill);
+
+  camera = new THREE.PerspectiveCamera(45, w / h, 0.001, 2000);
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.06;
+
+  const loader = new GLTFLoader();
+  loader.load(
+    `/api/assets/${assetId}/file`,
+    (gltf) => {
+      spinner.remove();
+      scene.add(gltf.scene);
+
+      const box = new THREE.Box3().setFromObject(gltf.scene);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      gltf.scene.position.sub(center);
+
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const fovRad = camera.fov * Math.PI / 180;
+      const dist = (maxDim / 2) / Math.tan(fovRad / 2) * 1.7;
+      camera.position.set(dist * 0.7, dist * 0.45, dist);
+      camera.near = maxDim * 0.001;
+      camera.far = maxDim * 300;
+      camera.updateProjectionMatrix();
+      controls.target.set(0, 0, 0);
+      controls.update();
+
+      if (gltf.animations?.length) {
+        const clock = new THREE.Clock();
+        const mixer = new THREE.AnimationMixer(gltf.scene);
+        mixer.clipAction(gltf.animations[0]).play();
+        scene.userData._mixer = mixer;
+        scene.userData._clock = clock;
+      }
+    },
+    undefined,
+    (err) => {
+      spinner.textContent = 'Preview unavailable';
+      console.warn('[Hangar viewer]', err);
+    }
+  );
+
+  function animate() {
+    animId = requestAnimationFrame(animate);
+    controls.update();
+    if (scene?.userData._mixer) {
+      scene.userData._mixer.update(scene.userData._clock.getDelta());
+    }
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  resizeObs = new ResizeObserver(() => {
+    const cw = container.clientWidth;
+    const ch = container.clientHeight;
+    if (cw > 0 && ch > 0) {
+      renderer.setSize(cw, ch);
+      camera.aspect = cw / ch;
+      camera.updateProjectionMatrix();
+    }
+  });
+  resizeObs.observe(container);
+}
+
+export function destroyViewer() {
+  if (animId) { cancelAnimationFrame(animId); animId = null; }
+  if (resizeObs) { resizeObs.disconnect(); resizeObs = null; }
+  if (controls) { controls.dispose(); controls = null; }
+  if (renderer) { renderer.dispose(); renderer = null; }
+  scene = null;
+  camera = null;
+}
