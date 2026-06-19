@@ -24,26 +24,38 @@ jobs:
           python -m pip install --upgrade pip
           pip install Flask>=3.0 Pillow>=10.0 pywebview>=5.0 pyinstaller>=6.0
 
-      - name: Build Hangar.exe
+      - name: Build Hangar (onedir — fewer AV false-positives than onefile)
         run: >
-          pyinstaller --noconsole --onefile --name Hangar
+          pyinstaller --noconsole --name Hangar
           --add-data "static;static"
           --collect-all webview
           desktop.py
+
+      - name: Zip the build folder
+        run: Compress-Archive -Path dist/Hangar/* -DestinationPath dist/Hangar-windows.zip
+        shell: pwsh
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Hangar-windows
-          path: dist/Hangar.exe
+          path: dist/Hangar-windows.zip
 
       - name: Attach to release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Hangar.exe
+          files: dist/Hangar-windows.zip
           name: Hangar ${{ github.ref_name }}
           body: |
-            Standalone Windows build of Hangar (`Hangar.exe`, PyInstaller --onefile).
+            Standalone Windows build of Hangar (PyInstaller --onedir, zipped).
+            Onedir is used instead of onefile because single-file exes trip
+            Windows Defender false-positives.
+
+            To run:
+            1. Download `Hangar-windows.zip`.
+            2. Right-click the zip > Properties > tick **Unblock** > OK (clears Mark-of-the-Web).
+            3. Extract it, open the `Hangar` folder, run **Hangar.exe**.
+
             Requires the Edge WebView2 runtime (default on Windows 10/11).
-            Double-click to launch; data is stored in `%USERPROFILE%\.hangar`.
+            Data is stored in `%USERPROFILE%\.hangar`.
