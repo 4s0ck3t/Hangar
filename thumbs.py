@@ -136,13 +136,61 @@ def _find_sibling_preview(model_path):
     return None
 
 
-def _render_model(asset, out):
-    """Offscreen render via trimesh. Requires a working GL/EGL backend;
-    fails quietly on headless machines without one."""
+def _extract_gltf_texture(path):
+    """Pull the first base-color texture out of a .gltf/.glb file.
+
+    Returns a PIL Image or None. Works without OpenGL — just reads the
+    binary/JSON data that trimesh already parsed.
+    """
     try:
         import trimesh
         from PIL import Image
         import io
+        scene = trimesh.load(path, force="scene", process=False)
+        # Iterate geometries looking for a PBR base-color texture.
+        geoms = list(scene.geometry.values()) if hasattr(scene, "geometry") else []
+        for geom in geoms:
+            mat = getattr(geom, "visual", None)
+            if mat is None:
+                continue
+            # TextureVisuals exposes .material.baseColorTexture (trimesh >=4)
+            material = getattr(mat, "material", None)
+            if material is None:
+                continue
+            tex = getattr(material, "baseColorTexture", None)
+            if tex is None:
+                # Older trimesh: try .image attribute
+                tex = getattr(material, "image", None)
+            if tex is not None:
+                if isinstance(tex, Image.Image):
+                    return tex
+                # Some versions return raw bytes
+                if isinstance(tex, (bytes, bytearray)):
+                    return Image.open(io.BytesIO(tex))
+        return None
+    except Exception:
+        return None
+
+
+def _render_model(asset, out):
+    """Thumbnail for a 3-D model.
+
+    1. For GLTF/GLB: try to extract the embedded base-colour texture (no GL needed).
+    2. Offscreen render via trimesh (needs GL — works on Windows with pyopengl).
+    Falls back silently so the grid always shows at least a format badge.
+    """
+    from PIL import Image
+    import io
+
+    # GLTF/GLB — extract embedded texture first (fast, no OpenGL needed).
+    if asset["ext"] in (".gltf", ".glb"):
+        tex = _extract_gltf_texture(asset["path"])
+        if tex is not None:
+            return _save_downscaled(tex, out)
+
+    # Generic offscreen render via trimesh (requires working GL context).
+    try:
+        import trimesh
         scene = trimesh.load(asset["path"], force="scene")
         png = scene.save_image(resolution=THUMB_SIZE, visible=False)
         if not png:
