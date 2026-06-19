@@ -359,7 +359,8 @@ async function openDrawer(id, idx) {
   const color = KIND_COLORS[a.kind] || "var(--mute)";
   const ext = a.ext.replace(".", "").toUpperCase();
   const canBlender = a.kind === "model";
-  const isBlend = a.ext === ".blend";
+  // Any model format Blender can open/import gets an on-demand render button.
+  const canRender = canBlender && (st.blender_render_exts || []).includes(a.ext);
 
   const hasPrev = idx > 0;
   const hasNext = idx >= 0 && idx < currentAssets.length - 1;
@@ -401,7 +402,7 @@ async function openDrawer(id, idx) {
           <span class="act-label">${a.favorite ? "Remove from favorites" : "Add to favorites"}</span></button>
         ${canBlender ? `<button class="act primary" id="blenderAct">
           <span class="act-ico">⤴</span> <span class="act-label">Send to Blender</span></button>` : ""}
-        ${isBlend ? `<button class="act" id="renderAct">
+        ${canRender ? `<button class="act" id="renderAct">
           <span class="act-ico">◳</span> <span class="act-label">Render preview${blenderReady ? "" : " (Blender not found)"}</span></button>` : ""}
         <button class="act" id="revealAct"><span class="act-ico">⊞</span> Reveal in file manager</button>
         <button class="act" id="copyAct"><span class="act-ico">⧉</span> Copy file path</button>
@@ -437,13 +438,13 @@ async function openDrawer(id, idx) {
     };
   }
 
-  if (isBlend) {
+  if (canRender) {
     $("#renderAct").onclick = async () => {
       const btn = $("#renderAct"); const lbl = btn.querySelector(".act-label");
       const prev = lbl.textContent; btn.disabled = true;
       lbl.textContent = "Rendering in Blender…";
       toast("Rendering preview — this can take a moment.");
-      const r = await post(`assets/${a.id}/render-blend`);
+      const r = await post(`assets/${a.id}/render`);
       btn.disabled = false; lbl.textContent = prev;
       if (r.ok) {
         thumbBust[a.id] = Date.now();

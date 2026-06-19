@@ -97,6 +97,7 @@ def state():
         "counts": store.kind_counts(),
         "blender_queue": str(BLENDER_QUEUE),
         "blender_render": thumbs.blender_available(),
+        "blender_render_exts": sorted(thumbs.BLENDER_RENDER_EXTS),
         "desktop": bool(os.environ.get("HANGAR_DESKTOP")),
     })
 
@@ -290,19 +291,20 @@ def send_blender(asset_id):
 
 
 @app.post("/api/assets/<int:asset_id>/render-blend")
-def render_blend_preview(asset_id):
+@app.post("/api/assets/<int:asset_id>/render")
+def render_model_preview(asset_id):
     asset = store.get_asset(asset_id)
     if not asset:
         return jsonify({"error": "Asset not found."}), 404
-    if asset["ext"] != ".blend":
-        return jsonify({"error": "Only .blend files render this way."}), 400
+    if asset["kind"] != "model" or asset["ext"] not in thumbs.BLENDER_RENDER_EXTS:
+        return jsonify({"error": "This file can't be rendered by Blender."}), 400
     if not thumbs.blender_available():
         return jsonify({
             "blender": False,
             "error": "Blender wasn't found. Install it, or set HANGAR_BLENDER "
                      "to your blender executable, then restart Hangar.",
         }), 200
-    path = thumbs.render_blend_preview(asset)
+    path = thumbs.render_model_preview(asset)
     if not path:
         return jsonify({"blender": True,
                         "error": "Render didn't produce an image."}), 200

@@ -319,16 +319,77 @@ def reset_blender_cache():
     _BLENDER_CACHE.update(path=None, checked=False)
 
 
-# Script handed to `blender -b file.blend -P <script> -- <out.png>`.
-# Frames the scene with a fresh camera (if none exists) and does a fast,
-# lighting-free Workbench render.
-_BLEND_RENDER_SCRIPT = r'''
-import bpy, sys, math
+# Model formats Hangar can hand to Blender for an on-demand preview render.
+# `.blend` is opened directly; everything else is imported into an empty scene.
+BLENDER_RENDER_EXTS = {
+    ".blend", ".fbx", ".obj", ".gltf", ".glb", ".stl", ".ply",
+    ".dae", ".abc", ".usd", ".usda", ".usdc", ".usdz", ".x3d", ".3ds",
+}
+
+
+# Script handed to `blender -b -P <script> -- <input> <out.png>`.
+# Opens (.blend) or imports (everything else) the model, frames it with a
+# fresh camera and does a fast, lighting-free Workbench render. Import operator
+# names changed across Blender versions, so each format tries new→old in turn.
+_MODEL_RENDER_SCRIPT = r'''
+import bpy, sys, os
 from mathutils import Vector
 
-def main():
-    argv = sys.argv
-    out = argv[argv.index("--") + 1:][0]
+
+def _try(*ops_with_kwargs):
+    """Call the first import operator that exists and succeeds."""
+    last = None
+    for getter, kwargs in ops_with_kwargs:
+        try:
+            op = getter()
+        except AttributeError:
+            continue
+        try:
+            op(**kwargs)
+            return True
+        except Exception as e:
+            last = e
+    if last:
+        raise last
+    raise RuntimeError("no import operator available")
+
+
+def load_model(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".blend":
+        bpy.ops.wm.open_mainfile(filepath=path)
+        return
+    # Start from a clean, empty scene for imported formats.
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    if ext == ".fbx":
+        _try((lambda: bpy.ops.import_scene.fbx, {"filepath": path}))
+    elif ext == ".obj":
+        _try((lambda: bpy.ops.wm.obj_import, {"filepath": path}),
+             (lambda: bpy.ops.import_scene.obj, {"filepath": path}))
+    elif ext in (".gltf", ".glb"):
+        _try((lambda: bpy.ops.import_scene.gltf, {"filepath": path}))
+    elif ext == ".stl":
+        _try((lambda: bpy.ops.wm.stl_import, {"filepath": path}),
+             (lambda: bpy.ops.import_mesh.stl, {"filepath": path}))
+    elif ext == ".ply":
+        _try((lambda: bpy.ops.wm.ply_import, {"filepath": path}),
+             (lambda: bpy.ops.import_mesh.ply, {"filepath": path}))
+    elif ext == ".dae":
+        _try((lambda: bpy.ops.wm.collada_import, {"filepath": path}))
+    elif ext == ".abc":
+        _try((lambda: bpy.ops.wm.alembic_import, {"filepath": path}))
+    elif ext in (".usd", ".usda", ".usdc", ".usdz"):
+        _try((lambda: bpy.ops.wm.usd_import, {"filepath": path}))
+    elif ext == ".x3d":
+        _try((lambda: bpy.ops.import_scene.x3d, {"filepath": path}))
+    elif ext == ".3ds":
+        _try((lambda: bpy.ops.import_scene.max3ds, {"filepath": path}),
+             (lambda: bpy.ops.import_scene.autodesk_3ds, {"filepath": path}))
+    else:
+        raise RuntimeError("unsupported extension: " + ext)
+
+
+def frame_and_render(out):
     scene = bpy.context.scene
     objs = [o for o in scene.objects
             if o.type in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}]
@@ -366,26 +427,34 @@ def main():
     r.filepath = out
     bpy.ops.render.render(write_still=True)
 
+
+def main():
+    argv = sys.argv[sys.argv.index("--") + 1:]
+    src, out = argv[0], argv[1]
+    load_model(src)
+    frame_and_render(out)
+
 main()
 '''
 
 
-def render_blend(blend_path, out_jpg):
-    """Render a .blend preview with a background Blender process and save it to
-    the JPEG cache path. Best-effort; returns True on success."""
+def render_model(model_path, out_jpg):
+    """Render any Blender-importable model (or open a .blend) in a background
+    Blender process and save the result to the JPEG cache path. Best-effort;
+    returns True on success."""
     blender = find_blender()
     if not blender:
         return False
     from PIL import Image
     with tempfile.TemporaryDirectory() as td:
-        script = os.path.join(td, "hangar_blend_thumb.py")
+        script = os.path.join(td, "hangar_model_thumb.py")
         png = os.path.join(td, "thumb.png")
         with open(script, "w", encoding="utf-8") as fh:
-            fh.write(_BLEND_RENDER_SCRIPT)
+            fh.write(_MODEL_RENDER_SCRIPT)
         try:
             subprocess.run(
-                [blender, "-b", blend_path, "-P", script, "--", png],
-                timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                [blender, "-b", "-P", script, "--", model_path, png],
+                timeout=180, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
         except Exception:
             return False
@@ -398,9 +467,19 @@ def render_blend(blend_path, out_jpg):
     return False
 
 
-def render_blend_preview(asset):
-    """On-demand render for one .blend asset. Returns the cached path or None."""
+# Backwards-compatible alias — .blend rendering is just the general path.
+def render_blend(blend_path, out_jpg):
+    return render_model(blend_path, out_jpg)
+
+
+def render_model_preview(asset):
+    """On-demand Blender render for one model asset. Returns the cached path or
+    None. Works for any extension in BLENDER_RENDER_EXTS."""
     out = _thumb_path(asset)
-    if render_blend(asset["path"], out):
+    if render_model(asset["path"], out):
         return out
     return None
+
+
+# Older name kept so existing callers/imports don't break.
+render_blend_preview = render_model_preview
