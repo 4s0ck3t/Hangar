@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hangar</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">HANGAR</span>
+      <span class="brand-sub">asset bay</span>
+    </div>
+
+    <button class="add-folder" id="addFolderBtn">
+      <span class="af-ico">⊕</span> Add asset folder
+    </button>
+
+    <nav class="nav">
+      <div class="nav-group">
+        <div class="nav-label">Library</div>
+        <ul id="kindFilters" class="filter-list"></ul>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">
+          Tags <button class="mini-add" id="addTagBtn" title="New tag">+</button>
+        </div>
+        <ul id="tagFilters" class="filter-list tag-filters"></ul>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">
+          Collections <button class="mini-add" id="addCollectionBtn" title="New collection">+</button>
+        </div>
+        <ul id="collectionFilters" class="filter-list"></ul>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">Folders</div>
+        <ul id="libraryList" class="library-list"></ul>
+      </div>
+    </nav>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="search-wrap">
+        <input id="search" type="search" placeholder="Search assets…" autocomplete="off" />
+      </div>
+      <div class="topbar-right">
+        <span id="activeFilter" class="active-filter"></span>
+        <label class="sort">
+          <select id="sort">
+            <option value="name">Name</option>
+            <option value="recent">Recently added</option>
+            <option value="modified">Last modified</option>
+            <option value="size">File size</option>
+          </select>
+        </label>
+      </div>
+    </header>
+
+    <section id="grid" class="grid"></section>
+    <div id="emptyState" class="empty hidden"></div>
+  </main>
+
+  <footer class="statusbar">
+    <div class="status-left">
+      <span id="statusSummary" class="status-summary"></span>
+      <div id="scanProgress" class="scan-progress hidden">
+        <span class="scan-spinner"></span>
+        <span id="scanText" class="scan-text"></span>
+        <span class="scan-bar"><span id="scanFill" class="scan-fill"></span></span>
+        <span id="scanPct" class="scan-pct"></span>
+      </div>
+    </div>
+    <div class="status-right">
+      <span id="statusBreakdown" class="status-breakdown"></span>
+      <button id="rescanBtn" class="rescan">Rescan all</button>
+    </div>
+  </footer>
+
+  <aside id="drawer" class="drawer">
+    <button class="drawer-close" id="drawerClose" aria-label="Close">&times;</button>
+    <div id="drawerBody"></div>
+  </aside>
+  <div id="scrim" class="scrim hidden"></div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Hangar — core (required)
+Flask>=3.0
+Pillow>=10.0
+
+# Desktop window (standalone app). On Windows this uses the built-in
+# Edge WebView2 runtime; on macOS the system WebKit.
+pywebview>=5.0
+
+# Optional — richer model thumbnails + vertex/face stats.
+# Hangar runs fine without these (models show a format badge instead).
+trimesh>=4.0
+imageio>=2.30
+numpy>=1.24

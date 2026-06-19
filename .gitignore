@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Virtualenvs
+.venv/
+env/
+venv/
+
+# PyInstaller build output
+dist/
+build/
+*.spec
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Hangar local data (lives in ~/.hangar, but never commit any stray copy)
+.hangar/
+*.db
