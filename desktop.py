@@ -35,10 +35,14 @@ def _serve():
     backend.run_server(open_browser=False)
 
 
+def _on_start(window):
+    window.maximize()
+
+
 def main():
     threading.Thread(target=_serve, daemon=True).start()
     time.sleep(0.6)  # give Flask a moment to bind the port
-    webview.create_window(
+    window = webview.create_window(
         "Hangar",
         f"http://{backend.HOST}:{backend.PORT}",
         js_api=Api(),
@@ -47,7 +51,7 @@ def main():
         min_size=(960, 620),
         background_color="#131418",
     )
-    webview.start()
+    webview.start(_on_start, window)
 
 
 if __name__ == "__main__":

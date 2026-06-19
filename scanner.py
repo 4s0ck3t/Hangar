@@ -19,7 +19,7 @@ TEXTURE_EXTS = {
     ".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".bmp", ".webp",
 }
 HDRI_EXTS = {".hdr", ".exr"}
-MATERIAL_EXTS = {".sbsar", ".mat"}
+MATERIAL_EXTS = {".sbsar", ".mat", ".mtl"}
 
 EXT_KIND = {}
 for e in MODEL_EXTS:

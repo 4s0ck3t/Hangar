@@ -210,7 +210,17 @@ def _tags_for(conn, asset_id):
     ]
 
 
-def query_assets(search="", kind="", tag="", collection="", favorite=False,
+def model_ext_counts():
+    """Count of model assets per file extension, for sidebar subcategories."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT ext, COUNT(*) c FROM assets WHERE missing=0 AND kind='model' "
+            "GROUP BY ext ORDER BY c DESC"
+        ).fetchall()
+    return {r["ext"]: r["c"] for r in rows}
+
+
+def query_assets(search="", kind="", ext="", tag="", collection="", favorite=False,
                  sort="name", limit=200, offset=0):
     clauses = ["a.missing=0"]
     params = []
@@ -221,6 +231,16 @@ def query_assets(search="", kind="", tag="", collection="", favorite=False,
     if kind:
         clauses.append("a.kind=?")
         params.append(kind)
+    if ext:
+        # ext may be comma-separated for grouped formats (e.g. ".glb,.gltf")
+        exts = [e.strip() for e in ext.split(",") if e.strip()]
+        if len(exts) == 1:
+            clauses.append("a.ext=?")
+            params.append(exts[0])
+        elif len(exts) > 1:
+            placeholders = ",".join("?" * len(exts))
+            clauses.append(f"a.ext IN ({placeholders})")
+            params.extend(exts)
     if favorite:
         clauses.append("a.favorite=1")
     if tag:
@@ -273,7 +293,16 @@ def kind_counts():
         favs = conn.execute(
             "SELECT COUNT(*) c FROM assets WHERE missing=0 AND favorite=1"
         ).fetchone()["c"]
-    return {"by_kind": {r["kind"]: r["c"] for r in rows}, "total": total, "favorites": favs}
+        ext_rows = conn.execute(
+            "SELECT ext, COUNT(*) c FROM assets WHERE missing=0 AND kind='model' "
+            "GROUP BY ext ORDER BY c DESC"
+        ).fetchall()
+    return {
+        "by_kind": {r["kind"]: r["c"] for r in rows},
+        "total": total,
+        "favorites": favs,
+        "model_by_ext": {r["ext"]: r["c"] for r in ext_rows},
+    }
 
 
 # ---- tags & collections ---------------------------------------------------

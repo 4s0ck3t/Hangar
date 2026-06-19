@@ -4,13 +4,14 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Hangar</title>
+<link rel="icon" type="image/jpeg" href="logo.jpg" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 <div id="app">
   <aside class="sidebar">
     <div class="brand">
-      <span class="brand-mark"></span>
+      <img class="brand-mark" src="logo.jpg" alt="Hangar" />
       <span class="brand-name">HANGAR</span>
       <span class="brand-sub">asset bay</span>
     </div>
@@ -53,6 +54,7 @@
       </div>
       <div class="topbar-right">
         <span id="activeFilter" class="active-filter"></span>
+        <button id="clearFilterBtn" class="clear-filter hidden" title="Clear filters">✕</button>
         <label class="sort">
           <select id="sort">
             <option value="name">Name</option>

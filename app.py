@@ -171,6 +171,7 @@ def list_assets():
     assets, total = store.query_assets(
         search=q.get("search", "").strip(),
         kind=q.get("kind", "").strip(),
+        ext=q.get("ext", "").strip(),
         tag=q.get("tag", "").strip(),
         collection=q.get("collection", "").strip(),
         favorite=q.get("favorite") == "1",
@@ -257,7 +258,18 @@ def reveal(asset_id):
         elif sysname == "Windows":
             subprocess.run(["explorer", "/select,", os.path.normpath(path)], check=False)
         else:
-            subprocess.run(["xdg-open", os.path.dirname(path)], check=False)
+            import shutil as _shutil
+            # Try file-manager-specific "select" flags, fall back to opening the folder.
+            if _shutil.which("nautilus"):
+                subprocess.Popen(["nautilus", "--select", path])
+            elif _shutil.which("dolphin"):
+                subprocess.Popen(["dolphin", "--select", path])
+            elif _shutil.which("nemo"):
+                subprocess.Popen(["nemo", path])
+            elif _shutil.which("thunar"):
+                subprocess.Popen(["thunar", path])
+            else:
+                subprocess.run(["xdg-open", os.path.dirname(path)], check=False)
     except Exception as e:
         return jsonify({"error": f"Couldn't open the file manager: {e}"}), 500
     return jsonify({"ok": True})

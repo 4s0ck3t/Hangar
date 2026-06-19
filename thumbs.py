@@ -47,7 +47,14 @@ def get_or_make(asset):
 
 def _save_downscaled(img, out):
     from PIL import Image
-    img = img.convert("RGB")
+    # Composite transparent images onto a dark background so JPEG is clean.
+    if img.mode in ("RGBA", "LA"):
+        bg = Image.new("RGB", img.size, (40, 40, 44))
+        alpha = img.split()[-1]
+        bg.paste(img.convert("RGB"), mask=alpha)
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
     img.thumbnail(THUMB_SIZE, Image.LANCZOS)
     img.save(out, "JPEG", quality=86)
     return True
@@ -57,22 +64,36 @@ def _from_image(asset, out):
     path = asset["path"]
     ext = asset["ext"]
     if ext in (".hdr", ".exr"):
-        # HDR formats need tone-mapping; imageio handles them when present.
+        # Try imageio first (handles HDR tone-mapping cleanly).
         try:
             import imageio.v3 as iio
             import numpy as np
             from PIL import Image
             data = iio.imread(path)
-            data = data[..., :3] if data.ndim == 3 else data
-            # Simple Reinhard tone-map + gamma so previews aren't blown out.
+            if data.ndim == 3:
+                data = data[..., :3]
+            data = data.astype("float32")
+            # Reinhard tone-map + gamma to keep previews readable.
             tm = data / (1.0 + data)
             tm = np.clip(tm ** (1 / 2.2) * 255, 0, 255).astype("uint8")
             return _save_downscaled(Image.fromarray(tm), out)
+        except ImportError:
+            pass  # imageio not installed — try PIL directly
+        except Exception:
+            return False
+        # Fallback: PIL can read some EXR/HDR files with its own plugins.
+        try:
+            from PIL import Image
+            with Image.open(path) as img:
+                return _save_downscaled(img, out)
         except Exception:
             return False
     from PIL import Image
-    with Image.open(path) as img:
-        return _save_downscaled(img, out)
+    try:
+        with Image.open(path) as img:
+            return _save_downscaled(img, out)
+    except Exception:
+        return False
 
 
 def _from_model(asset, out):

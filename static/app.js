@@ -9,8 +9,22 @@ const KIND_LABELS = {
   hdri: "HDRIs", material: "Materials",
 };
 
+// Groups of model extensions shown as sidebar subcategories.
+const MODEL_EXT_GROUPS = [
+  { label: "Blender", exts: [".blend"] },
+  { label: "FBX",     exts: [".fbx"] },
+  { label: "OBJ",     exts: [".obj"] },
+  { label: "GLB / GLTF", exts: [".glb", ".gltf"] },
+  { label: "USD",     exts: [".usd", ".usda", ".usdc", ".usdz"] },
+  { label: "STL",     exts: [".stl"] },
+  { label: "PLY",     exts: [".ply"] },
+  { label: "ABC",     exts: [".abc"] },
+  { label: "DAE",     exts: [".dae"] },
+  { label: "3DS",     exts: [".3ds"] },
+];
+
 const state = {
-  filter: { kind: "", tag: "", collection: "", favorite: false },
+  filter: { kind: "", ext: "", tag: "", collection: "", favorite: false },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
 };
 const $ = (s) => document.querySelector(s);
@@ -36,9 +50,13 @@ function post(path, body) {
   });
 }
 let toastTimer;
-function toast(msg) {
-  const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden");
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add("hidden"), 2600);
+function toast(msg, type) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "toast" + (type === "success" ? " toast-ok" : type === "error" ? " toast-err" : "");
+  t.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.add("hidden"), 2600);
 }
 
 // ---- sidebar / state ------------------------------------------------------
@@ -64,6 +82,7 @@ function renderStatusBar(counts) {
 }
 
 function renderKindFilters(counts) {
+  const modelByExt = counts.model_by_ext || {};
   const items = [
     ["", "all", counts.total],
     ["model", "model", counts.by_kind.model || 0],
@@ -74,8 +93,9 @@ function renderKindFilters(counts) {
   const ul = $("#kindFilters"); ul.innerHTML = "";
   for (const [kind, key, count] of items) {
     const li = document.createElement("li");
-    const active = !state.filter.favorite && state.filter.kind === kind
+    const isModelSub = !state.filter.ext && !state.filter.favorite
       && !state.filter.tag && !state.filter.collection;
+    const active = isModelSub && state.filter.kind === kind;
     if (active) li.classList.add("active");
     const color = KIND_COLORS[kind] || "var(--mute)";
     li.innerHTML =
@@ -83,7 +103,33 @@ function renderKindFilters(counts) {
       `<span>${KIND_LABELS[key]}</span><span class="count">${count}</span>`;
     li.onclick = () => { resetFilter(); state.filter.kind = kind; refresh(); };
     ul.appendChild(li);
+
+    // Render model subcategories under the Models item.
+    if (kind === "model" && count > 0) {
+      for (const grp of MODEL_EXT_GROUPS) {
+        const grpCount = grp.exts.reduce((s, e) => s + (modelByExt[e] || 0), 0);
+        if (!grpCount) continue;
+        const sub = document.createElement("li");
+        sub.className = "sub-item";
+        const extKey = grp.exts.join(",");
+        const subActive = state.filter.kind === "model" && state.filter.ext === extKey
+          && !state.filter.favorite && !state.filter.tag && !state.filter.collection;
+        if (subActive) sub.classList.add("active");
+        sub.innerHTML =
+          `<span class="sub-dot"></span>` +
+          `<span>${grp.label}</span><span class="count">${grpCount}</span>`;
+        sub.onclick = (e) => {
+          e.stopPropagation();
+          resetFilter();
+          state.filter.kind = "model";
+          state.filter.ext = extKey;
+          refresh();
+        };
+        ul.appendChild(sub);
+      }
+    }
   }
+
   const fav = document.createElement("li");
   if (state.filter.favorite) fav.classList.add("active");
   fav.innerHTML =
@@ -123,6 +169,23 @@ function renderCollectionFilters(cols) {
       `<span class="dot" style="background:var(--select)"></span>` +
       `<span>${c.name}</span><span class="count">${c.c}</span>`;
     li.onclick = () => { resetFilter(); state.filter.collection = c.name; refresh(); };
+
+    // Drop target: accept dragged model cards.
+    li.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      li.classList.add("drop-over");
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("drop-over"));
+    li.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      li.classList.remove("drop-over");
+      const assetId = e.dataTransfer.getData("text/x-hangar-asset-id");
+      if (!assetId) return;
+      await post(`assets/${assetId}/collection`, { collection: c.name, add: true });
+      toast(`Added to "${c.name}"`, "success");
+      await loadState();
+    });
+
     ul.appendChild(li);
   }
 }
@@ -135,7 +198,7 @@ function renderLibraries(libs) {
   }
   for (const lib of libs) {
     const li = document.createElement("li");
-    li.title = lib.path;                       // full path on hover
+    li.title = lib.path;
     li.innerHTML =
       `<span class="dot" style="background:var(--faint)"></span>` +
       `<span class="lib-name">${lib.name}</span>` +
@@ -151,13 +214,23 @@ function renderLibraries(libs) {
 }
 
 function resetFilter() {
-  state.filter = { kind: "", tag: "", collection: "", favorite: false };
+  state.filter = { kind: "", ext: "", tag: "", collection: "", favorite: false };
+}
+
+// ---- clear-filter button visibility ---------------------------------------
+function updateClearBtn() {
+  const active = state.filter.kind || state.filter.ext || state.filter.tag
+    || state.filter.collection || state.filter.favorite || state.search;
+  $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
 // ---- grid -----------------------------------------------------------------
+let currentAssets = [];  // last fetched asset list for drawer prev/next
+
 async function refresh() {
   const p = new URLSearchParams();
   if (state.filter.kind) p.set("kind", state.filter.kind);
+  if (state.filter.ext)  p.set("ext", state.filter.ext);
   if (state.filter.tag) p.set("tag", state.filter.tag);
   if (state.filter.collection) p.set("collection", state.filter.collection);
   if (state.filter.favorite) p.set("favorite", "1");
@@ -165,15 +238,21 @@ async function refresh() {
   p.set("sort", state.sort);
 
   const data = await api("assets?" + p.toString());
+  currentAssets = data.assets;
   renderGrid(data.assets, data.total);
   await loadState();
   updateActiveLabel(data.total);
+  updateClearBtn();
 }
 
 function updateActiveLabel(total) {
   let label = state.filter.favorite ? "Favorites"
     : state.filter.tag ? `#${state.filter.tag}`
     : state.filter.collection ? state.filter.collection
+    : state.filter.ext ? (() => {
+        const grp = MODEL_EXT_GROUPS.find(g => g.exts.join(",") === state.filter.ext);
+        return grp ? grp.label : state.filter.ext;
+      })()
     : KIND_LABELS[state.filter.kind || "all"];
   $("#activeFilter").textContent = `${label} · ${total}`;
 }
@@ -207,29 +286,44 @@ function renderGrid(assets, total) {
         <span class="fav-pin">●</span>
         <div class="badge-tile">
           <span class="badge-ext" style="color:${color}">${ext}</span>
-          <span class="badge-kind">${a.kind}</span>
         </div>
       </div>
       <div class="card-meta">
         <div class="card-name" title="${a.name}">${a.name}</div>
         <div class="card-line">
-          <span>${ext}</span><span>·</span><span>${fmtSize(a.size)}</span>
+          <span class="card-ext" style="color:${color}">${ext}</span>
+          <span>·</span><span>${fmtSize(a.size)}</span>
           <span class="card-tags">${tagDots}</span>
         </div>
       </div>`;
     const tile = card.querySelector(".badge-tile");
     const img = new Image();
     img.onload = () => { tile.replaceWith(img); };
+    img.onerror = () => { /* keep placeholder tile */ };
     img.src = thumbUrl(a.id);
     img.alt = a.name;
-    card.onclick = () => openDrawer(a.id);
+    card.onclick = () => openDrawer(a.id, i);
+
+    // Drag support — let models be dropped into collections.
+    if (a.kind === "model") {
+      card.draggable = true;
+      card.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/x-hangar-asset-id", String(a.id));
+        e.dataTransfer.effectAllowed = "copy";
+        card.classList.add("dragging");
+      });
+      card.addEventListener("dragend", () => card.classList.remove("dragging"));
+    }
+
     grid.appendChild(card);
   });
 }
 
 // ---- detail drawer --------------------------------------------------------
 let allTags = [];
-async function openDrawer(id) {
+async function openDrawer(id, idx) {
+  // idx is the position in currentAssets — used for prev/next navigation.
+  if (idx === undefined) idx = currentAssets.findIndex(a => a.id === id);
   const a = await api(`assets/${id}`);
   const st = await api("state");
   allTags = st.tags;
@@ -239,30 +333,46 @@ async function openDrawer(id) {
   const canBlender = a.kind === "model";
   const isBlend = a.ext === ".blend";
 
+  const hasPrev = idx > 0;
+  const hasNext = idx >= 0 && idx < currentAssets.length - 1;
+
   $("#drawerBody").innerHTML = `
     <div class="d-preview" id="dPreview">
-      <div class="badge-tile">
-        <span class="badge-ext" style="color:${color};font-size:44px">${ext}</span>
-        <span class="badge-kind">${a.kind}</span>
+      <div class="d-thumb-placeholder">
+        <span class="d-ph-stripe" style="background:${color}"></span>
+        <span class="d-ph-ext" style="color:${color}">${ext}</span>
       </div>
+    </div>
+    <div class="d-nav">
+      <button class="d-nav-btn" id="dPrev" ${hasPrev ? "" : "disabled"}>← Prev</button>
+      <span class="d-nav-pos">${idx >= 0 ? idx + 1 : "?"} / ${currentAssets.length}</span>
+      <button class="d-nav-btn" id="dNext" ${hasNext ? "" : "disabled"}>Next →</button>
     </div>
     <div class="d-body">
       <h2 class="d-name">${a.name}</h2>
       <div class="d-path" id="dPath" title="${a.path}">${a.path}</div>
+      <div class="d-format-row">
+        <span class="d-format-badge" style="color:${color};border-color:${color}40">${ext}</span>
+        <span class="d-kind-label">${a.kind}</span>
+      </div>
       <div class="d-specs">
-        <div><div class="spec-k">Format</div><div class="spec-v">${ext}</div></div>
         <div><div class="spec-k">Size</div><div class="spec-v">${fmtSize(a.size)}</div></div>
         <div><div class="spec-k">Vertices</div><div class="spec-v">${fmtNum(a.vertices)}</div></div>
         <div><div class="spec-k">Faces</div><div class="spec-v">${fmtNum(a.faces)}</div></div>
       </div>
       <div class="d-section-label">Tags</div>
       <div class="tag-row" id="tagRow"></div>
+      ${(a.collections || []).length ? `
+        <div class="d-section-label">Collections</div>
+        <div class="d-collections">${(a.collections || []).map(c =>
+          `<span class="chip on" style="border-color:var(--select)">${c}</span>`).join("")}
+        </div>` : ""}
       <div class="d-actions">
         <button class="act" id="favAct">
           <span class="act-ico">${a.favorite ? "★" : "☆"}</span>
           ${a.favorite ? "Remove from favorites" : "Add to favorites"}</button>
         ${canBlender ? `<button class="act primary" id="blenderAct">
-          <span class="act-ico">⤴</span> Send to Blender</button>` : ""}
+          <span class="act-ico">⤴</span> <span class="act-label">Send to Blender</span></button>` : ""}
         ${isBlend ? `<button class="act" id="renderAct">
           <span class="act-ico">◳</span> <span class="act-label">Render preview${blenderReady ? "" : " (Blender not found)"}</span></button>` : ""}
         <button class="act" id="revealAct"><span class="act-ico">⊞</span> Reveal in file manager</button>
@@ -270,37 +380,83 @@ async function openDrawer(id) {
       </div>
     </div>`;
 
-  renderTagEditor(a);
+  // Load thumbnail into preview area.
   const pv = new Image();
-  pv.onload = () => { $("#dPreview").innerHTML = ""; $("#dPreview").appendChild(pv); };
+  pv.onload = () => {
+    const ph = $("#dPreview");
+    ph.innerHTML = "";
+    ph.appendChild(pv);
+  };
   pv.src = thumbUrl(a.id);
+
+  renderTagEditor(a);
 
   $("#favAct").onclick = async () => {
     const r = await post(`assets/${a.id}/favorite`, { value: !a.favorite });
-    a.favorite = r.favorite; openDrawer(id); refresh();
+    a.favorite = r.favorite;
+    toast(r.favorite ? "Added to favorites ★" : "Removed from favorites", "success");
+    openDrawer(id); refresh();
   };
-  if (canBlender) $("#blenderAct").onclick = async () => {
-    await post(`assets/${a.id}/send-blender`);
-    toast("Queued for Blender — the bridge addon will import it.");
+
+  if (canBlender) {
+    $("#blenderAct").onclick = async () => {
+      const btn = $("#blenderAct");
+      const lbl = btn.querySelector(".act-label");
+      btn.disabled = true; lbl.textContent = "Sending…";
+      const r = await post(`assets/${a.id}/send-blender`);
+      btn.disabled = false; lbl.textContent = "Send to Blender";
+      if (r.ok) toast("Queued — the Blender bridge will import it.", "success");
+      else toast(r.error || "Couldn't queue for Blender.", "error");
+    };
+  }
+
+  if (isBlend) {
+    $("#renderAct").onclick = async () => {
+      const btn = $("#renderAct"); const lbl = btn.querySelector(".act-label");
+      const prev = lbl.textContent; btn.disabled = true;
+      lbl.textContent = "Rendering in Blender…";
+      toast("Rendering preview — this can take a moment.");
+      const r = await post(`assets/${a.id}/render-blend`);
+      btn.disabled = false; lbl.textContent = prev;
+      if (r.ok) {
+        thumbBust[a.id] = Date.now();
+        toast("Preview rendered.", "success");
+        openDrawer(id); refresh();
+      } else {
+        toast(r.error || "Render failed.", "error");
+      }
+    };
+  }
+
+  $("#revealAct").onclick = async () => {
+    const r = await post(`assets/${a.id}/reveal`);
+    if (r.ok) toast("Opened in file manager.", "success");
+    else toast(r.error || "Couldn't open file manager.", "error");
   };
-  if (isBlend) $("#renderAct").onclick = async () => {
-    const btn = $("#renderAct"); const lbl = btn.querySelector(".act-label");
-    const prev = lbl.textContent; btn.disabled = true;
-    lbl.textContent = "Rendering in Blender…";
-    toast("Rendering preview in Blender — this can take a moment.");
-    const r = await post(`assets/${a.id}/render-blend`);
-    btn.disabled = false; lbl.textContent = prev;
-    if (r.ok) {
-      thumbBust[a.id] = Date.now();
-      toast("Preview rendered.");
-      openDrawer(id); refresh();
-    } else {
-      toast(r.error || "Render failed.");
+
+  $("#copyAct").onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(a.path);
+      toast("Path copied to clipboard.", "success");
+    } catch (_) {
+      // Fallback for non-HTTPS / restricted contexts.
+      const ta = document.createElement("textarea");
+      ta.value = a.path;
+      ta.style.cssText = "position:fixed;opacity:0";
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { document.execCommand("copy"); toast("Path copied to clipboard.", "success"); }
+      catch (e) { toast("Copy failed — check browser permissions.", "error"); }
+      document.body.removeChild(ta);
     }
   };
-  $("#revealAct").onclick = () => post(`assets/${a.id}/reveal`);
-  $("#copyAct").onclick = () =>
-    navigator.clipboard.writeText(a.path).then(() => toast("Path copied"));
+
+  if (hasPrev) {
+    $("#dPrev").onclick = () => openDrawer(currentAssets[idx - 1].id, idx - 1);
+  }
+  if (hasNext) {
+    $("#dNext").onclick = () => openDrawer(currentAssets[idx + 1].id, idx + 1);
+  }
 
   $("#drawer").classList.add("open");
   $("#scrim").classList.remove("hidden");
@@ -345,15 +501,12 @@ function closeDrawer() {
 
 // ---- folder picking + scanning -------------------------------------------
 async function chooseFolder() {
-  // Desktop build: native pywebview folder dialog.
   if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
     try { return await window.pywebview.api.pick_folder(); } catch (e) { /* fall through */ }
   }
-  // Browser mode: native Tk dialog on the local server.
   const r = await post("pick-folder");
   if (r && r.path) return r.path;
   if (r && r.cancelled) return null;
-  // Last resort if no native dialog is available.
   return prompt("Paste the full path to an asset folder:") || null;
 }
 
@@ -374,7 +527,7 @@ async function pollScan() {
       `${s.library || "library"} — ${s.scanned.toLocaleString()}/${s.total.toLocaleString()} files`;
     $("#scanFill").style.width = s.pct + "%";
     $("#scanPct").textContent = s.pct + "%";
-    await loadState();           // live counts as the grid fills
+    await loadState();
   } else {
     clearInterval(state.scanTimer); state.scanTimer = null;
     $("#scanProgress").classList.add("hidden");
@@ -382,7 +535,7 @@ async function pollScan() {
     $("#rescanBtn").disabled = false;
     if (state.wasScanning) {
       state.wasScanning = false;
-      toast(`Done — ${s.indexed.toLocaleString()} assets indexed`);
+      toast(`Done — ${s.indexed.toLocaleString()} assets indexed`, "success");
       refresh();
     }
   }
@@ -393,14 +546,14 @@ $("#addFolderBtn").onclick = async () => {
   const path = await chooseFolder();
   if (!path) return;
   const r = await post("libraries", { path });
-  if (r.error) { toast(r.error); return; }
+  if (r.error) { toast(r.error, "error"); return; }
   await loadState();
   startScanPolling();
 };
 
 $("#rescanBtn").onclick = async () => {
   const r = await post("scan");
-  if (r.error) { toast(r.error); return; }
+  if (r.error) { toast(r.error, "error"); return; }
   if (r.scanning) startScanPolling();
 };
 
@@ -421,12 +574,13 @@ $("#search").oninput = (e) => {
 $("#sort").onchange = (e) => { state.sort = e.target.value; refresh(); };
 $("#drawerClose").onclick = closeDrawer;
 $("#scrim").onclick = closeDrawer;
+$("#clearFilterBtn").onclick = () => { resetFilter(); state.search = ""; $("#search").value = ""; refresh(); };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
 
 // ---- boot -----------------------------------------------------------------
 (async function boot() {
   await loadState();
   await refresh();
-  const s = await api("scan/status");   // resume progress UI if a scan is mid-flight
+  const s = await api("scan/status");
   if (s.running) startScanPolling();
 })();
