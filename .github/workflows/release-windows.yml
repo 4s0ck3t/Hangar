@@ -27,6 +27,7 @@ jobs:
       - name: Build Hangar (onedir — fewer AV false-positives than onefile)
         run: >
           pyinstaller --noconsole --name Hangar
+          --icon hangar.ico
           --add-data "static;static"
           --collect-all webview
           desktop.py
