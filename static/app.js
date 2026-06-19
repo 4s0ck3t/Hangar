@@ -226,6 +226,7 @@ function updateClearBtn() {
 
 // ---- grid -----------------------------------------------------------------
 let currentAssets = [];  // last fetched asset list for drawer prev/next
+let drawerIdx = -1;      // position of the open drawer asset in currentAssets
 
 async function refresh() {
   const p = new URLSearchParams();
@@ -350,6 +351,7 @@ function syncFavoriteInGrid(id, fav) {
 async function openDrawer(id, idx) {
   // idx is the position in currentAssets — used for prev/next navigation.
   if (idx === undefined) idx = currentAssets.findIndex(a => a.id === id);
+  drawerIdx = idx;
   const a = await api(`assets/${id}`);
   const st = await api("state");
   allTags = st.tags;
@@ -525,6 +527,16 @@ function renderTagEditor(a) {
 function closeDrawer() {
   $("#drawer").classList.remove("open");
   $("#scrim").classList.add("hidden");
+  drawerIdx = -1;
+}
+
+function isDrawerOpen() { return $("#drawer").classList.contains("open"); }
+
+// True when focus is in a text field — so shortcuts don't hijack typing.
+function isTyping(el) {
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
 }
 
 // ---- folder picking + scanning -------------------------------------------
@@ -603,7 +615,31 @@ $("#sort").onchange = (e) => { state.sort = e.target.value; refresh(); };
 $("#drawerClose").onclick = closeDrawer;
 $("#scrim").onclick = closeDrawer;
 $("#clearFilterBtn").onclick = () => { resetFilter(); state.search = ""; $("#search").value = ""; refresh(); };
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+document.addEventListener("keydown", (e) => {
+  // "/" jumps to the search box (unless you're already typing in a field).
+  if (e.key === "/" && !isTyping(e.target) && !e.metaKey && !e.ctrlKey) {
+    e.preventDefault();
+    $("#search").focus();
+    $("#search").select();
+    return;
+  }
+  if (e.key === "Escape") {
+    if (isDrawerOpen()) closeDrawer();
+    else if (document.activeElement === $("#search")) $("#search").blur();
+    return;
+  }
+  // Arrow keys page through assets while the drawer is open.
+  if (isDrawerOpen() && !isTyping(e.target)) {
+    if (e.key === "ArrowLeft" && drawerIdx > 0) {
+      e.preventDefault();
+      openDrawer(currentAssets[drawerIdx - 1].id, drawerIdx - 1);
+    } else if (e.key === "ArrowRight" && drawerIdx >= 0
+               && drawerIdx < currentAssets.length - 1) {
+      e.preventDefault();
+      openDrawer(currentAssets[drawerIdx + 1].id, drawerIdx + 1);
+    }
+  }
+});
 
 // ---- boot -----------------------------------------------------------------
 (async function boot() {
