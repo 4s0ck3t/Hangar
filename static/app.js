@@ -337,10 +337,133 @@ function updateActiveLabel(total) {
   $("#activeFilter").textContent = `${label} · ${total}`;
 }
 
+function buildCard(a, i) {
+  const card = document.createElement("div");
+  card.className = "card" + (a.favorite ? " is-fav" : "")
+    + (selection.has(a.id) ? " is-selected" : "");
+  card.dataset.id = a.id;
+  const color = KIND_COLORS[a.kind] || "var(--mute)";
+  const ext = a.ext.replace(".", "").toUpperCase();
+  const tagDots = (a.tags || []).slice(0, 4)
+    .map((t) => `<span class="tdot" style="background:${t.color}"></span>`).join("");
+  card.innerHTML = `
+    <div class="card-thumb">
+      <span class="kind-stripe" style="background:${color}"></span>
+      <span class="fav-pin">●</span>
+      <div class="badge-tile">
+        <span class="badge-ext" style="color:${color}">${ext}</span>
+      </div>
+    </div>
+    <div class="card-meta">
+      <div class="card-name" title="${a.name}">${a.name}</div>
+      <div class="card-line">
+        <span class="card-ext" style="color:${color}">${ext}</span>
+        <span>·</span><span>${fmtSize(a.size)}</span>
+        <span class="card-tags">${tagDots}</span>
+      </div>
+    </div>`;
+  const tile = card.querySelector(".badge-tile");
+  const img = new Image();
+  img.onload = () => { tile.replaceWith(img); };
+  img.onerror = () => { /* keep placeholder tile */ };
+  img.src = thumbUrl(a.id);
+  img.alt = a.name;
+  // Ctrl/Cmd-click toggles selection; once a selection is active a plain
+  // click keeps building it. Otherwise a click opens the detail drawer.
+  card.onclick = (e) => {
+    if (e.ctrlKey || e.metaKey || selection.size > 0) {
+      e.preventDefault();
+      toggleSelect(a.id, card);
+    } else {
+      openDrawer(a.id, i);
+    }
+  };
+
+  // Drag support — let models be dropped into collections.
+  if (a.kind === "model") {
+    card.draggable = true;
+    card.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/x-hangar-asset-id", String(a.id));
+      e.dataTransfer.effectAllowed = "copy";
+      card.classList.add("dragging");
+    });
+    card.addEventListener("dragend", () => card.classList.remove("dragging"));
+  }
+  return card;
+}
+
+// ---- virtual scrolling ----------------------------------------------------
+// Only the cards near the viewport live in the DOM. Spacer divs span whole
+// grid rows above and below the window so the scrollbar height (and thus the
+// scroll position of every card) stays exact, while big libraries render and
+// scroll in constant time. Mirrors .grid's CSS: 250px rows, 14px gap, etc.
+const VROW = 250, VGAP = 14, VPAD_TOP = 20, VPAD_X = 22, VMIN_COL = 192, VBUFFER = 4;
+let _vAssets = [];
+let _vRange = { start: -1, end: -1 };
+let _vRaf = 0;
+let _vBound = false;
+
+function vCols() {
+  const avail = $("#grid").clientWidth - 2 * VPAD_X;
+  return Math.max(1, Math.floor((avail + VGAP) / (VMIN_COL + VGAP)));
+}
+
+function renderWindow() {
+  const grid = $("#grid");
+  const n = _vAssets.length;
+  if (!n) return;
+  const cols = vCols();
+  const stride = VROW + VGAP;
+  const totalRows = Math.ceil(n / cols);
+  const firstRow = Math.min(
+    Math.max(0, totalRows - 1),
+    Math.max(0, Math.floor((grid.scrollTop - VPAD_TOP) / stride) - VBUFFER)
+  );
+  const visRows = Math.ceil(grid.clientHeight / stride) + VBUFFER * 2;
+  const start = firstRow * cols;
+  const end = Math.min(n, start + visRows * cols);
+  if (start === _vRange.start && end === _vRange.end) return; // window unchanged
+  _vRange = { start, end };
+
+  const lastRow = Math.ceil(end / cols);
+  const frag = document.createDocumentFragment();
+  if (firstRow > 0) {
+    const top = document.createElement("div");
+    top.className = "vspacer";
+    top.style.gridRow = "span " + firstRow;
+    frag.appendChild(top);
+  }
+  for (let i = start; i < end; i++) frag.appendChild(buildCard(_vAssets[i], i));
+  const bottomRows = totalRows - lastRow;
+  if (bottomRows > 0) {
+    const bottom = document.createElement("div");
+    bottom.className = "vspacer";
+    bottom.style.gridRow = "span " + bottomRows;
+    frag.appendChild(bottom);
+  }
+  grid.replaceChildren(frag);
+}
+
+function bindVirtual() {
+  if (_vBound) return;
+  _vBound = true;
+  const grid = $("#grid");
+  grid.addEventListener("scroll", () => {
+    if (_vRaf) return;
+    _vRaf = requestAnimationFrame(() => { _vRaf = 0; renderWindow(); });
+  }, { passive: true });
+  // The grid's content width changes when the scrollbar appears/disappears or
+  // the window resizes — either can change the column count, which invalidates
+  // the spacer spans. A ResizeObserver catches both (a scrollbar toggle is not
+  // a window 'resize' event), so the window is recomputed whenever width moves.
+  new ResizeObserver(() => { _vRange = { start: -1, end: -1 }; renderWindow(); }).observe(grid);
+}
+
 function renderGrid(assets, total) {
   const grid = $("#grid"); const empty = $("#emptyState");
   if (!assets.length) {
-    grid.innerHTML = "";
+    _vAssets = []; _vRange = { start: -1, end: -1 };
+    grid.replaceChildren();
     empty.classList.remove("hidden");
     empty.innerHTML = total === 0 && !state.search && !state.filter.tag
       ? `<h2>No assets indexed yet</h2>
@@ -351,63 +474,11 @@ function renderGrid(assets, total) {
     return;
   }
   empty.classList.add("hidden");
-  grid.innerHTML = "";
-  assets.forEach((a, i) => {
-    const card = document.createElement("div");
-    card.className = "card" + (a.favorite ? " is-fav" : "")
-      + (selection.has(a.id) ? " is-selected" : "");
-    card.dataset.id = a.id;
-    card.style.animationDelay = Math.min(i * 10, 220) + "ms";
-    const color = KIND_COLORS[a.kind] || "var(--mute)";
-    const ext = a.ext.replace(".", "").toUpperCase();
-    const tagDots = (a.tags || []).slice(0, 4)
-      .map((t) => `<span class="tdot" style="background:${t.color}"></span>`).join("");
-    card.innerHTML = `
-      <div class="card-thumb">
-        <span class="kind-stripe" style="background:${color}"></span>
-        <span class="fav-pin">●</span>
-        <div class="badge-tile">
-          <span class="badge-ext" style="color:${color}">${ext}</span>
-        </div>
-      </div>
-      <div class="card-meta">
-        <div class="card-name" title="${a.name}">${a.name}</div>
-        <div class="card-line">
-          <span class="card-ext" style="color:${color}">${ext}</span>
-          <span>·</span><span>${fmtSize(a.size)}</span>
-          <span class="card-tags">${tagDots}</span>
-        </div>
-      </div>`;
-    const tile = card.querySelector(".badge-tile");
-    const img = new Image();
-    img.onload = () => { tile.replaceWith(img); };
-    img.onerror = () => { /* keep placeholder tile */ };
-    img.src = thumbUrl(a.id);
-    img.alt = a.name;
-    // Ctrl/Cmd-click toggles selection; once a selection is active a plain
-    // click keeps building it. Otherwise a click opens the detail drawer.
-    card.onclick = (e) => {
-      if (e.ctrlKey || e.metaKey || selection.size > 0) {
-        e.preventDefault();
-        toggleSelect(a.id, card);
-      } else {
-        openDrawer(a.id, i);
-      }
-    };
-
-    // Drag support — let models be dropped into collections.
-    if (a.kind === "model") {
-      card.draggable = true;
-      card.addEventListener("dragstart", (e) => {
-        e.dataTransfer.setData("text/x-hangar-asset-id", String(a.id));
-        e.dataTransfer.effectAllowed = "copy";
-        card.classList.add("dragging");
-      });
-      card.addEventListener("dragend", () => card.classList.remove("dragging"));
-    }
-
-    grid.appendChild(card);
-  });
+  _vAssets = assets;
+  _vRange = { start: -1, end: -1 };
+  grid.scrollTop = 0;
+  bindVirtual();
+  renderWindow();
 }
 
 // ---- detail drawer --------------------------------------------------------
