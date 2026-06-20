@@ -15,6 +15,10 @@ from pathlib import Path
 
 from store import THUMB_DIR
 
+# OpenCV's OpenEXR codec is opt-in and must be enabled before cv2 is first
+# imported (we import it lazily in _read_hdri_array, below).
+os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+
 THUMB_SIZE = (512, 512)
 SIBLING_NAMES = ("preview", "thumbnail", "thumb", "render")
 SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
@@ -62,38 +66,60 @@ def _save_downscaled(img, out):
 
 def _from_image(asset, out):
     path = asset["path"]
-    ext = asset["ext"]
-    if ext in (".hdr", ".exr"):
-        # Try imageio first (handles HDR tone-mapping cleanly).
-        try:
-            import imageio.v3 as iio
-            import numpy as np
-            from PIL import Image
-            data = iio.imread(path)
-            if data.ndim == 3:
-                data = data[..., :3]
-            data = data.astype("float32")
-            # Reinhard tone-map + gamma to keep previews readable.
-            tm = data / (1.0 + data)
-            tm = np.clip(tm ** (1 / 2.2) * 255, 0, 255).astype("uint8")
-            return _save_downscaled(Image.fromarray(tm), out)
-        except ImportError:
-            pass  # imageio not installed — try PIL directly
-        except Exception:
-            return False
-        # Fallback: PIL can read some EXR/HDR files with its own plugins.
-        try:
-            from PIL import Image
-            with Image.open(path) as img:
-                return _save_downscaled(img, out)
-        except Exception:
-            return False
+    if asset["ext"] in (".hdr", ".exr"):
+        return _from_hdri(path, out)
     from PIL import Image
     try:
         with Image.open(path) as img:
             return _save_downscaled(img, out)
     except Exception:
         return False
+
+
+def _read_hdri_array(path):
+    """Decode a .hdr / .exr to an RGB ndarray (float for HDR data, else uint8).
+
+    OpenCV reads both formats natively (EXR via OPENCV_IO_ENABLE_OPENEXR, set at
+    module load) and returns float32 BGR with the real dynamic range intact.
+    imageio only handles .hdr and hands back already-tone-mapped uint8, so it's
+    a last resort; PIL can read neither format on its own.
+    """
+    try:
+        import cv2
+        img = cv2.imread(path, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+        if img is not None:
+            if img.ndim == 3 and img.shape[2] >= 3:
+                img = cv2.cvtColor(img[..., :3], cv2.COLOR_BGR2RGB)
+            return img
+    except Exception:
+        pass
+    try:
+        import imageio.v3 as iio
+        return iio.imread(path)
+    except Exception:
+        return None
+
+
+def _from_hdri(path, out):
+    """Tone-map a high-dynamic-range image down to a clean LDR JPEG preview."""
+    arr = _read_hdri_array(path)
+    if arr is None:
+        return False
+    import numpy as np
+    from PIL import Image
+    # imageio already returns LDR uint8 — tone-mapping it again blows it out to
+    # white, so only the float (true-HDR) path gets the Reinhard curve.
+    if not np.issubdtype(arr.dtype, np.integer):
+        arr = np.nan_to_num(arr.astype("float32"), posinf=0.0, neginf=0.0)
+        if arr.ndim == 2:
+            arr = np.stack([arr] * 3, axis=-1)
+        arr = np.clip(arr[..., :3], 0.0, None)
+        # Reinhard tone-map + gamma keeps bright skies and windows readable.
+        tm = arr / (1.0 + arr)
+        arr = np.clip(tm ** (1 / 2.2) * 255.0, 0, 255).astype("uint8")
+    elif arr.ndim == 3:
+        arr = arr[..., :3]
+    return _save_downscaled(Image.fromarray(arr), out)
 
 
 def _from_model(asset, out):

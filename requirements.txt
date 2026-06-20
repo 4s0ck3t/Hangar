@@ -11,3 +11,8 @@ pywebview>=5.0
 trimesh>=4.0
 imageio>=2.30
 numpy>=1.24
+
+# Optional — HDR/EXR environment-map previews. OpenCV decodes Radiance .hdr and
+# OpenEXR .exr to float so they can be tone-mapped (Pillow/imageio can't read
+# .exr at all, and only return already-clamped LDR for .hdr).
+opencv-python-headless>=4.8

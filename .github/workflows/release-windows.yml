@@ -24,6 +24,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install Flask>=3.0 Pillow>=10.0 pywebview>=5.0 pyinstaller>=6.0
           pip install trimesh>=4.0 numpy>=1.24 imageio>=2.30 pyopengl>=3.1
+          pip install opencv-python-headless>=4.8
 
       - name: Build Hangar (onedir — fewer AV false-positives than onefile)
         run: >
@@ -32,6 +33,7 @@ jobs:
           --add-data "static;static"
           --collect-all webview
           --collect-all trimesh
+          --collect-all cv2
           --hidden-import imageio
           --hidden-import numpy
           desktop.py
