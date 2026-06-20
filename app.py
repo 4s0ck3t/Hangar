@@ -98,6 +98,7 @@ def state():
         "blender_queue": str(BLENDER_QUEUE),
         "blender_render": thumbs.blender_available(),
         "blender_render_exts": sorted(thumbs.BLENDER_RENDER_EXTS),
+        "hdri_backends": thumbs._hdri_backends(),
         "desktop": bool(os.environ.get("HANGAR_DESKTOP")),
     })
 
@@ -195,14 +196,16 @@ def asset_detail(asset_id):
     return jsonify(asset)
 
 
+_NO_CACHE = {"Cache-Control": "no-store"}
+
 @app.get("/api/thumb/<int:asset_id>")
 def thumb(asset_id):
     asset = store.get_asset(asset_id)
     if not asset:
-        return "", 404
+        return "", 404, _NO_CACHE
     path = thumbs.get_or_make(asset)
     if not path:
-        return "", 404
+        return "", 404, _NO_CACHE
     return send_file(path, mimetype="image/jpeg")
 
 

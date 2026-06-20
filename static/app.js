@@ -811,8 +811,13 @@ document.addEventListener("keydown", (e) => {
 
 // ---- boot -----------------------------------------------------------------
 (async function boot() {
-  await loadState();
+  const st = await loadState();
   await refresh();
   const s = await api("scan/status");
   if (s.running) startScanPolling();
+  // Warn once if HDRIs are indexed but no backend can decode them.
+  if (st && st.counts.by_kind.hdri &&
+      st.hdri_backends && st.hdri_backends[0] === "none") {
+    toast("HDR/EXR previews unavailable — install opencv-python-headless", "error");
+  }
 })();

@@ -10,10 +10,13 @@ format badge instead, so the grid never shows broken images.
 """
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 
 from store import THUMB_DIR
+
+log = logging.getLogger(__name__)
 
 # OpenCV's OpenEXR codec is opt-in and must be enabled before cv2 is first
 # imported (we import it lazily in _read_hdri_array, below).
@@ -23,9 +26,14 @@ THUMB_SIZE = (512, 512)
 SIBLING_NAMES = ("preview", "thumbnail", "thumb", "render")
 SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
+# Bump this version when the thumbnail algorithm for a kind changes so that
+# stale cached previews are automatically replaced on next access.
+_THUMB_VERSIONS = {"hdri": "2"}
+
 
 def _thumb_path(asset):
-    key = f"{asset['path']}:{asset['mtime']}".encode("utf-8")
+    ver = _THUMB_VERSIONS.get(asset["kind"], "1")
+    key = f"v{ver}:{asset['path']}:{asset['mtime']}".encode("utf-8")
     digest = hashlib.sha1(key).hexdigest()[:16]
     return THUMB_DIR / f"{digest}.jpg"
 
@@ -42,10 +50,14 @@ def get_or_make(asset):
         "material": lambda a, o: None,
     }.get(asset["kind"], lambda a, o: None)
     try:
-        if source_maker(asset, out):
+        ok = source_maker(asset, out)
+        if ok:
             return out
+        if asset["kind"] == "hdri":
+            log.warning("HDR/EXR thumb failed for %s (backends: %s)",
+                        asset.get("path", "?"), _hdri_backends())
     except Exception:
-        pass
+        log.exception("thumb generation error for %s", asset.get("path", "?"))
     return None
 
 
@@ -62,6 +74,22 @@ def _save_downscaled(img, out):
     img.thumbnail(THUMB_SIZE, Image.LANCZOS)
     img.save(out, "JPEG", quality=86)
     return True
+
+
+def _hdri_backends():
+    """Return a list of available HDR/EXR decoding backends (for diagnostics)."""
+    backs = []
+    try:
+        import cv2 as _cv2  # noqa: F401
+        backs.append("cv2")
+    except ImportError:
+        pass
+    try:
+        import imageio.v3  # noqa: F401
+        backs.append("imageio")
+    except ImportError:
+        pass
+    return backs or ["none"]
 
 
 def _from_image(asset, out):
