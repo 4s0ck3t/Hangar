@@ -5,6 +5,7 @@ Everything lives under ~/.hangar so the tool is fully local and portable.
 """
 
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -56,13 +57,61 @@ CREATE TABLE IF NOT EXISTS collection_assets (
     asset_id      INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
     PRIMARY KEY (collection_id, asset_id)
 );
+CREATE TABLE IF NOT EXISTS categories (
+    id    INTEGER PRIMARY KEY,
+    name  TEXT UNIQUE NOT NULL,
+    icon  TEXT NOT NULL DEFAULT '',
+    sort  INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS asset_categories (
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    asset_id    INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    PRIMARY KEY (category_id, asset_id)
+);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_assets_kind ON assets(kind);
 CREATE INDEX IF NOT EXISTS idx_assets_name ON assets(name);
+CREATE INDEX IF NOT EXISTS idx_asset_categories_asset ON asset_categories(asset_id);
 """
+
+# Starter taxonomy seeded on first run. Each category carries a keyword list used
+# to auto-suggest a category from an asset's folder/file name during scanning.
+# Users can add their own categories; these are just a sensible base to build on.
+DEFAULT_CATEGORIES = [
+    # (name, icon, [keywords])
+    ("Sci-Fi",       "🚀", ["scifi", "sci-fi", "spaceship", "spacecraft", "space",
+                            "starship", "mech", "robot", "droid", "cyber",
+                            "cyberpunk", "futuristic", "alien", "ufo", "laser"]),
+    ("Buildings",    "🏢", ["building", "buildings", "house", "home", "tower",
+                            "skyscraper", "apartment", "office"]),
+    ("Architecture", "🏛", ["architecture", "interior", "exterior", "facade",
+                            "room", "kitchen", "bathroom", "stairs", "wall"]),
+    ("Vehicles",     "🚗", ["vehicle", "car", "cars", "truck", "tank", "plane",
+                            "aircraft", "jet", "ship", "boat", "motorcycle",
+                            "bike", "bicycle", "train", "bus"]),
+    ("Characters",   "🧍", ["character", "char", "human", "person", "people",
+                            "creature", "monster", "npc", "avatar", "zombie",
+                            "soldier"]),
+    ("Weapons",      "🗡", ["weapon", "weapons", "gun", "guns", "rifle", "pistol",
+                            "sword", "blade", "knife", "axe", "firearm", "ammo",
+                            "grenade"]),
+    ("Nature",       "🌲", ["nature", "tree", "trees", "plant", "plants", "rock",
+                            "rocks", "terrain", "foliage", "grass", "environment",
+                            "landscape", "forest", "flower"]),
+    ("Furniture",    "🛋", ["furniture", "chair", "table", "sofa", "couch", "desk",
+                            "bed", "shelf", "cabinet", "lamp"]),
+    ("Props",        "📦", ["prop", "props", "barrel", "crate", "box", "container"]),
+    ("Industrial",   "🏭", ["industrial", "machine", "machinery", "pipe", "pipes",
+                            "factory", "mechanical", "engine", "gear"]),
+    ("Fantasy",      "🐉", ["fantasy", "medieval", "castle", "dragon", "magic",
+                            "wizard", "knight", "dungeon"]),
+    ("Food",         "🍎", ["food", "fruit", "drink", "meal", "vegetable", "bottle"]),
+]
+# name -> compiled whole-word keyword matchers (built lazily).
+_CATEGORY_MATCHERS = None
 
 
 def connect():
@@ -83,6 +132,12 @@ def init_db():
         for name, color in defaults:
             conn.execute(
                 "INSERT OR IGNORE INTO tags(name, color) VALUES (?, ?)", (name, color)
+            )
+        # Seed the starter category taxonomy (Sci-Fi, Buildings, …).
+        for sort, (name, icon, _kw) in enumerate(DEFAULT_CATEGORIES):
+            conn.execute(
+                "INSERT OR IGNORE INTO categories(name, icon, sort) VALUES (?, ?, ?)",
+                (name, icon, sort),
             )
 
 
@@ -159,6 +214,9 @@ def upsert_asset(meta):
             (meta["path"], meta["name"], meta["ext"], meta["kind"],
              meta["size"], meta["mtime"], time.time()),
         )
+        # Auto-suggest categories for new model assets from their folder/file name.
+        if meta["kind"] == "model":
+            _auto_categorize(conn, cur.lastrowid, meta["path"])
         return cur.lastrowid
 
 
@@ -196,6 +254,13 @@ def get_asset(asset_id):
                 "WHERE ca.asset_id=?", (asset_id,)
             ).fetchall()
         ]
+        asset["categories"] = [
+            r["name"] for r in conn.execute(
+                "SELECT cat.name FROM categories cat "
+                "JOIN asset_categories ac ON ac.category_id=cat.id "
+                "WHERE ac.asset_id=?", (asset_id,)
+            ).fetchall()
+        ]
     return asset
 
 
@@ -220,8 +285,8 @@ def model_ext_counts():
     return {r["ext"]: r["c"] for r in rows}
 
 
-def query_assets(search="", kind="", ext="", tag="", collection="", favorite=False,
-                 sort="name", limit=200, offset=0):
+def query_assets(search="", kind="", ext="", tag="", collection="", category="",
+                 folder="", favorite=False, sort="name", limit=200, offset=0):
     clauses = ["a.missing=0"]
     params = []
     joins = ""
@@ -251,6 +316,15 @@ def query_assets(search="", kind="", ext="", tag="", collection="", favorite=Fal
         joins += (" JOIN collection_assets fca ON fca.asset_id=a.id "
                   " JOIN collections fc ON fc.id=fca.collection_id AND fc.name=?")
         params.append(collection)
+    if category:
+        joins += (" JOIN asset_categories fac ON fac.asset_id=a.id "
+                  " JOIN categories fcat ON fcat.id=fac.category_id AND fcat.name=?")
+        params.append(category)
+    if folder:
+        # Match every asset living under this folder root (any depth).
+        prefix = folder.rstrip("/\\")
+        clauses.append("a.path LIKE ?")
+        params.append(prefix + os.sep + "%")
 
     order = {
         "name": "a.name COLLATE NOCASE ASC",
@@ -386,3 +460,92 @@ def set_collection_membership(collection_name, asset_id, add=True):
                 "DELETE FROM collection_assets WHERE collection_id=? AND asset_id=?",
                 (coll["id"], asset_id),
             )
+
+
+# ---- categories -----------------------------------------------------------
+
+def list_categories():
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT cat.id, cat.name, cat.icon, COUNT(ac.asset_id) c "
+            "FROM categories cat "
+            "LEFT JOIN asset_categories ac ON ac.category_id=cat.id "
+            "GROUP BY cat.id ORDER BY cat.sort, cat.name COLLATE NOCASE"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_category(name, icon=""):
+    name = (name or "").strip()
+    if not name:
+        return
+    with connect() as conn:
+        nxt = conn.execute("SELECT COALESCE(MAX(sort), -1) + 1 m FROM categories").fetchone()["m"]
+        conn.execute(
+            "INSERT OR IGNORE INTO categories(name, icon, sort) VALUES (?, ?, ?)",
+            (name, icon, nxt),
+        )
+
+
+def remove_category(category_id):
+    with connect() as conn:
+        conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
+
+
+def set_category_membership(category_name, asset_id, add=True):
+    name = (category_name or "").strip()
+    if not name:
+        return
+    with connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (name,))
+        cat = conn.execute("SELECT id FROM categories WHERE name=?", (name,)).fetchone()
+        if add:
+            conn.execute(
+                "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) "
+                "VALUES (?, ?)", (cat["id"], asset_id),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM asset_categories WHERE category_id=? AND asset_id=?",
+                (cat["id"], asset_id),
+            )
+
+
+def _category_matchers():
+    """name -> set of keywords, built once from DEFAULT_CATEGORIES."""
+    global _CATEGORY_MATCHERS
+    if _CATEGORY_MATCHERS is None:
+        _CATEGORY_MATCHERS = {name: set(kws) for name, _icon, kws in DEFAULT_CATEGORIES}
+    return _CATEGORY_MATCHERS
+
+
+def _auto_categorize(conn, asset_id, path):
+    """Attach seeded categories whose keywords appear in the asset's path.
+
+    Splits the lower-cased path into word tokens and matches each keyword as a
+    whole token (with simple singular/plural tolerance), so "car_sedan" hits
+    Vehicles and a "vehicles" folder hits the "vehicle" keyword. Runs inside the
+    caller's transaction (shares `conn`) so the new asset row is visible to the
+    foreign-key check. Only touches the seeded default categories.
+    """
+    tokens = set(re.split(r"[^a-z0-9]+", path.lower()))
+    tokens.discard("")
+
+    def hit(kw):
+        return (kw in tokens
+                or (kw + "s") in tokens
+                or (kw.endswith("s") and kw[:-1] in tokens))
+
+    matched = [name for name, kws in _category_matchers().items()
+               if any(hit(kw) for kw in kws)]
+    if not matched:
+        return
+    placeholders = ",".join("?" * len(matched))
+    rows = conn.execute(
+        f"SELECT id FROM categories WHERE name IN ({placeholders})", matched
+    ).fetchall()
+    for r in rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) VALUES (?, ?)",
+            (r["id"], asset_id),
+        )

@@ -1,11 +1,12 @@
-// Hangar three.js GLB/GLTF viewer — mounts into the drawer preview area.
+// Hangar three.js viewer (GLB/GLTF + FBX) — mounts into the drawer preview area.
 import * as THREE from '/three.min.js';
 import { GLTFLoader } from '/GLTFLoader.js';
+import { FBXLoader } from '/FBXLoader.js';
 import { OrbitControls } from '/OrbitControls.js';
 
 let renderer, scene, camera, controls, animId, resizeObs;
 
-export function startViewer(container, assetId) {
+export function startViewer(container, assetId, ext) {
   destroyViewer();
 
   const canvas = document.createElement('canvas');
@@ -45,42 +46,47 @@ export function startViewer(container, assetId) {
   controls.enableDamping = true;
   controls.dampingFactor = 0.06;
 
-  const loader = new GLTFLoader();
-  loader.load(
-    `/api/assets/${assetId}/file`,
-    (gltf) => {
-      spinner.remove();
-      scene.add(gltf.scene);
+  // Mount a loaded object (GLTF scene or FBX group), frame it, wire animations.
+  const onLoaded = (object, animations) => {
+    spinner.remove();
+    scene.add(object);
 
-      const box = new THREE.Box3().setFromObject(gltf.scene);
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-      gltf.scene.position.sub(center);
+    const box = new THREE.Box3().setFromObject(object);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    object.position.sub(center);
 
-      const maxDim = Math.max(size.x, size.y, size.z) || 1;
-      const fovRad = camera.fov * Math.PI / 180;
-      const dist = (maxDim / 2) / Math.tan(fovRad / 2) * 1.7;
-      camera.position.set(dist * 0.7, dist * 0.45, dist);
-      camera.near = maxDim * 0.001;
-      camera.far = maxDim * 300;
-      camera.updateProjectionMatrix();
-      controls.target.set(0, 0, 0);
-      controls.update();
+    const maxDim = Math.max(size.x, size.y, size.z) || 1;
+    const fovRad = camera.fov * Math.PI / 180;
+    const dist = (maxDim / 2) / Math.tan(fovRad / 2) * 1.7;
+    camera.position.set(dist * 0.7, dist * 0.45, dist);
+    camera.near = maxDim * 0.001;
+    camera.far = maxDim * 300;
+    camera.updateProjectionMatrix();
+    controls.target.set(0, 0, 0);
+    controls.update();
 
-      if (gltf.animations?.length) {
-        const clock = new THREE.Clock();
-        const mixer = new THREE.AnimationMixer(gltf.scene);
-        mixer.clipAction(gltf.animations[0]).play();
-        scene.userData._mixer = mixer;
-        scene.userData._clock = clock;
-      }
-    },
-    undefined,
-    (err) => {
-      spinner.textContent = 'Preview unavailable';
-      console.warn('[Hangar viewer]', err);
+    if (animations?.length) {
+      const clock = new THREE.Clock();
+      const mixer = new THREE.AnimationMixer(object);
+      mixer.clipAction(animations[0]).play();
+      scene.userData._mixer = mixer;
+      scene.userData._clock = clock;
     }
-  );
+  };
+
+  const onError = (err) => {
+    spinner.textContent = 'Preview unavailable';
+    console.warn('[Hangar viewer]', err);
+  };
+
+  const url = `/api/assets/${assetId}/file`;
+  if ((ext || '').toLowerCase() === '.fbx') {
+    // FBXLoader passes back the THREE.Group directly; clips live on group.animations.
+    new FBXLoader().load(url, (group) => onLoaded(group, group.animations), undefined, onError);
+  } else {
+    new GLTFLoader().load(url, (gltf) => onLoaded(gltf.scene, gltf.animations), undefined, onError);
+  }
 
   function animate() {
     animId = requestAnimationFrame(animate);

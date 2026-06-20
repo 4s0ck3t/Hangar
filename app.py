@@ -20,6 +20,8 @@ import store
 import scanner
 import thumbs
 
+__version__ = "0.11.0"
+
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
 BLENDER_QUEUE = store.DATA_DIR / "blender_queue.jsonl"
@@ -91,9 +93,11 @@ def index():
 @app.get("/api/state")
 def state():
     return jsonify({
+        "version": __version__,
         "libraries": store.list_libraries(),
         "tags": store.list_tags(),
         "collections": store.list_collections(),
+        "categories": store.list_categories(),
         "counts": store.kind_counts(),
         "blender_queue": str(BLENDER_QUEUE),
         "blender_render": thumbs.blender_available(),
@@ -176,6 +180,8 @@ def list_assets():
         ext=q.get("ext", "").strip(),
         tag=q.get("tag", "").strip(),
         collection=q.get("collection", "").strip(),
+        category=q.get("category", "").strip(),
+        folder=q.get("folder", "").strip(),
         favorite=q.get("favorite") == "1",
         sort=q.get("sort", "name"),
         limit=int(q.get("limit", 300)),
@@ -232,6 +238,15 @@ def collection_membership(asset_id):
     return jsonify({"ok": True})
 
 
+@app.post("/api/assets/<int:asset_id>/category")
+def category_membership(asset_id):
+    data = request.get_json(force=True)
+    store.set_category_membership(
+        data["category"].strip(), asset_id, add=data.get("add", True)
+    )
+    return jsonify({"ok": True, "categories": store.get_asset(asset_id)["categories"]})
+
+
 # ---- tags & collections ---------------------------------------------------
 
 @app.post("/api/assets/batch/tag")
@@ -281,20 +296,49 @@ def new_collection():
     return jsonify({"ok": True, "collections": store.list_collections()})
 
 
+@app.post("/api/categories")
+def new_category():
+    data = request.get_json(force=True)
+    store.create_category(data.get("name", ""), data.get("icon", ""))
+    return jsonify({"ok": True, "categories": store.list_categories()})
+
+
+@app.delete("/api/categories/<int:category_id>")
+def delete_category(category_id):
+    store.remove_category(category_id)
+    return jsonify({"ok": True, "categories": store.list_categories()})
+
+
+@app.post("/api/assets/batch/category")
+def batch_category():
+    data = request.get_json(force=True)
+    ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
+    category = (data.get("category") or "").strip()
+    if not ids or not category:
+        return jsonify({"error": "ids and category required"}), 400
+    for aid in ids:
+        store.set_category_membership(category, aid, add=True)
+    return jsonify({"ok": True, "count": len(ids)})
+
+
 # ---- OS integration -------------------------------------------------------
 
 @app.get("/api/assets/<int:asset_id>/file")
 def serve_asset_file(asset_id):
-    """Stream a GLB/GLTF file to the in-drawer three.js viewer."""
+    """Stream a GLB/GLTF/FBX file to the in-drawer three.js viewer."""
     asset = store.get_asset(asset_id)
     if not asset:
         return "", 404
-    if asset["ext"] not in (".glb", ".gltf"):
-        return jsonify({"error": "Only GLB/GLTF files are viewable"}), 400
+    if asset["ext"] not in (".glb", ".gltf", ".fbx"):
+        return jsonify({"error": "Only GLB/GLTF/FBX files are viewable"}), 400
     path = asset["path"]
     if not os.path.exists(path):
         return "", 404
-    mime = "model/gltf-binary" if asset["ext"] == ".glb" else "model/gltf+json"
+    mime = {
+        ".glb": "model/gltf-binary",
+        ".gltf": "model/gltf+json",
+        ".fbx": "application/octet-stream",
+    }[asset["ext"]]
     return send_file(path, mimetype=mime)
 
 

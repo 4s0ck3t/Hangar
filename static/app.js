@@ -24,7 +24,7 @@ const MODEL_EXT_GROUPS = [
 ];
 
 const state = {
-  filter: { kind: "", ext: "", tag: "", collection: "", favorite: false },
+  filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "", favorite: false },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
 };
 const $ = (s) => document.querySelector(s);
@@ -64,13 +64,14 @@ async function loadState() {
   const s = await api("state");
   renderKindFilters(s.counts);
   renderTagFilters(s.tags);
+  renderCategoryFilters(s.categories || []);
   renderCollectionFilters(s.collections);
   renderLibraries(s.libraries);
-  renderStatusBar(s.counts);
+  renderStatusBar(s.counts, s.version);
   return s;
 }
 
-function renderStatusBar(counts) {
+function renderStatusBar(counts, version) {
   $("#statusSummary").textContent = `${counts.total.toLocaleString()} assets`;
   const parts = [];
   const bk = counts.by_kind || {};
@@ -79,6 +80,7 @@ function renderStatusBar(counts) {
   if (bk.hdri) parts.push(`${bk.hdri} HDRIs`);
   if (bk.material) parts.push(`${bk.material} materials`);
   $("#statusBreakdown").textContent = parts.join("  ·  ");
+  if (version) $("#statusVersion").textContent = `Hangar v${version}`;
 }
 
 function renderKindFilters(counts) {
@@ -156,6 +158,48 @@ function renderTagFilters(tags) {
   }
 }
 
+function renderCategoryFilters(cats) {
+  const ul = $("#categoryFilters"); ul.innerHTML = "";
+  if (!cats.length) {
+    ul.innerHTML = `<li style="color:var(--faint);cursor:default">No categories yet</li>`;
+    return;
+  }
+  for (const c of cats) {
+    const li = document.createElement("li");
+    li.className = "cat-item";
+    if (state.filter.category === c.name) li.classList.add("active");
+    const icon = c.icon ? `<span class="cat-ico">${c.icon}</span>` : `<span class="dot" style="background:var(--k-model)"></span>`;
+    li.innerHTML =
+      icon +
+      `<span class="cat-name">${c.name}</span><span class="count">${c.c}</span>` +
+      `<button class="cat-remove" title="Delete category">&times;</button>`;
+    li.onclick = () => { resetFilter(); state.filter.category = c.name; refresh(); };
+
+    li.querySelector(".cat-remove").onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete category "${c.name}"? Assets stay; only the grouping is removed.`)) return;
+      await api(`categories/${c.id}`, { method: "DELETE" });
+      if (state.filter.category === c.name) resetFilter();
+      await loadState(); refresh();
+    };
+
+    // Drop target: accept dragged model cards into this category.
+    li.addEventListener("dragover", (e) => { e.preventDefault(); li.classList.add("drop-over"); });
+    li.addEventListener("dragleave", () => li.classList.remove("drop-over"));
+    li.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      li.classList.remove("drop-over");
+      const assetId = e.dataTransfer.getData("text/x-hangar-asset-id");
+      if (!assetId) return;
+      await post(`assets/${assetId}/category`, { category: c.name, add: true });
+      toast(`Added to ${c.icon || ""} ${c.name}`.trim(), "success");
+      await loadState();
+    });
+
+    ul.appendChild(li);
+  }
+}
+
 function renderCollectionFilters(cols) {
   const ul = $("#collectionFilters"); ul.innerHTML = "";
   if (!cols.length) {
@@ -198,15 +242,20 @@ function renderLibraries(libs) {
   }
   for (const lib of libs) {
     const li = document.createElement("li");
-    li.title = lib.path;
+    li.className = "lib-item";
+    li.title = `${lib.path}\n(click to show contents)`;
+    if (state.filter.folder === lib.path) li.classList.add("active");
     li.innerHTML =
       `<span class="dot" style="background:var(--faint)"></span>` +
       `<span class="lib-name">${lib.name}</span>` +
       `<button class="lib-remove" title="Remove">&times;</button>`;
+    // Click the folder to filter the grid to everything under it.
+    li.onclick = () => { resetFilter(); state.filter.folder = lib.path; refresh(); };
     li.querySelector(".lib-remove").onclick = async (e) => {
       e.stopPropagation();
       if (!confirm(`Remove "${lib.name}" from Hangar? Files stay on disk.`)) return;
       await api(`libraries/${lib.id}`, { method: "DELETE" });
+      if (state.filter.folder === lib.path) resetFilter();
       await loadState(); refresh();
     };
     ul.appendChild(li);
@@ -214,13 +263,14 @@ function renderLibraries(libs) {
 }
 
 function resetFilter() {
-  state.filter = { kind: "", ext: "", tag: "", collection: "", favorite: false };
+  state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "", favorite: false };
 }
 
 // ---- clear-filter button visibility ---------------------------------------
 function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
-    || state.filter.collection || state.filter.favorite || state.search;
+    || state.filter.collection || state.filter.category || state.filter.folder
+    || state.filter.favorite || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
@@ -249,6 +299,7 @@ function updateBatchBar() {
     <div class="batch-sep"></div>
     <div class="batch-tags">${tags}</div>
     <button class="batch-coll-btn" id="batchCollBtn">+ Collection</button>
+    <button class="batch-cat-btn" id="batchCatBtn">+ Category</button>
     <button class="batch-del-btn" id="batchDelBtn">Remove from Hangar</button>
     <button class="batch-clear" id="batchClearBtn">✕</button>`;
 
@@ -264,6 +315,16 @@ function updateBatchBar() {
     const name = prompt("Add to collection:"); if (!name) return;
     await post("assets/batch/collection", { ids: [...selection], collection: name });
     toast(`Added ${selection.size} asset${selection.size > 1 ? "s" : ""} to "${name}"`, "success");
+    refresh(); loadState();
+  };
+  $("#batchCatBtn").onclick = async () => {
+    const cats = allCategories.length
+      ? allCategories.map(c => `${c.icon || ""}${c.name}`).join(", ")
+      : "";
+    const hint = cats ? ` (existing: ${cats})` : "";
+    const name = prompt(`Add to category${hint}:`); if (!name) return;
+    await post("assets/batch/category", { ids: [...selection], category: name });
+    toast(`Categorised ${selection.size} asset${selection.size > 1 ? "s" : ""} as "${name}"`, "success");
     refresh(); loadState();
   };
   $("#batchDelBtn").onclick = async () => {
@@ -293,7 +354,7 @@ function toggleSelect(id, card) {
 }
 
 // ---- 3D viewer ------------------------------------------------------------
-const VIEWER_EXTS = new Set(['.glb', '.gltf']);
+const VIEWER_EXTS = new Set(['.glb', '.gltf', '.fbx']);
 let _viewerMod = null;
 async function getViewerMod() {
   if (!_viewerMod) _viewerMod = await import('/viewer.js');
@@ -313,6 +374,8 @@ async function refresh() {
   if (state.filter.ext)  p.set("ext", state.filter.ext);
   if (state.filter.tag) p.set("tag", state.filter.tag);
   if (state.filter.collection) p.set("collection", state.filter.collection);
+  if (state.filter.category) p.set("category", state.filter.category);
+  if (state.filter.folder) p.set("folder", state.filter.folder);
   if (state.filter.favorite) p.set("favorite", "1");
   if (state.search) p.set("search", state.search);
   p.set("sort", state.sort);
@@ -328,6 +391,8 @@ async function refresh() {
 function updateActiveLabel(total) {
   let label = state.filter.favorite ? "Favorites"
     : state.filter.tag ? `#${state.filter.tag}`
+    : state.filter.category ? state.filter.category
+    : state.filter.folder ? `📁 ${baseName(state.filter.folder)}`
     : state.filter.collection ? state.filter.collection
     : state.filter.ext ? (() => {
         const grp = MODEL_EXT_GROUPS.find(g => g.exts.join(",") === state.filter.ext);
@@ -516,6 +581,7 @@ async function openDrawer(id, idx) {
   const a = await api(`assets/${id}`);
   const st = await api("state");
   allTags = st.tags;
+  allCategories = st.categories || [];
   const blenderReady = st.blender_render;
   const color = KIND_COLORS[a.kind] || "var(--mute)";
   const ext = a.ext.replace(".", "").toUpperCase();
@@ -552,6 +618,8 @@ async function openDrawer(id, idx) {
       </div>
       <div class="d-section-label">Tags</div>
       <div class="tag-row" id="tagRow"></div>
+      <div class="d-section-label">Category</div>
+      <div id="dCatRow" class="d-cat-row"></div>
       ${(a.collections || []).length ? `
         <div class="d-section-label">Collections</div>
         <div class="d-collections">${(a.collections || []).map(c =>
@@ -570,14 +638,15 @@ async function openDrawer(id, idx) {
       </div>
     </div>`;
 
-  // Load preview: 3D viewer for GLB/GLTF, thumbnail for everything else.
+  // Load preview: 3D viewer for GLB/GLTF/FBX, thumbnail for everything else.
   if (VIEWER_EXTS.has(a.ext)) {
-    getViewerMod().then(mod => mod.startViewer($("#dPreview"), a.id));
+    getViewerMod().then(mod => mod.startViewer($("#dPreview"), a.id, a.ext));
   } else {
     loadPreview(a);
   }
 
   renderTagEditor(a);
+  renderDrawerCategoryEditor(a);
 
   $("#favAct").onclick = async () => {
     const r = await post(`assets/${a.id}/favorite`, { value: !a.favorite });
@@ -690,6 +759,45 @@ function renderTagEditor(a) {
   row.appendChild(add);
 }
 
+let allCategories = [];
+
+function renderDrawerCategoryEditor(a) {
+  const row = $("#dCatRow");
+  if (!row) return;
+  const current = new Set(a.categories || []);
+  row.innerHTML = "";
+  for (const c of allCategories) {
+    const chip = document.createElement("span");
+    chip.className = "chip cat-chip" + (current.has(c.name) ? " on" : "");
+    chip.innerHTML = `${c.icon ? `<span class="cat-ico">${c.icon}</span>` : ""}${c.name}`;
+    chip.title = current.has(c.name) ? "Click to remove from this category" : "Click to add to this category";
+    chip.onclick = async () => {
+      const add = !current.has(c.name);
+      if (add) current.add(c.name); else current.delete(c.name);
+      await post(`assets/${a.id}/category`, { category: c.name, add });
+      a.categories = [...current];
+      renderDrawerCategoryEditor(a);
+      loadState();
+    };
+    row.appendChild(chip);
+  }
+  const add = document.createElement("span");
+  add.className = "chip"; add.style.borderStyle = "dashed";
+  add.textContent = "+ new";
+  add.onclick = async () => {
+    const name = prompt("Category name (e.g. Vehicles):"); if (!name) return;
+    const icon = prompt("Icon (emoji, optional — press Cancel to skip):") || "";
+    await post("categories", { name, icon });
+    allCategories = (await api("state")).categories || [];
+    current.add(name.trim());
+    await post(`assets/${a.id}/category`, { category: name.trim(), add: true });
+    a.categories = [...current];
+    renderDrawerCategoryEditor(a);
+    loadState();
+  };
+  row.appendChild(add);
+}
+
 function closeDrawer() {
   destroyViewerIfActive();
   $("#drawer").classList.remove("open");
@@ -771,6 +879,11 @@ $("#addTagBtn").onclick = async () => {
 $("#addCollectionBtn").onclick = async () => {
   const name = prompt("New collection name:"); if (!name) return;
   await post("collections", { name }); loadState();
+};
+$("#addCategoryBtn").onclick = async () => {
+  const name = prompt("New category name (e.g. Robots):"); if (!name) return;
+  const icon = prompt("Icon emoji (optional — press Cancel to skip):") || "";
+  await post("categories", { name, icon }); loadState();
 };
 
 let searchTimer;

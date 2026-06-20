@@ -35,6 +35,13 @@
 
       <div class="nav-group">
         <div class="nav-label">
+          Categories <button class="mini-add" id="addCategoryBtn" title="New category">+</button>
+        </div>
+        <ul id="categoryFilters" class="filter-list"></ul>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-label">
           Collections <button class="mini-add" id="addCollectionBtn" title="New collection">+</button>
         </div>
         <ul id="collectionFilters" class="filter-list"></ul>
@@ -82,6 +89,7 @@
     </div>
     <div class="status-right">
       <span id="statusBreakdown" class="status-breakdown"></span>
+      <span id="statusVersion" class="status-version" title="Hangar version"></span>
       <button id="rescanBtn" class="rescan">Rescan all</button>
     </div>
   </footer>
