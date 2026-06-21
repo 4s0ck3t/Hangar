@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -186,8 +186,16 @@ def list_assets():
         sort=q.get("sort", "name"),
         limit=int(q.get("limit", 300)),
         offset=int(q.get("offset", 0)),
+        group=q.get("group", "").strip(),
+        set_key=q.get("set_key", "").strip(),
     )
     return jsonify({"assets": assets, "total": total})
+
+
+@app.get("/api/assets/<int:asset_id>/set")
+def asset_set(asset_id):
+    """All texture maps belonging to the same material set as this asset."""
+    return jsonify({"members": store.set_members(asset_id)})
 
 
 @app.get("/api/assets/<int:asset_id>")
@@ -300,7 +308,8 @@ def new_collection():
 def new_category():
     data = request.get_json(force=True)
     store.create_category(
-        data.get("name", ""), data.get("icon", ""), data.get("keywords", "")
+        data.get("name", ""), data.get("icon", ""),
+        data.get("keywords", ""), data.get("kind", ""),
     )
     return jsonify({"ok": True, "categories": store.list_categories()})
 
@@ -413,14 +422,29 @@ def render_model_preview(asset_id):
     if not thumbs.blender_available():
         return jsonify({
             "blender": False,
-            "error": "Blender wasn't found. Install it, or set HANGAR_BLENDER "
-                     "to your blender executable, then restart Hangar.",
+            "error": "Blender wasn't found. Click “Set Blender path” and "
+                     "point Hangar at your blender executable.",
         }), 200
     path = thumbs.render_model_preview(asset)
     if not path:
-        return jsonify({"blender": True,
-                        "error": "Render didn't produce an image."}), 200
+        return jsonify({
+            "blender": True,
+            "error": thumbs.LAST_RENDER_ERROR or "Render didn't produce an image.",
+            "log": str(thumbs.RENDER_LOG),
+        }), 200
     return jsonify({"ok": True})
+
+
+@app.post("/api/settings/blender")
+def set_blender():
+    """Set (or clear) the Blender executable path used for previews."""
+    data = request.get_json(force=True)
+    ok, resolved = thumbs.set_blender_path(data.get("path", ""))
+    if not ok:
+        return jsonify({"ok": False,
+                        "error": "That path doesn't exist."}), 200
+    return jsonify({"ok": True, "blender": resolved,
+                    "available": thumbs.blender_available()})
 
 
 def _open_browser():

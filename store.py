@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS assets (
     stats_done  INTEGER NOT NULL DEFAULT 0,
     favorite    INTEGER NOT NULL DEFAULT 0,
     missing     INTEGER NOT NULL DEFAULT 0,
+    set_key     TEXT NOT NULL DEFAULT '',
+    map_role    TEXT NOT NULL DEFAULT '',
+    map_order   INTEGER NOT NULL DEFAULT 50,
     added_at    REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tags (
@@ -62,7 +65,8 @@ CREATE TABLE IF NOT EXISTS categories (
     name      TEXT UNIQUE NOT NULL,
     icon      TEXT NOT NULL DEFAULT '',
     sort      INTEGER NOT NULL DEFAULT 0,
-    keywords  TEXT NOT NULL DEFAULT ''
+    keywords  TEXT NOT NULL DEFAULT '',
+    kind      TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS asset_categories (
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -75,41 +79,60 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE INDEX IF NOT EXISTS idx_assets_kind ON assets(kind);
 CREATE INDEX IF NOT EXISTS idx_assets_name ON assets(name);
+CREATE INDEX IF NOT EXISTS idx_assets_set_key ON assets(set_key);
 CREATE INDEX IF NOT EXISTS idx_asset_categories_asset ON asset_categories(asset_id);
 """
 
 # Starter taxonomy seeded on first run. Each category carries a keyword list used
-# to auto-suggest a category from an asset's folder/file name during scanning.
-# Users can add their own categories; these are just a sensible base to build on.
+# to auto-suggest a category from an asset's folder/file name during scanning, and
+# a `kind` scope: "model" categories only match models, "hdri" only HDRIs, and ""
+# matches any kind (shared). Users can add their own; these are a sensible base.
 DEFAULT_CATEGORIES = [
-    # (name, icon, [keywords])
-    ("Sci-Fi",       "🚀", ["scifi", "sci-fi", "spaceship", "spacecraft", "space",
-                            "starship", "mech", "robot", "droid", "cyber",
+    # (name, icon, kind, [keywords])
+    ("Sci-Fi",       "🚀", "model", ["scifi", "sci-fi", "spaceship", "spacecraft",
+                            "space", "starship", "mech", "robot", "droid", "cyber",
                             "cyberpunk", "futuristic", "alien", "ufo", "laser"]),
-    ("Buildings",    "🏢", ["building", "buildings", "house", "home", "tower",
+    ("Buildings",    "🏢", "model", ["building", "buildings", "house", "home", "tower",
                             "skyscraper", "apartment", "office"]),
-    ("Architecture", "🏛", ["architecture", "interior", "exterior", "facade",
+    ("Architecture", "🏛", "model", ["architecture", "interior", "exterior", "facade",
                             "room", "kitchen", "bathroom", "stairs", "wall"]),
-    ("Vehicles",     "🚗", ["vehicle", "car", "cars", "truck", "tank", "plane",
+    ("Vehicles",     "🚗", "model", ["vehicle", "car", "cars", "truck", "tank", "plane",
                             "aircraft", "jet", "ship", "boat", "motorcycle",
                             "bike", "bicycle", "train", "bus"]),
-    ("Characters",   "🧍", ["character", "char", "human", "person", "people",
+    ("Characters",   "🧍", "model", ["character", "char", "human", "person", "people",
                             "creature", "monster", "npc", "avatar", "zombie",
                             "soldier"]),
-    ("Weapons",      "🗡", ["weapon", "weapons", "gun", "guns", "rifle", "pistol",
-                            "sword", "blade", "knife", "axe", "firearm", "ammo",
-                            "grenade"]),
-    ("Nature",       "🌲", ["nature", "tree", "trees", "plant", "plants", "rock",
+    ("Weapons",      "🗡", "model", ["weapon", "weapons", "gun", "guns", "rifle",
+                            "pistol", "sword", "blade", "knife", "axe", "firearm",
+                            "ammo", "grenade"]),
+    ("Furniture",    "🛋", "model", ["furniture", "chair", "table", "sofa", "couch",
+                            "desk", "bed", "shelf", "cabinet", "lamp"]),
+    ("Props",        "📦", "model", ["prop", "props", "barrel", "crate", "box",
+                            "container"]),
+    ("Industrial",   "🏭", "model", ["industrial", "machine", "machinery", "pipe",
+                            "pipes", "factory", "mechanical", "engine", "gear"]),
+    ("Fantasy",      "🐉", "model", ["fantasy", "medieval", "castle", "dragon",
+                            "magic", "wizard", "knight", "dungeon"]),
+    ("Food",         "🍎", "model", ["food", "fruit", "drink", "meal", "vegetable",
+                            "bottle"]),
+    # Shared across kinds (a forest model and a forest HDRI both fit here).
+    ("Nature",       "🌲", "", ["nature", "tree", "trees", "plant", "plants", "rock",
                             "rocks", "terrain", "foliage", "grass", "environment",
-                            "landscape", "forest", "flower"]),
-    ("Furniture",    "🛋", ["furniture", "chair", "table", "sofa", "couch", "desk",
-                            "bed", "shelf", "cabinet", "lamp"]),
-    ("Props",        "📦", ["prop", "props", "barrel", "crate", "box", "container"]),
-    ("Industrial",   "🏭", ["industrial", "machine", "machinery", "pipe", "pipes",
-                            "factory", "mechanical", "engine", "gear"]),
-    ("Fantasy",      "🐉", ["fantasy", "medieval", "castle", "dragon", "magic",
-                            "wizard", "knight", "dungeon"]),
-    ("Food",         "🍎", ["food", "fruit", "drink", "meal", "vegetable", "bottle"]),
+                            "landscape", "forest", "flower", "mountain"]),
+    # HDRI environment categories, modelled on Poly Haven's taxonomy.
+    ("Outdoor",      "🌤", "hdri", ["outdoor", "exterior", "outside", "field",
+                            "park", "garden", "courtyard"]),
+    ("Skies",        "☁", "hdri", ["sky", "skies", "cloud", "clouds", "cloudy",
+                            "overcast", "clear"]),
+    ("Indoor",       "🚪", "hdri", ["indoor", "interior", "inside", "room", "hall",
+                            "office", "warehouse"]),
+    ("Studio",       "💡", "hdri", ["studio", "softbox", "photostudio"]),
+    ("Sunrise/Sunset", "🌅", "hdri", ["sunrise", "sunset", "dusk", "dawn", "golden",
+                            "evening", "morning"]),
+    ("Night",        "🌙", "hdri", ["night", "nighttime", "midnight", "stars",
+                            "starry", "moonlit", "moon"]),
+    ("Urban",        "🏙", "hdri", ["urban", "city", "street", "town", "rooftop",
+                            "alley"]),
 ]
 # {category_id: (name, set(keywords))} cache, built lazily from the DB and
 # invalidated whenever a category is created/edited/removed. See _matchers().
@@ -126,10 +149,21 @@ def connect():
 def init_db():
     with connect() as conn:
         conn.executescript(SCHEMA)
-        # Migrate older DBs that predate the per-category keyword column.
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(categories)")}
-        if "keywords" not in cols:
+        # Migrate older DBs that predate newer columns (ALTER is idempotent here
+        # because we guard on the live column set).
+        cat_cols = {r["name"] for r in conn.execute("PRAGMA table_info(categories)")}
+        if "keywords" not in cat_cols:
             conn.execute("ALTER TABLE categories ADD COLUMN keywords TEXT NOT NULL DEFAULT ''")
+        if "kind" not in cat_cols:
+            conn.execute("ALTER TABLE categories ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+        asset_cols = {r["name"] for r in conn.execute("PRAGMA table_info(assets)")}
+        for col, ddl in (
+            ("set_key",   "ALTER TABLE assets ADD COLUMN set_key TEXT NOT NULL DEFAULT ''"),
+            ("map_role",  "ALTER TABLE assets ADD COLUMN map_role TEXT NOT NULL DEFAULT ''"),
+            ("map_order", "ALTER TABLE assets ADD COLUMN map_order INTEGER NOT NULL DEFAULT 50"),
+        ):
+            if col not in asset_cols:
+                conn.execute(ddl)
         # Sensible default tag palette so new users aren't staring at a blank wall.
         defaults = [
             ("hero", "#E8B04B"), ("wip", "#E87D3E"), ("approved", "#3DBE8B"),
@@ -139,19 +173,24 @@ def init_db():
             conn.execute(
                 "INSERT OR IGNORE INTO tags(name, color) VALUES (?, ?)", (name, color)
             )
-        # Seed the starter category taxonomy (Sci-Fi, Buildings, …) with its
-        # keyword rules. On upgrade, back-fill keywords for seeded categories that
-        # are still blank — but never clobber keywords a user has edited.
-        for sort, (name, icon, kws) in enumerate(DEFAULT_CATEGORIES):
+        # Seed the starter category taxonomy (Sci-Fi, Outdoor, …) with its keyword
+        # rules and kind scope. On upgrade, back-fill keywords/kind for seeded
+        # categories that are still blank — but never clobber a user's edits.
+        for sort, (name, icon, kind, kws) in enumerate(DEFAULT_CATEGORIES):
             conn.execute(
-                "INSERT OR IGNORE INTO categories(name, icon, sort, keywords) "
-                "VALUES (?, ?, ?, ?)",
-                (name, icon, sort, ",".join(kws)),
+                "INSERT OR IGNORE INTO categories(name, icon, sort, keywords, kind) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (name, icon, sort, ",".join(kws), kind),
             )
             conn.execute(
                 "UPDATE categories SET keywords=? WHERE name=? AND keywords=''",
                 (",".join(kws), name),
             )
+            if kind:
+                conn.execute(
+                    "UPDATE categories SET kind=? WHERE name=? AND kind=''",
+                    (kind, name),
+                )
     _invalidate_matchers()
 
 
@@ -206,7 +245,11 @@ def list_libraries():
 # ---- assets ---------------------------------------------------------------
 
 def upsert_asset(meta):
-    """meta: dict with path, name, ext, kind, size, mtime."""
+    """meta: dict with path, name, ext, kind, size, mtime, set_key, map_role,
+    map_order (the last three default sensibly when absent)."""
+    set_key = meta.get("set_key") or meta["path"]
+    map_role = meta.get("map_role", "")
+    map_order = meta.get("map_order", 50)
     with connect() as conn:
         existing = conn.execute(
             "SELECT id, mtime FROM assets WHERE path=?", (meta["path"],)
@@ -215,21 +258,23 @@ def upsert_asset(meta):
             # If the file changed on disk, invalidate cached mesh stats.
             stats_reset = meta["mtime"] != existing["mtime"]
             conn.execute(
-                "UPDATE assets SET name=?, ext=?, kind=?, size=?, mtime=?, missing=0"
+                "UPDATE assets SET name=?, ext=?, kind=?, size=?, mtime=?, "
+                "set_key=?, map_role=?, map_order=?, missing=0"
                 + (", stats_done=0, vertices=NULL, faces=NULL" if stats_reset else "")
                 + " WHERE id=?",
                 (meta["name"], meta["ext"], meta["kind"], meta["size"],
-                 meta["mtime"], existing["id"]),
+                 meta["mtime"], set_key, map_role, map_order, existing["id"]),
             )
             return existing["id"]
         cur = conn.execute(
-            "INSERT INTO assets(path, name, ext, kind, size, mtime, added_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO assets(path, name, ext, kind, size, mtime, "
+            "set_key, map_role, map_order, added_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (meta["path"], meta["name"], meta["ext"], meta["kind"],
-             meta["size"], meta["mtime"], time.time()),
+             meta["size"], meta["mtime"], set_key, map_role, map_order, time.time()),
         )
         # Auto-suggest categories for any new asset from its folder/file name.
-        _auto_categorize(conn, cur.lastrowid, meta["path"])
+        _auto_categorize(conn, cur.lastrowid, meta["path"], meta["kind"])
         return cur.lastrowid
 
 
@@ -299,10 +344,16 @@ def model_ext_counts():
 
 
 def query_assets(search="", kind="", ext="", tag="", collection="", category="",
-                 folder="", favorite=False, sort="name", limit=200, offset=0):
+                 folder="", favorite=False, sort="name", limit=200, offset=0,
+                 group="", set_key=""):
     clauses = ["a.missing=0"]
     params = []
     joins = ""
+    if set_key:
+        # Listing the individual files of one texture set — overrides grouping.
+        clauses.append("a.set_key=?")
+        params.append(set_key)
+        group = ""
     if search:
         clauses.append("a.name LIKE ?")
         params.append(f"%{search}%")
@@ -339,30 +390,62 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
         clauses.append("a.path LIKE ?")
         params.append(prefix + os.sep + "%")
 
-    order = {
-        "name": "a.name COLLATE NOCASE ASC",
-        "recent": "a.added_at DESC",
-        "size": "a.size DESC",
-        "modified": "a.mtime DESC",
-    }.get(sort, "a.name COLLATE NOCASE ASC")
+    def order_for(alias):
+        return {
+            "name": f"{alias}.name COLLATE NOCASE ASC",
+            "recent": f"{alias}.added_at DESC",
+            "size": f"{alias}.size DESC",
+            "modified": f"{alias}.mtime DESC",
+        }.get(sort, f"{alias}.name COLLATE NOCASE ASC")
 
     where = " AND ".join(clauses)
-    sql = (f"SELECT DISTINCT a.* FROM assets a {joins} WHERE {where} "
-           f"ORDER BY {order} LIMIT ? OFFSET ?")
-    params.extend([limit, offset])
+
+    if group == "set":
+        # Collapse texture-map sets into one representative tile each. The pick
+        # is the lowest map_order (diffuse beats normal/roughness/…), tie-broken
+        # by id; set_count carries how many maps the set holds.
+        sql = (
+            f"SELECT g.* FROM ("
+            f"  SELECT a.*, "
+            f"    COUNT(*)    OVER (PARTITION BY a.set_key) AS set_count, "
+            f"    ROW_NUMBER() OVER (PARTITION BY a.set_key "
+            f"                       ORDER BY a.map_order, a.id) AS rn "
+            f"  FROM assets a {joins} WHERE {where}"
+            f") g WHERE g.rn = 1 "
+            f"ORDER BY {order_for('g')} LIMIT ? OFFSET ?"
+        )
+        count_sql = (f"SELECT COUNT(DISTINCT a.set_key) c "
+                     f"FROM assets a {joins} WHERE {where}")
+    else:
+        sql = (f"SELECT DISTINCT a.* FROM assets a {joins} WHERE {where} "
+               f"ORDER BY {order_for('a')} LIMIT ? OFFSET ?")
+        count_sql = (f"SELECT COUNT(DISTINCT a.id) c "
+                     f"FROM assets a {joins} WHERE {where}")
 
     with connect() as conn:
-        rows = conn.execute(sql, params).fetchall()
+        rows = conn.execute(sql, params + [limit, offset]).fetchall()
         out = []
         for r in rows:
             d = dict(r)
+            d.setdefault("set_count", 1)
             d["tags"] = _tags_for(conn, r["id"])
             out.append(d)
-        total = conn.execute(
-            f"SELECT COUNT(DISTINCT a.id) c FROM assets a {joins} WHERE {where}",
-            params[:-2],
-        ).fetchone()["c"]
+        total = conn.execute(count_sql, params).fetchone()["c"]
     return out, total
+
+
+def set_members(asset_id):
+    """All assets sharing the texture set of `asset_id`, diffuse-first."""
+    with connect() as conn:
+        row = conn.execute("SELECT set_key FROM assets WHERE id=?", (asset_id,)).fetchone()
+        if not row:
+            return []
+        rows = conn.execute(
+            "SELECT * FROM assets WHERE set_key=? AND missing=0 "
+            "ORDER BY map_order, name COLLATE NOCASE",
+            (row["set_key"],),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def set_favorite(asset_id, value):
@@ -480,24 +563,28 @@ def set_collection_membership(collection_name, asset_id, add=True):
 def list_categories():
     with connect() as conn:
         rows = conn.execute(
-            "SELECT cat.id, cat.name, cat.icon, cat.keywords, COUNT(ac.asset_id) c "
-            "FROM categories cat "
+            "SELECT cat.id, cat.name, cat.icon, cat.keywords, cat.kind, "
+            "COUNT(ac.asset_id) c FROM categories cat "
             "LEFT JOIN asset_categories ac ON ac.category_id=cat.id "
             "GROUP BY cat.id ORDER BY cat.sort, cat.name COLLATE NOCASE"
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def create_category(name, icon="", keywords=""):
+def create_category(name, icon="", keywords="", kind=""):
     name = (name or "").strip()
     if not name:
         return
     keywords = _clean_keywords(keywords)
+    kind = (kind or "").strip().lower()
+    if kind not in ("", "model", "texture", "hdri", "material"):
+        kind = ""
     with connect() as conn:
         nxt = conn.execute("SELECT COALESCE(MAX(sort), -1) + 1 m FROM categories").fetchone()["m"]
         conn.execute(
-            "INSERT OR IGNORE INTO categories(name, icon, sort, keywords) VALUES (?, ?, ?, ?)",
-            (name, icon, nxt, keywords),
+            "INSERT OR IGNORE INTO categories(name, icon, sort, keywords, kind) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (name, icon, nxt, keywords, kind),
         )
     _invalidate_matchers()
 
@@ -558,25 +645,29 @@ def _invalidate_matchers():
 
 
 def _matchers(conn):
-    """{category_id: (name, set(keywords))} built once from the DB and cached.
+    """{category_id: (name, kind, set(keywords))} built once from the DB & cached.
 
     Cache is invalidated whenever categories are created/edited/removed, so
     user-defined categories take part in auto-classification just like the
-    seeded ones. Categories with no keywords are skipped (manual-only).
+    seeded ones. Categories with no keywords are skipped (manual-only). `kind`
+    scopes a rule: "" matches any asset kind, otherwise only that kind.
     """
     global _CATEGORY_MATCHERS
     if _CATEGORY_MATCHERS is None:
         out = {}
-        for r in conn.execute("SELECT id, name, keywords FROM categories").fetchall():
+        for r in conn.execute(
+            "SELECT id, name, keywords, kind FROM categories"
+        ).fetchall():
             kws = {k for k in (r["keywords"] or "").split(",") if k}
             if kws:
-                out[r["id"]] = (r["name"], kws)
+                out[r["id"]] = (r["name"], r["kind"] or "", kws)
         _CATEGORY_MATCHERS = out
     return _CATEGORY_MATCHERS
 
 
-def _match_category_ids(path, matchers):
-    """Category ids whose keywords appear as whole tokens in the asset path.
+def _match_category_ids(path, asset_kind, matchers):
+    """Category ids whose keyword rules match the asset path AND whose kind scope
+    covers this asset's kind.
 
     Splits the lower-cased path into word tokens and matches each keyword as a
     whole token (with simple singular/plural tolerance), so "car_sedan" hits
@@ -590,18 +681,18 @@ def _match_category_ids(path, matchers):
                 or (kw + "s") in tokens
                 or (kw.endswith("s") and kw[:-1] in tokens))
 
-    return [cid for cid, (_name, kws) in matchers.items()
-            if any(hit(kw) for kw in kws)]
+    return [cid for cid, (_name, ckind, kws) in matchers.items()
+            if (not ckind or ckind == asset_kind) and any(hit(kw) for kw in kws)]
 
 
-def _auto_categorize(conn, asset_id, path):
-    """Attach every category whose keyword rules match the asset's path.
+def _auto_categorize(conn, asset_id, path, kind):
+    """Attach every category whose keyword + kind rules match the asset.
 
     Runs inside the caller's transaction (shares `conn`) so the new asset row is
     visible to the foreign-key check. Adds links only; never removes membership a
     user set by hand.
     """
-    for cid in _match_category_ids(path, _matchers(conn)):
+    for cid in _match_category_ids(path, kind, _matchers(conn)):
         conn.execute(
             "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) VALUES (?, ?)",
             (cid, asset_id),
@@ -621,8 +712,10 @@ def auto_categorize_all():
         matchers = _matchers(conn)
         if not matchers:
             return {"links_added": 0, "assets_matched": 0}
-        for a in conn.execute("SELECT id, path FROM assets WHERE missing=0").fetchall():
-            for cid in _match_category_ids(a["path"], matchers):
+        for a in conn.execute(
+            "SELECT id, path, kind FROM assets WHERE missing=0"
+        ).fetchall():
+            for cid in _match_category_ids(a["path"], a["kind"], matchers):
                 cur = conn.execute(
                     "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) "
                     "VALUES (?, ?)", (cid, a["id"]),

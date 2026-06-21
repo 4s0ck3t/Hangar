@@ -156,6 +156,15 @@ button, input, select { font-family: inherit; color: inherit; }
 .filter-list li.cat-item:hover .cat-kw { opacity: 1; }
 .cat-kw:hover { color: var(--k-model); }
 
+/* Per-kind category subheadings (Models / HDRIs / …), Poly Haven style */
+.filter-list li.cat-group-head {
+  cursor: default; padding: 8px 8px 3px; margin-top: 2px;
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--faint);
+}
+.filter-list li.cat-group-head:first-child { margin-top: 0; }
+.filter-list li.cat-group-head:hover { background: none; }
+
 /* ---- status bar ---- */
 .statusbar {
   display: flex; align-items: center; gap: 16px;
@@ -279,6 +288,15 @@ button, input, select { font-family: inherit; color: inherit; }
 .card-tags { display: flex; gap: 4px; margin-left: auto; }
 .card-tags .tdot { width: 6px; height: 6px; border-radius: 50%; }
 
+/* Texture-set count badge (one tile represents many maps) */
+.set-badge {
+  position: absolute; top: 7px; left: 8px; z-index: 1;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .02em;
+  color: var(--ink); background: rgba(10,12,16,.74);
+  border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px;
+  backdrop-filter: blur(2px);
+}
+
 .empty {
   flex: 1; display: flex; flex-direction: column; align-items: center;
   justify-content: center; text-align: center; color: var(--mute); gap: 8px; padding: 40px;
@@ -378,6 +396,27 @@ button, input, select { font-family: inherit; color: inherit; }
 .chip.cat-chip.on { border-color: var(--k-model); }
 .chip .x { color: var(--faint); margin-left: 2px; }
 .d-cat-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Texture-set map list in the drawer */
+.d-maps { display: flex; flex-direction: column; gap: 4px; }
+.map-row {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  background: var(--raised); border: 1px solid var(--line); border-radius: 7px;
+  padding: 5px 9px 5px 5px; cursor: pointer; text-align: left;
+  transition: border-color .12s, background .12s;
+}
+.map-row:hover { border-color: var(--mute); }
+.map-row.active { border-color: var(--k-texture); }
+.map-thumb {
+  width: 34px; height: 34px; border-radius: 4px; object-fit: cover;
+  background: var(--void); flex: none;
+}
+.map-role {
+  flex: 1; font-size: 12px; color: var(--ink); text-transform: capitalize;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.map-ext { font-family: var(--mono); font-size: 10px; color: var(--k-texture); font-weight: 700; }
+.map-size { font-family: var(--mono); font-size: 10px; color: var(--faint); min-width: 48px; text-align: right; }
 
 .d-actions { display: grid; gap: 8px; margin-top: 20px; }
 .act {

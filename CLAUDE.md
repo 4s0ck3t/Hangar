@@ -26,10 +26,18 @@ Stack: **Python + Flask** backend, **SQLite** index, **vanilla-JS** frontend (no
 - **Index:** add folder → `store.add_library` → background `_run_scan` (count → walk → `upsert_asset`) → status-bar polls `/api/scan/status`.
 - **Thumbnails:** `/api/thumb/<id>` → `thumbs.get_or_make` → cached JPEG or 404 (UI draws a format badge — grid never shows broken images).
 - **Send to Blender:** `/api/assets/<id>/send-blender` appends a JSONL line to the queue file; the add-on tails it and imports into the open scene.
-- **.blend preview:** embedded thumbnail is read instantly on scan; if absent, drawer "Render preview" → `/api/assets/<id>/render-blend` → headless Blender Workbench render.
+- **.blend preview:** embedded thumbnail is read instantly on scan; if absent, drawer "Render preview" → `/api/assets/<id>/render-blend` → headless Blender Workbench render. On failure the endpoint returns the real reason (`thumbs.LAST_RENDER_ERROR`, full output in `~/.hangar/last_render.log`); if Blender isn't found the drawer offers **Set Blender path…** → `POST /api/settings/blender` (persisted in `settings`, re-checked via `reset_blender_cache`).
+
+## Texture sets (Poly Haven–style collapsing)
+A material ships as many maps sharing a base name (`wood_diffuse`, `wood_normal`, `wood_rough`…). `scanner.texture_set_info` strips role + resolution tokens (`MAP_ROLES`, `_RES_TOKEN`) to recover the shared base and keys it to the folder → `set_key`, plus `map_role` and `map_order` (diffuse=0 sorts first). Stored on `assets`. `query_assets(group="set")` uses window functions (`ROW_NUMBER`/`COUNT OVER PARTITION BY set_key`) to return one representative tile per set with `set_count`; the frontend always passes `group=set` (non-texture kinds have a unique `set_key`, so they pass through as 1). The drawer lists all maps via `/api/assets/<id>/set` (`store.set_members`); clicking a map swaps the preview.
 
 ## Auto-categorization (keyword rule engine)
-Connecter-style rule-based classification — deterministic, no ML.
+Connecter-style rule-based classification — deterministic, no ML. Categories carry a
+`kind` scope (`model`/`hdri`/`texture`/`material`, or `""` = shared): a scoped rule only
+matches assets of that kind, so HDRI categories (Outdoor, Skies, Indoor, Studio,
+Sunrise/Sunset, Night, Urban — modelled on Poly Haven) never collect models and vice
+versa. The sidebar renders categories grouped under per-kind subheadings and, when a kind
+filter is active, shows only that kind's categories plus the shared group.
 - Each row in `categories` has a `keywords` column (comma-separated). `_matchers(conn)`
   builds & caches `{category_id: (name, set(keywords))}` from the DB; the cache is
   invalidated (`_invalidate_matchers`) on any category create/edit/remove so user

@@ -158,13 +158,39 @@ function renderTagFilters(tags) {
   }
 }
 
+// Poly Haven keeps a separate category list per asset type. Categories carry a
+// `kind` scope ("model" / "hdri" / "texture" / "material", or "" = shared); we
+// render them grouped under those headings. When a kind filter is active only
+// that kind's categories (plus shared) are shown, mirroring Poly Haven's tabs.
+const CAT_GROUPS = [
+  { kind: "model",    label: "Models" },
+  { kind: "hdri",     label: "HDRIs" },
+  { kind: "texture",  label: "Textures" },
+  { kind: "material", label: "Materials" },
+  { kind: "",         label: "Shared" },
+];
+
 function renderCategoryFilters(cats) {
   const ul = $("#categoryFilters"); ul.innerHTML = "";
   if (!cats.length) {
     ul.innerHTML = `<li style="color:var(--faint);cursor:default">No categories yet</li>`;
     return;
   }
-  for (const c of cats) {
+  const activeKind = state.filter.kind;
+  for (const grp of CAT_GROUPS) {
+    // Scope to the active kind: show its own group plus the shared group.
+    if (activeKind && grp.kind && grp.kind !== activeKind) continue;
+    const inGroup = cats.filter((c) => (c.kind || "") === grp.kind);
+    if (!inGroup.length) continue;
+    const head = document.createElement("li");
+    head.className = "cat-group-head";
+    head.textContent = grp.label;
+    ul.appendChild(head);
+    for (const c of inGroup) ul.appendChild(buildCategoryItem(c));
+  }
+}
+
+function buildCategoryItem(c) {
     const li = document.createElement("li");
     li.className = "cat-item";
     if (state.filter.category === c.name) li.classList.add("active");
@@ -177,7 +203,15 @@ function renderCategoryFilters(cats) {
       `<span class="cat-name">${c.name}</span><span class="count">${c.c}</span>` +
       `<button class="cat-kw" title="${kwTitle}">✎</button>` +
       `<button class="cat-remove" title="Delete category">&times;</button>`;
-    li.onclick = () => { resetFilter(); state.filter.category = c.name; refresh(); };
+    // Keep the current kind context when drilling into a category (Poly Haven
+    // stays on the HDRI tab when you pick an HDRI category).
+    li.onclick = () => {
+      const k = state.filter.kind;
+      resetFilter();
+      state.filter.kind = (c.kind && c.kind === k) ? k : (c.kind || "");
+      state.filter.category = c.name;
+      refresh();
+    };
 
     li.querySelector(".cat-kw").onclick = async (e) => {
       e.stopPropagation();
@@ -214,8 +248,7 @@ function renderCategoryFilters(cats) {
       await loadState();
     });
 
-    ul.appendChild(li);
-  }
+    return li;
 }
 
 function renderCollectionFilters(cols) {
@@ -397,6 +430,9 @@ async function refresh() {
   if (state.filter.favorite) p.set("favorite", "1");
   if (state.search) p.set("search", state.search);
   p.set("sort", state.sort);
+  // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each.
+  // Non-texture kinds have a unique set_key, so they pass through untouched.
+  p.set("group", "set");
 
   const data = await api("assets?" + p.toString());
   currentAssets = data.assets;
@@ -429,10 +465,15 @@ function buildCard(a, i) {
   const ext = a.ext.replace(".", "").toUpperCase();
   const tagDots = (a.tags || []).slice(0, 4)
     .map((t) => `<span class="tdot" style="background:${t.color}"></span>`).join("");
+  // Texture sets collapse many maps into one tile — show how many it represents.
+  const setBadge = (a.set_count > 1)
+    ? `<span class="set-badge" title="${a.set_count} texture maps in this set">⛃ ${a.set_count} maps</span>`
+    : "";
   card.innerHTML = `
     <div class="card-thumb">
       <span class="kind-stripe" style="background:${color}"></span>
       <span class="fav-pin">●</span>
+      ${setBadge}
       <div class="badge-tile">
         <span class="badge-ext" style="color:${color}">${ext}</span>
       </div>
@@ -634,6 +675,7 @@ async function openDrawer(id, idx) {
         <div><div class="spec-k">Vertices</div><div class="spec-v">${fmtNum(a.vertices)}</div></div>
         <div><div class="spec-k">Faces</div><div class="spec-v">${fmtNum(a.faces)}</div></div>
       </div>
+      <div id="dMaps"></div>
       <div class="d-section-label">Tags</div>
       <div class="tag-row" id="tagRow"></div>
       <div class="d-section-label">Category</div>
@@ -651,6 +693,8 @@ async function openDrawer(id, idx) {
           <span class="act-ico">⤴</span> <span class="act-label">Send to Blender</span></button>` : ""}
         ${canRender ? `<button class="act" id="renderAct">
           <span class="act-ico">◳</span> <span class="act-label">Render preview${blenderReady ? "" : " (Blender not found)"}</span></button>` : ""}
+        ${canRender && !blenderReady ? `<button class="act" id="setBlenderAct">
+          <span class="act-ico">⚙</span> <span class="act-label">Set Blender path…</span></button>` : ""}
         <button class="act" id="revealAct"><span class="act-ico">⊞</span> Reveal in file manager</button>
         <button class="act" id="copyAct"><span class="act-ico">⧉</span> Copy file path</button>
       </div>
@@ -665,6 +709,7 @@ async function openDrawer(id, idx) {
 
   renderTagEditor(a);
   renderDrawerCategoryEditor(a);
+  if (a.kind === "texture") renderTextureMaps(a);
 
   $("#favAct").onclick = async () => {
     const r = await post(`assets/${a.id}/favorite`, { value: !a.favorite });
@@ -705,11 +750,21 @@ async function openDrawer(id, idx) {
         const cardImg = $(`#grid .card[data-id="${a.id}"] img`);
         if (cardImg) cardImg.src = thumbUrl(a.id);
         toast("Preview rendered.", "success");
+      } else if (r.blender === false) {
+        // Blender wasn't found — offer to point Hangar at it right away.
+        toast(r.error || "Blender not found.", "error");
+        if (confirm((r.error || "Blender wasn't found.") +
+            "\n\nSet the path to your Blender executable now?")) {
+          setBlenderPath(a.id, idx);
+        }
       } else {
         toast(r.error || "Render failed.", "error");
       }
     };
   }
+
+  const setBlenderBtn = $("#setBlenderAct");
+  if (setBlenderBtn) setBlenderBtn.onclick = () => setBlenderPath(a.id, idx);
 
   $("#revealAct").onclick = async () => {
     const r = await post(`assets/${a.id}/reveal`);
@@ -816,6 +871,44 @@ function renderDrawerCategoryEditor(a) {
   row.appendChild(add);
 }
 
+// Texture sets bundle several maps (diffuse, normal, roughness…). Show them all
+// as a compact list under the preview; clicking a map swaps the preview image.
+async function renderTextureMaps(a) {
+  const host = $("#dMaps");
+  if (!host) return;
+  const r = await api(`assets/${a.id}/set`);
+  const members = r.members || [];
+  if (members.length <= 1) return;  // a lone texture isn't a set — nothing to show
+  host.innerHTML =
+    `<div class="d-section-label">Maps · ${members.length}</div>` +
+    `<div class="d-maps">` +
+    members.map((m) => {
+      const role = m.map_role || "other";
+      const mext = m.ext.replace(".", "").toUpperCase();
+      const active = m.id === a.id ? " active" : "";
+      return `<button class="map-row${active}" data-id="${m.id}" title="${m.path}">
+        <img class="map-thumb" src="${thumbUrl(m.id)}" alt="" loading="lazy" />
+        <span class="map-role">${role}</span>
+        <span class="map-ext">${mext}</span>
+        <span class="map-size">${fmtSize(m.size)}</span>
+      </button>`;
+    }).join("") +
+    `</div>`;
+  host.querySelectorAll(".map-row").forEach((btn) => {
+    btn.onclick = () => {
+      const id = Number(btn.dataset.id);
+      const pv = new Image();
+      pv.onload = () => {
+        const ph = $("#dPreview");
+        if (ph) { ph.innerHTML = ""; ph.appendChild(pv); }
+      };
+      pv.src = thumbUrl(id);
+      host.querySelectorAll(".map-row").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+    };
+  });
+}
+
 function closeDrawer() {
   destroyViewerIfActive();
   $("#drawer").classList.remove("open");
@@ -830,6 +923,27 @@ function isTyping(el) {
   if (!el) return false;
   const tag = el.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable;
+}
+
+// ---- Blender path ---------------------------------------------------------
+// Lets the user point Hangar at their Blender executable when auto-discovery
+// failed, so on-demand "Render preview" works. Re-opens the drawer on success
+// so the button state (and blender_render flag) refreshes.
+async function setBlenderPath(reopenId, reopenIdx) {
+  const eg = navigator.platform.startsWith("Win")
+    ? "e.g. C:\\Program Files\\Blender Foundation\\Blender 4.2\\blender.exe"
+    : "e.g. /usr/bin/blender  or  /Applications/Blender.app/Contents/MacOS/Blender";
+  const path = prompt("Full path to your Blender executable:\n" + eg);
+  if (path === null) return;
+  const r = await post("settings/blender", { path: path.trim() });
+  if (r.ok && r.available) {
+    toast("Blender path set — render away.", "success");
+    if (reopenId != null) openDrawer(reopenId, reopenIdx);
+  } else if (r.ok) {
+    toast("Saved, but that file isn't a working Blender.", "error");
+  } else {
+    toast(r.error || "That path doesn't exist.", "error");
+  }
 }
 
 // ---- folder picking + scanning -------------------------------------------
@@ -901,12 +1015,17 @@ $("#addCollectionBtn").onclick = async () => {
 $("#addCategoryBtn").onclick = async () => {
   const name = prompt("New category name (e.g. Robots):"); if (!name) return;
   const icon = prompt("Icon emoji (optional — press Cancel to skip):") || "";
+  const kindRaw = (prompt(
+    "Which asset type is this category for?\n" +
+    "model / hdri / texture / material — or leave blank for shared (any type)."
+  ) || "").trim().toLowerCase();
+  const kind = ["model", "hdri", "texture", "material"].includes(kindRaw) ? kindRaw : "";
   const keywords = prompt(
     "Auto-match keywords (comma-separated, optional).\n" +
     "Any asset whose folder/file name contains one of these is auto-filed here.\n" +
     "e.g. robot, droid, mech"
   ) || "";
-  await post("categories", { name, icon, keywords });
+  await post("categories", { name, icon, kind, keywords });
   if (keywords.trim()) await post("categories/auto", {});
   loadState();
 };

@@ -6,9 +6,57 @@ counts) is computed lazily on first asset open and cached in the DB.
 """
 
 import os
+import re
 from pathlib import Path
 
 import store
+
+# Texture map-role detection. A material is usually delivered as several maps
+# sharing a base name (wood_diffuse, wood_normal, wood_roughness…). We strip the
+# role + resolution tokens to recover that shared base so the maps collapse into
+# one tile, and remember the role + a sort order (lower = better thumbnail, so the
+# colour/diffuse map represents the set).
+MAP_ROLES = {
+    # token: (canonical role, order)
+    "diffuse": ("diffuse", 0), "diff": ("diffuse", 0), "albedo": ("diffuse", 0),
+    "alb": ("diffuse", 0), "basecolor": ("diffuse", 0), "color": ("diffuse", 0),
+    "col": ("diffuse", 0), "colour": ("diffuse", 0),
+    "emission": ("emission", 5), "emissive": ("emission", 5), "emit": ("emission", 5),
+    "glow": ("emission", 5),
+    "specular": ("specular", 10), "spec": ("specular", 10),
+    "gloss": ("gloss", 12), "glossiness": ("gloss", 12),
+    "ao": ("ao", 15), "occlusion": ("ao", 15), "ambientocclusion": ("ao", 15),
+    "occ": ("ao", 15),
+    "roughness": ("roughness", 20), "rough": ("roughness", 20), "rgh": ("roughness", 20),
+    "metallic": ("metallic", 22), "metalness": ("metallic", 22), "metal": ("metallic", 22),
+    "met": ("metallic", 22),
+    "normal": ("normal", 25), "nrm": ("normal", 25), "nor": ("normal", 25),
+    "norm": ("normal", 25), "normalgl": ("normal", 25), "normaldx": ("normal", 25),
+    "displacement": ("displacement", 30), "disp": ("displacement", 30),
+    "height": ("displacement", 30), "bump": ("displacement", 30),
+    "opacity": ("opacity", 35), "alpha": ("opacity", 35), "mask": ("opacity", 35),
+    "transparency": ("opacity", 35),
+}
+_RES_TOKEN = re.compile(r"^\d+k$")  # resolution suffix like 2k / 4k / 8k
+
+
+def texture_set_info(folder, name_noext):
+    """(set_key, map_role, map_order) for a texture file.
+
+    Splits the base name into tokens, lifts out the *last* recognised map-role
+    token (suffix convention) plus any resolution tokens, and keys the remaining
+    base to its folder so a material's maps share one set_key.
+    """
+    tokens = [t for t in re.split(r"[^a-z0-9]+", name_noext.lower()) if t]
+    role, order = "", 50
+    for t in tokens:  # last match wins — role tokens are conventionally suffixes
+        if t in MAP_ROLES:
+            role, order = MAP_ROLES[t]
+    base = [t for t in tokens
+            if t not in MAP_ROLES and not _RES_TOKEN.match(t)]
+    set_base = "_".join(base) if base else "_".join(tokens)
+    set_key = os.path.normpath(folder).lower() + "|" + set_base
+    return set_key, role, order
 
 # Extension -> asset kind. Order of dict groups documents intent.
 MODEL_EXTS = {
@@ -76,14 +124,20 @@ def scan_library(library_path, on_file=None):
                 st = os.stat(full)
             except OSError:
                 continue
+            name_noext = os.path.splitext(fname)[0]
+            kind = EXT_KIND[ext]
             meta = {
                 "path": full,
-                "name": os.path.splitext(fname)[0],
+                "name": name_noext,
                 "ext": ext,
-                "kind": EXT_KIND[ext],
+                "kind": kind,
                 "size": st.st_size,
                 "mtime": st.st_mtime,
             }
+            # Group texture maps of the same material into one set.
+            if kind == "texture":
+                sk, role, order = texture_set_info(root, name_noext)
+                meta["set_key"], meta["map_role"], meta["map_order"] = sk, role, order
             asset_id = store.upsert_asset(meta)
             seen.add(asset_id)
             found += 1

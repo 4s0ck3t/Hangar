@@ -344,9 +344,17 @@ def find_blender():
         sysname = platform.system()
         pats = []
         if sysname == "Windows":
+            pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+            pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+            local = os.environ.get("LOCALAPPDATA", "")
             pats = [
-                r"C:\Program Files\Blender Foundation\Blender*\blender.exe",
-                r"C:\Program Files (x86)\Steam\steamapps\common\Blender\blender.exe",
+                os.path.join(pf, r"Blender Foundation\Blender*\blender.exe"),
+                os.path.join(pf, r"Blender Foundation\Blender\blender.exe"),
+                os.path.join(pf86, r"Steam\steamapps\common\Blender\blender.exe"),
+                os.path.join(pf, r"Steam\steamapps\common\Blender\blender.exe"),
+                # Microsoft Store / winget installs land under the user profile.
+                os.path.join(local, r"Microsoft\WindowsApps\blender.exe"),
+                os.path.join(local, r"Programs\Blender Foundation\Blender*\blender.exe"),
             ]
         elif sysname == "Darwin":
             pats = [
@@ -371,6 +379,19 @@ def blender_available():
 
 def reset_blender_cache():
     _BLENDER_CACHE.update(path=None, checked=False)
+
+
+def set_blender_path(path):
+    """Persist a user-chosen Blender executable and re-check discovery.
+
+    Returns (ok, resolved_path_or_None). An empty path clears the override and
+    falls back to auto-discovery."""
+    path = (path or "").strip().strip('"')
+    if path and not os.path.exists(path):
+        return False, None
+    store.set_setting("blender_path", path)
+    reset_blender_cache()
+    return True, find_blender()
 
 
 # Model formats Hangar can hand to Blender for an on-demand preview render.
@@ -492,12 +513,54 @@ main()
 '''
 
 
+# Populated with a human-readable reason whenever the last render failed, so the
+# UI/endpoint can tell the user *why* instead of a generic failure. Full Blender
+# output is also written to ~/.hangar/last_render.log for deeper debugging.
+LAST_RENDER_ERROR = None
+RENDER_LOG = store.DATA_DIR / "last_render.log"
+
+
+def _record_render_log(blender, model_path, proc, exc=None):
+    """Persist the Blender invocation + its output to the render log; return a
+    short error summary (or None if it looks like it succeeded)."""
+    global LAST_RENDER_ERROR
+    parts = [f"blender: {blender}", f"model: {model_path}"]
+    if exc is not None:
+        parts.append(f"exception: {exc!r}")
+    if proc is not None:
+        parts.append(f"returncode: {proc.returncode}")
+        parts.append("--- stdout ---\n" + (proc.stdout or ""))
+        parts.append("--- stderr ---\n" + (proc.stderr or ""))
+    text = "\n".join(parts)
+    try:
+        RENDER_LOG.write_text(text, encoding="utf-8")
+    except Exception:
+        pass
+    # Build a concise reason: the last non-empty line of Blender's output is
+    # usually the actual error (e.g. "Error: unable to open … import failed").
+    if exc is not None:
+        LAST_RENDER_ERROR = f"Couldn't launch Blender: {exc}"
+        return LAST_RENDER_ERROR
+    tail = ""
+    if proc is not None:
+        for line in reversed(((proc.stderr or "") + (proc.stdout or "")).splitlines()):
+            if line.strip():
+                tail = line.strip()
+                break
+    LAST_RENDER_ERROR = tail or "Blender ran but produced no image."
+    return LAST_RENDER_ERROR
+
+
 def render_model(model_path, out_jpg):
     """Render any Blender-importable model (or open a .blend) in a background
     Blender process and save the result to the JPEG cache path. Best-effort;
-    returns True on success."""
+    returns True on success. On failure, sets LAST_RENDER_ERROR and writes full
+    Blender output to RENDER_LOG."""
+    global LAST_RENDER_ERROR
     blender = find_blender()
     if not blender:
+        LAST_RENDER_ERROR = ("Blender wasn't found. Install Blender, or set its "
+                             "path in Hangar, then try again.")
         return False
     from PIL import Image
     with tempfile.TemporaryDirectory() as td:
@@ -506,19 +569,26 @@ def render_model(model_path, out_jpg):
         with open(script, "w", encoding="utf-8") as fh:
             fh.write(_MODEL_RENDER_SCRIPT)
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 [blender, "-b", "-P", script, "--", model_path, png],
-                timeout=180, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=180, capture_output=True, text=True,
             )
-        except Exception:
+        except Exception as e:
+            _record_render_log(blender, model_path, None, exc=e)
             return False
         if os.path.exists(png):
             try:
                 with Image.open(png) as img:
-                    return _save_downscaled(img, out_jpg)
-            except Exception:
+                    ok = _save_downscaled(img, out_jpg)
+                if ok:
+                    LAST_RENDER_ERROR = None
+                    return True
+            except Exception as e:
+                _record_render_log(blender, model_path, proc, exc=e)
                 return False
-    return False
+        # No PNG (or save failed) — surface why.
+        _record_render_log(blender, model_path, proc)
+        return False
 
 
 # Backwards-compatible alias — .blend rendering is just the general path.
