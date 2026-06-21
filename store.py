@@ -171,6 +171,29 @@ def init_db():
         # Safe now that set_key is guaranteed to exist (fresh CREATE TABLE or the
         # ALTER above). Must come after the migration — see the SCHEMA note.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_set_key ON assets(set_key)")
+        # One-time backfill: rows indexed before set_key existed migrated in with
+        # set_key='' and would collapse into a single group=set tile. Give every
+        # asset its unique path, then re-derive proper map-set grouping for
+        # textures so existing libraries group correctly without a manual rescan.
+        done = conn.execute(
+            "SELECT 1 FROM settings WHERE key='set_key_backfilled'").fetchone()
+        if not done:
+            conn.execute("UPDATE assets SET set_key=path "
+                         "WHERE set_key IS NULL OR set_key=''")
+            try:
+                import scanner  # lazy: avoids an import cycle at module load
+                for r in conn.execute(
+                        "SELECT id, path FROM assets WHERE kind='texture'").fetchall():
+                    folder = os.path.dirname(r["path"])
+                    name_noext = os.path.splitext(os.path.basename(r["path"]))[0]
+                    sk, role, order = scanner.texture_set_info(folder, name_noext)
+                    conn.execute(
+                        "UPDATE assets SET set_key=?, map_role=?, map_order=? WHERE id=?",
+                        (sk, role, order, r["id"]))
+            except Exception:
+                pass  # path-based set_key already prevents the collapse
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('set_key_backfilled','1')")
         # Sensible default tag palette so new users aren't staring at a blank wall.
         defaults = [
             ("hero", "#E8B04B"), ("wip", "#E87D3E"), ("approved", "#3DBE8B"),
@@ -418,17 +441,21 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
         # Collapse texture-map sets into one representative tile each. The pick
         # is the lowest map_order (diffuse beats normal/roughness/…), tie-broken
         # by id; set_count carries how many maps the set holds.
+        # An empty set_key (e.g. pre-set_key rows migrated in before a re-scan)
+        # must NOT collapse together — fall back to the unique path so each such
+        # asset stays its own tile.
+        gkey = "(CASE WHEN a.set_key IS NULL OR a.set_key='' THEN a.path ELSE a.set_key END)"
         sql = (
             f"SELECT g.* FROM ("
             f"  SELECT a.*, "
-            f"    COUNT(*)    OVER (PARTITION BY a.set_key) AS set_count, "
-            f"    ROW_NUMBER() OVER (PARTITION BY a.set_key "
+            f"    COUNT(*)    OVER (PARTITION BY {gkey}) AS set_count, "
+            f"    ROW_NUMBER() OVER (PARTITION BY {gkey} "
             f"                       ORDER BY a.map_order, a.id) AS rn "
             f"  FROM assets a {joins} WHERE {where}"
             f") g WHERE g.rn = 1 "
             f"ORDER BY {order_for('g')} LIMIT ? OFFSET ?"
         )
-        count_sql = (f"SELECT COUNT(DISTINCT a.set_key) c "
+        count_sql = (f"SELECT COUNT(DISTINCT {gkey}) c "
                      f"FROM assets a {joins} WHERE {where}")
     else:
         sql = (f"SELECT DISTINCT a.* FROM assets a {joins} WHERE {where} "
