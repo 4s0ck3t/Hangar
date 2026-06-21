@@ -50,9 +50,21 @@ import store  # noqa: E402  (data dir / log path)
 _LOG_PATH = store.DATA_DIR / "desktop.log"
 
 
+def _safe_write(stream, text):
+    """stdout/stderr are None in a --noconsole PyInstaller build, so guard every
+    write. Never raise from logging."""
+    if stream is None:
+        return
+    try:
+        stream.write(text)
+    except Exception:
+        pass
+
+
 def _log(msg):
-    """Append a line to ~/.hangar/desktop.log and stderr, so the window-strategy
-    decisions + any backend error are recoverable from a frozen --noconsole build."""
+    """Append a line to ~/.hangar/desktop.log (and stderr if present), so the
+    window-strategy decisions + any backend error are recoverable from a frozen
+    --noconsole build where stderr is None."""
     line = f"[Hangar] {msg}"
     try:
         store.DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -60,7 +72,7 @@ def _log(msg):
             fh.write(line + "\n")
     except Exception:
         pass
-    sys.stderr.write(line + "\n")
+    _safe_write(sys.stderr, line + "\n")
 
 
 class Api:
@@ -101,8 +113,8 @@ def _selftest():
             fh.write(msg + "\n")
     except Exception:
         pass
-    sys.stderr.write(msg + "\n")
-    sys.stdout.write(msg + "\n")
+    _safe_write(sys.stderr, msg + "\n")
+    _safe_write(sys.stdout, msg + "\n")
     return code
 
 
@@ -194,10 +206,8 @@ def _launch_app_window(url):
 
 
 def _run_in_default_browser(url):
-    sys.stderr.write(
-        f"[Hangar] Opening in your default browser: {url}\n"
-        f"         (Quit Hangar from your taskbar / Task Manager when done.)\n"
-    )
+    _log(f"Opening in your default browser: {url} "
+         "(quit Hangar from the taskbar / Task Manager when done)")
     try:
         webbrowser.open(url)
     except Exception:
