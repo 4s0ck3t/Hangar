@@ -354,48 +354,55 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
                  group="", set_key=""):
     clauses = ["a.missing=0"]
-    params = []
     joins = ""
+    # Placeholders in the final SQL appear JOINs-first (text precedes WHERE), so
+    # params must be ordered the same way. Keep join params and where-clause
+    # params in separate lists and concatenate joins-first — appending to one
+    # flat list in code order silently mis-binds any join+clause combination.
+    join_params = []
+    where_params = []
     if set_key:
         # Listing the individual files of one texture set — overrides grouping.
         clauses.append("a.set_key=?")
-        params.append(set_key)
+        where_params.append(set_key)
         group = ""
     if search:
         clauses.append("a.name LIKE ?")
-        params.append(f"%{search}%")
+        where_params.append(f"%{search}%")
     if kind:
         clauses.append("a.kind=?")
-        params.append(kind)
+        where_params.append(kind)
     if ext:
         # ext may be comma-separated for grouped formats (e.g. ".glb,.gltf")
         exts = [e.strip() for e in ext.split(",") if e.strip()]
         if len(exts) == 1:
             clauses.append("a.ext=?")
-            params.append(exts[0])
+            where_params.append(exts[0])
         elif len(exts) > 1:
             placeholders = ",".join("?" * len(exts))
             clauses.append(f"a.ext IN ({placeholders})")
-            params.extend(exts)
+            where_params.extend(exts)
     if favorite:
         clauses.append("a.favorite=1")
     if tag:
         joins += (" JOIN asset_tags fat ON fat.asset_id=a.id "
                   " JOIN tags ft ON ft.id=fat.tag_id AND ft.name=?")
-        params.append(tag)
+        join_params.append(tag)
     if collection:
         joins += (" JOIN collection_assets fca ON fca.asset_id=a.id "
                   " JOIN collections fc ON fc.id=fca.collection_id AND fc.name=?")
-        params.append(collection)
+        join_params.append(collection)
     if category:
         joins += (" JOIN asset_categories fac ON fac.asset_id=a.id "
                   " JOIN categories fcat ON fcat.id=fac.category_id AND fcat.name=?")
-        params.append(category)
+        join_params.append(category)
     if folder:
         # Match every asset living under this folder root (any depth).
         prefix = folder.rstrip("/\\")
         clauses.append("a.path LIKE ?")
-        params.append(prefix + os.sep + "%")
+        where_params.append(prefix + os.sep + "%")
+
+    params = join_params + where_params
 
     def order_for(alias):
         return {
