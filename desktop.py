@@ -45,6 +45,22 @@ def _hint_pythonnet_pydll():
 _hint_pythonnet_pydll()
 
 import app as backend  # noqa: E402  (after env flag so /api/state reports desktop mode)
+import store  # noqa: E402  (data dir / log path)
+
+_LOG_PATH = store.DATA_DIR / "desktop.log"
+
+
+def _log(msg):
+    """Append a line to ~/.hangar/desktop.log and stderr, so the window-strategy
+    decisions + any backend error are recoverable from a frozen --noconsole build."""
+    line = f"[Hangar] {msg}"
+    try:
+        store.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        pass
+    sys.stderr.write(line + "\n")
 
 
 class Api:
@@ -93,22 +109,38 @@ def _selftest():
 # ---- window strategies ----------------------------------------------------
 def _try_pywebview(url):
     """Open the real native window. Returns True if it ran (and the user closed
-    it), False if the backend couldn't start so we should fall back."""
+    it), False if the backend couldn't start so we should fall back. The full
+    failure (the actual reason WebView2 didn't come up) is written to
+    ~/.hangar/desktop.log so it's recoverable from a --noconsole build."""
     try:
         import webview
-    except Exception as e:
-        sys.stderr.write(f"[Hangar] pywebview unavailable: {e!r}\n")
+    except Exception:
+        _log("pywebview import failed:\n" + traceback.format_exc())
         return False
+
+    def _ready(w):
+        try:
+            w.maximize()
+        except Exception:
+            _log("maximize failed (non-fatal):\n" + traceback.format_exc())
+
     try:
+        webview_ver = getattr(webview, "__version__", "?")
+        _log(f"pywebview {webview_ver}: creating window")
         window = webview.create_window(
             "Hangar", url, js_api=Api(),
             width=1320, height=860, min_size=(960, 620),
             background_color="#131418",
         )
-        webview.start(lambda w: w.maximize(), window)
+        # Force the EdgeChromium (WebView2) backend so a failure raises here with
+        # the real reason instead of pywebview silently trying a dead backend.
+        _log("starting pywebview (gui=edgechromium)")
+        webview.start(_ready, window, gui="edgechromium")
+        _log("native window closed normally")
         return True
-    except Exception as e:
-        sys.stderr.write(f"[Hangar] native webview failed, falling back: {e!r}\n")
+    except Exception:
+        _log("native webview FAILED — falling back to Edge --app:\n"
+             + traceback.format_exc())
         return False
 
 
@@ -145,15 +177,17 @@ def _find_chromium():
 def _launch_app_window(url):
     browser = _find_chromium()
     if not browser:
+        _log("no Chromium browser found for --app fallback")
         return False
     profile = os.path.join(tempfile.gettempdir(), "hangar-app-profile")
     try:
+        _log(f"launching Edge/Chrome --app window via {browser}")
         proc = subprocess.Popen([
             browser, f"--app={url}", f"--user-data-dir={profile}",
             "--window-size=1320,860", "--no-first-run", "--no-default-browser-check",
         ])
-    except Exception as e:
-        sys.stderr.write(f"[Hangar] couldn't launch app window: {e!r}\n")
+    except Exception:
+        _log("couldn't launch --app window:\n" + traceback.format_exc())
         return False
     proc.wait()
     return True
@@ -181,6 +215,8 @@ def main():
     threading.Thread(target=_serve, daemon=True).start()
     time.sleep(0.6)  # give Flask a moment to bind the port
     url = f"http://{backend.HOST}:{backend.PORT}"
+    _log(f"--- Hangar v{backend.__version__} starting (frozen={getattr(sys,'frozen',False)}, "
+         f"PYTHONNET_PYDLL={os.environ.get('PYTHONNET_PYDLL','<unset>')}) ---")
     if _try_pywebview(url):
         return
     if _launch_app_window(url):
