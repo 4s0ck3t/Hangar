@@ -156,14 +156,15 @@ button, input, select { font-family: inherit; color: inherit; }
 .filter-list li.cat-item:hover .cat-kw { opacity: 1; }
 .cat-kw:hover { color: var(--k-model); }
 
-/* Per-kind category subheadings (Models / HDRIs / …), Poly Haven style */
-.filter-list li.cat-group-head {
-  cursor: default; padding: 8px 8px 3px; margin-top: 2px;
-  font-family: var(--mono); font-size: 9.5px; font-weight: 600;
-  letter-spacing: .14em; text-transform: uppercase; color: var(--faint);
+/* Category rows nested under their asset type in the Library list */
+.filter-list li.cat-item.cat-sub {
+  padding: 5px 8px 5px 24px; font-size: 12px;
 }
-.filter-list li.cat-group-head:first-child { margin-top: 0; }
-.filter-list li.cat-group-head:hover { background: none; }
+.filter-list li.cat-item.cat-sub .cat-ico { font-size: 12px; }
+.filter-list li.cat-item.cat-sub .dot { width: 6px; height: 6px; }
+/* A touch more breathing room before the next top-level type */
+.filter-list li.kind-item { margin-top: 2px; }
+.filter-list li.kind-item:first-child { margin-top: 0; }
 
 /* ---- status bar ---- */
 .statusbar {
@@ -505,4 +506,33 @@ button, input, select { font-family: inherit; color: inherit; }
   .sidebar { position: fixed; z-index: 40; width: 248px; height: 100%;
              transform: translateX(-100%); transition: transform .2s; }
   .sidebar.show { transform: translateX(0); }
+}
+
+/* ---- diagnostics / logs modal ---- */
+.diag-modal {
+  position: fixed; inset: 0; z-index: 60;
+  background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center;
+  padding: 32px;
+}
+.diag-modal.hidden { display: none; }
+.diag-box {
+  width: min(820px, 100%); max-height: 80vh; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5); overflow: hidden;
+}
+.diag-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.diag-title { font-size: 13px; font-weight: 600; color: var(--ink); }
+.diag-copy {
+  margin-left: auto; background: var(--raised); border: 1px solid var(--line);
+  color: var(--ink); border-radius: 7px; padding: 5px 12px; cursor: pointer; font-size: 12px;
+}
+.diag-copy:hover { background: var(--raised-hi); }
+.diag-close { background: none; border: none; color: var(--mute); font-size: 22px; line-height: 1; cursor: pointer; }
+.diag-close:hover { color: var(--ink); }
+.diag-hint { margin: 10px 14px 0; color: var(--faint); font-size: 12px; }
+.diag-text {
+  margin: 10px 14px 14px; flex: 1; min-height: 320px; resize: none;
+  background: var(--void); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--mute); font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+  padding: 10px 12px; white-space: pre; overflow: auto;
 }

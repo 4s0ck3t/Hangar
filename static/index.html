@@ -22,7 +22,9 @@
 
     <nav class="nav">
       <div class="nav-group">
-        <div class="nav-label">Library</div>
+        <div class="nav-label">
+          Library <button class="mini-add" id="addCategoryBtn" title="New category">+</button><button class="mini-add" id="autoClassifyBtn" title="Auto-classify every asset by category keyword rules">⚡</button>
+        </div>
         <ul id="kindFilters" class="filter-list"></ul>
       </div>
 
@@ -31,13 +33,6 @@
           Tags <button class="mini-add" id="addTagBtn" title="New tag">+</button>
         </div>
         <ul id="tagFilters" class="filter-list tag-filters"></ul>
-      </div>
-
-      <div class="nav-group">
-        <div class="nav-label">
-          Categories <button class="mini-add" id="addCategoryBtn" title="New category">+</button><button class="mini-add" id="autoClassifyBtn" title="Auto-classify every asset by category keyword rules">⚡</button>
-        </div>
-        <ul id="categoryFilters" class="filter-list"></ul>
       </div>
 
       <div class="nav-group">
@@ -90,9 +85,22 @@
     <div class="status-right">
       <span id="statusBreakdown" class="status-breakdown"></span>
       <span id="statusVersion" class="status-version" title="Hangar version"></span>
+      <button id="diagBtn" class="rescan" title="Diagnostics & logs">Logs</button>
       <button id="rescanBtn" class="rescan">Rescan all</button>
     </div>
   </footer>
+
+  <div id="diagModal" class="diag-modal hidden">
+    <div class="diag-box">
+      <div class="diag-head">
+        <span class="diag-title">Diagnostics &amp; logs</span>
+        <button id="diagCopy" class="diag-copy">Copy all</button>
+        <button id="diagClose" class="diag-close" aria-label="Close">&times;</button>
+      </div>
+      <p class="diag-hint">Copy this and paste it to support to diagnose window / preview issues.</p>
+      <textarea id="diagText" class="diag-text" readonly spellcheck="false"></textarea>
+    </div>
+  </div>
 
   <aside id="drawer" class="drawer">
     <button class="drawer-close" id="drawerClose" aria-label="Close">&times;</button>

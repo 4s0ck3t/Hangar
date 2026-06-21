@@ -62,9 +62,9 @@ function toast(msg, type) {
 // ---- sidebar / state ------------------------------------------------------
 async function loadState() {
   const s = await api("state");
-  renderKindFilters(s.counts);
+  allCategories = s.categories || [];
+  renderKindFilters(s.counts, allCategories);
   renderTagFilters(s.tags);
-  renderCategoryFilters(s.categories || []);
   renderCollectionFilters(s.collections);
   renderLibraries(s.libraries);
   renderStatusBar(s.counts, s.version);
@@ -83,7 +83,8 @@ function renderStatusBar(counts, version) {
   if (version) $("#statusVersion").textContent = `Hangar v${version}`;
 }
 
-function renderKindFilters(counts) {
+function renderKindFilters(counts, cats) {
+  cats = cats || [];
   const modelByExt = counts.model_by_ext || {};
   const items = [
     ["", "all", counts.total],
@@ -95,9 +96,10 @@ function renderKindFilters(counts) {
   const ul = $("#kindFilters"); ul.innerHTML = "";
   for (const [kind, key, count] of items) {
     const li = document.createElement("li");
-    const isModelSub = !state.filter.ext && !state.filter.favorite
-      && !state.filter.tag && !state.filter.collection;
-    const active = isModelSub && state.filter.kind === kind;
+    li.className = "kind-item";
+    const isPlainKind = !state.filter.ext && !state.filter.favorite
+      && !state.filter.tag && !state.filter.collection && !state.filter.category;
+    const active = isPlainKind && state.filter.kind === kind;
     if (active) li.classList.add("active");
     const color = KIND_COLORS[kind] || "var(--mute)";
     li.innerHTML =
@@ -106,7 +108,12 @@ function renderKindFilters(counts) {
     li.onclick = () => { resetFilter(); state.filter.kind = kind; refresh(); };
     ul.appendChild(li);
 
-    // Render model subcategories under the Models item.
+    // Categories nested under their type. Shared categories (kind "") sit under
+    // "All assets"; each scoped category sits under its own type.
+    for (const c of cats.filter((c) => (c.kind || "") === kind))
+      ul.appendChild(buildCategoryItem(c, true));
+
+    // Model file-format subcategories, under Models below its categories.
     if (kind === "model" && count > 0) {
       for (const grp of MODEL_EXT_GROUPS) {
         const grpCount = grp.exts.reduce((s, e) => s + (modelByExt[e] || 0), 0);
@@ -133,6 +140,7 @@ function renderKindFilters(counts) {
   }
 
   const fav = document.createElement("li");
+  fav.className = "kind-item";
   if (state.filter.favorite) fav.classList.add("active");
   fav.innerHTML =
     `<span class="dot" style="background:var(--signal)"></span>` +
@@ -158,41 +166,13 @@ function renderTagFilters(tags) {
   }
 }
 
-// Poly Haven keeps a separate category list per asset type. Categories carry a
-// `kind` scope ("model" / "hdri" / "texture" / "material", or "" = shared); we
-// render them grouped under those headings. When a kind filter is active only
-// that kind's categories (plus shared) are shown, mirroring Poly Haven's tabs.
-const CAT_GROUPS = [
-  { kind: "model",    label: "Models" },
-  { kind: "hdri",     label: "HDRIs" },
-  { kind: "texture",  label: "Textures" },
-  { kind: "material", label: "Materials" },
-  { kind: "",         label: "Shared" },
-];
-
-function renderCategoryFilters(cats) {
-  const ul = $("#categoryFilters"); ul.innerHTML = "";
-  if (!cats.length) {
-    ul.innerHTML = `<li style="color:var(--faint);cursor:default">No categories yet</li>`;
-    return;
-  }
-  const activeKind = state.filter.kind;
-  for (const grp of CAT_GROUPS) {
-    // Scope to the active kind: show its own group plus the shared group.
-    if (activeKind && grp.kind && grp.kind !== activeKind) continue;
-    const inGroup = cats.filter((c) => (c.kind || "") === grp.kind);
-    if (!inGroup.length) continue;
-    const head = document.createElement("li");
-    head.className = "cat-group-head";
-    head.textContent = grp.label;
-    ul.appendChild(head);
-    for (const c of inGroup) ul.appendChild(buildCategoryItem(c));
-  }
-}
-
-function buildCategoryItem(c) {
+// Categories live nested under their asset type in the Library list (Poly
+// Haven–style): shared categories under "All assets", scoped ones under their
+// own type. See renderKindFilters. `kind` scope: "model"/"hdri"/"texture"/
+// "material", or "" = shared.
+function buildCategoryItem(c, nested) {
     const li = document.createElement("li");
-    li.className = "cat-item";
+    li.className = "cat-item" + (nested ? " cat-sub" : "");
     if (state.filter.category === c.name) li.classList.add("active");
     const icon = c.icon ? `<span class="cat-ico">${c.icon}</span>` : `<span class="dot" style="background:var(--k-model)"></span>`;
     const kwTitle = c.keywords
@@ -1002,6 +982,37 @@ $("#rescanBtn").onclick = async () => {
   const r = await post("scan");
   if (r.error) { toast(r.error, "error"); return; }
   if (r.scanning) startScanPolling();
+};
+
+// ---- diagnostics / logs ---------------------------------------------------
+async function openDiagnostics() {
+  const ta = $("#diagText");
+  ta.value = "Loading…";
+  $("#diagModal").classList.remove("hidden");
+  try {
+    const d = await api("diagnostics");
+    const parts = [d.info, ""];
+    for (const [name, text] of Object.entries(d.logs || {})) {
+      parts.push(`===== ${name} =====`, (text || "(empty)").trim(), "");
+    }
+    ta.value = parts.join("\n");
+  } catch (e) {
+    ta.value = "Couldn't load diagnostics: " + e;
+  }
+}
+$("#diagBtn").onclick = openDiagnostics;
+$("#diagClose").onclick = () => $("#diagModal").classList.add("hidden");
+$("#diagModal").onclick = (e) => { if (e.target.id === "diagModal") $("#diagModal").classList.add("hidden"); };
+$("#diagCopy").onclick = async () => {
+  const ta = $("#diagText");
+  ta.select();
+  try {
+    await navigator.clipboard.writeText(ta.value);
+    toast("Diagnostics copied — paste it to support.", "success");
+  } catch (_) {
+    try { document.execCommand("copy"); toast("Diagnostics copied.", "success"); }
+    catch (e) { toast("Select the text and copy manually.", "error"); }
+  }
 };
 
 $("#addTagBtn").onclick = async () => {

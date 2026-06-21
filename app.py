@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.7"
+__version__ = "0.13.8"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -105,6 +105,36 @@ def state():
         "hdri_backends": thumbs._hdri_backends(),
         "desktop": bool(os.environ.get("HANGAR_DESKTOP")),
     })
+
+
+@app.get("/api/diagnostics")
+def diagnostics():
+    """Everything useful for troubleshooting, surfaced in-app so users can copy
+    it without hunting for files. Includes the desktop launcher log (which
+    records why the native window fell back to Edge/browser)."""
+    info = [
+        f"Hangar {__version__}",
+        f"platform: {platform.platform()}",
+        f"python: {sys.version.split()[0]}  frozen: {bool(getattr(sys, 'frozen', False))}",
+        f"desktop mode: {bool(os.environ.get('HANGAR_DESKTOP'))}",
+        f"PYTHONNET_PYDLL: {os.environ.get('PYTHONNET_PYDLL', '<unset>')}",
+        f"data dir: {store.DATA_DIR}",
+        f"blender: {thumbs.find_blender() or '<not found>'}",
+        f"hdri backends: {thumbs._hdri_backends()}",
+    ]
+    try:
+        import webview  # noqa: F401
+        info.append(f"pywebview: {getattr(webview, '__version__', '?')}")
+    except Exception as e:
+        info.append(f"pywebview import FAILED: {e!r}")
+    logs = {}
+    for label, path in (("desktop.log", store.DATA_DIR / "desktop.log"),
+                        ("last_render.log", store.DATA_DIR / "last_render.log")):
+        try:
+            logs[label] = Path(path).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            logs[label] = "(none)"
+    return jsonify({"info": "\n".join(info), "logs": logs})
 
 
 @app.get("/api/scan/status")
