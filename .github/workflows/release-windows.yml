@@ -23,6 +23,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install Flask>=3.0 Pillow>=10.0 pyinstaller>=6.0
+          pip install "pywebview>=5.0" "pythonnet>=3.0.4"
           pip install trimesh>=4.0 numpy>=1.24 imageio>=2.30 pyopengl>=3.1
           pip install opencv-python-headless>=4.8
 
@@ -31,11 +32,30 @@ jobs:
           pyinstaller --noconsole --name Hangar
           --icon hangar.ico
           --add-data "static;static"
+          --collect-all webview
+          --collect-all pythonnet
+          --collect-all clr_loader
           --collect-all trimesh
           --collect-all cv2
+          --hidden-import clr
           --hidden-import imageio
           --hidden-import numpy
           desktop.py
+
+      - name: Self-test native webview (diagnostic — never fails the build)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = "dist/Hangar/Hangar.exe"
+          $proc = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
+          Write-Host "selftest exit code: $($proc.ExitCode)"
+          $log = Join-Path $env:TEMP "hangar_selftest.txt"
+          if (Test-Path $log) {
+            Write-Host "----- selftest result -----"
+            Get-Content $log
+          } else {
+            Write-Host "no selftest file produced (exe may have crashed before writing it)"
+          }
 
       - name: Zip the build folder
         run: Compress-Archive -Path dist/Hangar/* -DestinationPath dist/Hangar-windows.zip

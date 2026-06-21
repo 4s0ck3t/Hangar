@@ -2,9 +2,12 @@
 Flask>=3.0
 Pillow>=10.0
 
-# The desktop app (desktop.py) needs no extra Python deps: it opens Hangar in a
-# chrome-less Edge/Chrome "--app" window (falling back to the default browser),
-# so there's no pywebview / .NET / pythonnet dependency to install or package.
+# Desktop window (standalone app). pywebview gives a real native window — on
+# Windows via the Edge WebView2 runtime (+ pythonnet), on macOS via WebKit. If
+# it can't start (e.g. a frozen build where the .NET bridge won't load),
+# desktop.py automatically falls back to an Edge/Chrome --app window, then the
+# default browser — so the app always opens.
+pywebview>=5.0
 
 # Optional — richer model thumbnails + vertex/face stats.
 # Hangar runs fine without these (models show a format badge instead).

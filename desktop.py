@@ -1,15 +1,18 @@
 """Hangar desktop shell.
 
-Launches Hangar as a native-feeling desktop app by opening it in a chrome-less
-Edge/Chrome "app window" (no tabs, no address bar, its own taskbar icon). This
-avoids the pywebview -> WebView2 -> .NET (pythonnet/clr) bridge, which is fragile
-to package with PyInstaller and was crashing frozen builds on launch.
+Primary path: a real native window via pywebview (movable, resizable, with a
+title bar). On Windows that renders through the Edge WebView2 runtime, which
+pywebview reaches via .NET/pythonnet.
 
-    python desktop.py
+Because that .NET bridge is fragile to *freeze* with PyInstaller, there are two
+automatic fallbacks so the app is never dead-on-arrival:
+  1. pywebview native window  (preferred)
+  2. chrome-less Edge/Chrome --app window
+  3. the default browser
 
-If no Chromium-based browser is found, Hangar falls back to opening in the
-user's default browser. Either way the Flask server runs locally in a daemon
-thread and nothing leaves the machine.
+Run `python desktop.py --selftest` to exercise the native-window import chain
+(pywebview -> WinForms -> clr) and exit 0/1 — CI runs this on real Windows so we
+can see whether the frozen webview actually loads.
 """
 
 import os
@@ -19,21 +22,97 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import webbrowser
 
 os.environ["HANGAR_DESKTOP"] = "1"
 
+
+def _hint_pythonnet_pydll():
+    """When frozen, point pythonnet at the bundled Python DLL before any `clr`
+    import. A frozen app has no python3XX.dll on PATH the way pythonnet's loader
+    expects, which is a common cause of the .NET loader failing to initialise."""
+    if not getattr(sys, "frozen", False):
+        return
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
+    for cand in ("python313.dll", "python312.dll", "python311.dll", "python310.dll"):
+        p = os.path.join(base, cand)
+        if os.path.exists(p):
+            os.environ.setdefault("PYTHONNET_PYDLL", p)
+            return
+
+
+_hint_pythonnet_pydll()
+
 import app as backend  # noqa: E402  (after env flag so /api/state reports desktop mode)
+
+
+class Api:
+    """Exposed to the native window's JS as window.pywebview.api.*"""
+
+    def pick_folder(self):
+        import webview
+        win = webview.active_window()
+        result = win.create_file_dialog(webview.FOLDER_DIALOG)
+        if not result:
+            return None
+        return result[0] if isinstance(result, (list, tuple)) else result
 
 
 def _serve():
     backend.run_server(open_browser=False)
 
 
+# ---- self-test (CI runs this on real Windows) -----------------------------
+def _selftest():
+    """Exercise the exact native-window init chain so CI tells us whether the
+    frozen webview/.NET bridge loads. Writes the result next to a temp file and
+    returns an exit code (0 ok, 1 failed)."""
+    out = os.path.join(tempfile.gettempdir(), "hangar_selftest.txt")
+    try:
+        import webview  # noqa: F401
+        # Importing the WinForms backend triggers `import clr` — the exact line
+        # the user's traceback died on.
+        if sys.platform == "win32":
+            import webview.platforms.winforms  # noqa: F401
+        msg = "SELFTEST OK: webview + clr import succeeded"
+        code = 0
+    except Exception as e:
+        msg = "SELFTEST FAIL: " + repr(e) + "\n" + traceback.format_exc()
+        code = 1
+    try:
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write(msg + "\n")
+    except Exception:
+        pass
+    sys.stderr.write(msg + "\n")
+    sys.stdout.write(msg + "\n")
+    return code
+
+
+# ---- window strategies ----------------------------------------------------
+def _try_pywebview(url):
+    """Open the real native window. Returns True if it ran (and the user closed
+    it), False if the backend couldn't start so we should fall back."""
+    try:
+        import webview
+    except Exception as e:
+        sys.stderr.write(f"[Hangar] pywebview unavailable: {e!r}\n")
+        return False
+    try:
+        window = webview.create_window(
+            "Hangar", url, js_api=Api(),
+            width=1320, height=860, min_size=(960, 620),
+            background_color="#131418",
+        )
+        webview.start(lambda w: w.maximize(), window)
+        return True
+    except Exception as e:
+        sys.stderr.write(f"[Hangar] native webview failed, falling back: {e!r}\n")
+        return False
+
+
 def _find_chromium():
-    """Path to a Chromium-based browser (Edge first — always on Win10/11 — then
-    Chrome/Chromium/Brave), or None. Edge/Chrome support the --app flag that
-    gives a borderless standalone window."""
     candidates = []
     if sys.platform == "win32":
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
@@ -50,7 +129,6 @@ def _find_chromium():
         candidates = [
             "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ]
     else:
         for name in ("microsoft-edge", "google-chrome", "google-chrome-stable",
@@ -65,34 +143,23 @@ def _find_chromium():
 
 
 def _launch_app_window(url):
-    """Open `url` in a borderless Chromium app window and block until the user
-    closes it. Returns False if no suitable browser was found / couldn't launch."""
     browser = _find_chromium()
     if not browser:
         return False
-    # A dedicated profile dir makes this its own browser process tree, so the
-    # launched process stays in the foreground until the window is closed (and
-    # it doesn't merge into the user's existing Edge/Chrome session).
     profile = os.path.join(tempfile.gettempdir(), "hangar-app-profile")
     try:
         proc = subprocess.Popen([
-            browser,
-            f"--app={url}",
-            f"--user-data-dir={profile}",
-            "--window-size=1320,860",
-            "--no-first-run",
-            "--no-default-browser-check",
+            browser, f"--app={url}", f"--user-data-dir={profile}",
+            "--window-size=1320,860", "--no-first-run", "--no-default-browser-check",
         ])
     except Exception as e:
-        sys.stderr.write(f"[Hangar] Couldn't launch app window: {e!r}\n")
+        sys.stderr.write(f"[Hangar] couldn't launch app window: {e!r}\n")
         return False
-    proc.wait()  # returns when the user closes the Hangar window
+    proc.wait()
     return True
 
 
 def _run_in_default_browser(url):
-    """Last-resort fallback: open the default browser and keep the process (and
-    thus the Flask server) alive."""
     sys.stderr.write(
         f"[Hangar] Opening in your default browser: {url}\n"
         f"         (Quit Hangar from your taskbar / Task Manager when done.)\n"
@@ -109,11 +176,16 @@ def _run_in_default_browser(url):
 
 
 def main():
+    if "--selftest" in sys.argv:
+        sys.exit(_selftest())
     threading.Thread(target=_serve, daemon=True).start()
     time.sleep(0.6)  # give Flask a moment to bind the port
     url = f"http://{backend.HOST}:{backend.PORT}"
-    if not _launch_app_window(url):
-        _run_in_default_browser(url)
+    if _try_pywebview(url):
+        return
+    if _launch_app_window(url):
+        return
+    _run_in_default_browser(url)
 
 
 if __name__ == "__main__":
