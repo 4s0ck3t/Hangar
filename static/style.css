@@ -536,3 +536,18 @@ button, input, select { font-family: inherit; color: inherit; }
   color: var(--mute); font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
   padding: 10px 12px; white-space: pre; overflow: auto;
 }
+
+/* ---- in-app updater ---- */
+.update-pill {
+  background: linear-gradient(90deg, rgba(232,176,75,.18), rgba(232,121,74,.18));
+  border: 1px solid var(--signal); color: var(--signal);
+  border-radius: 14px; padding: 4px 12px; cursor: pointer;
+  font-size: 11px; font-weight: 600; white-space: nowrap;
+  transition: background .14s;
+}
+.update-pill:hover { background: linear-gradient(90deg, rgba(232,176,75,.30), rgba(232,121,74,.30)); }
+.update-bar { display: flex; align-items: center; gap: 12px; margin: 0 14px 14px; }
+.update-progress { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.update-bar .diag-copy { margin-left: 0; }
+.update-bar .diag-copy.hidden { display: none; }
+.update-progress.hidden { display: none; }

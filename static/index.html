@@ -55,6 +55,7 @@
         <input id="search" type="search" placeholder="Search assets…" autocomplete="off" />
       </div>
       <div class="topbar-right">
+        <button id="updatePill" class="update-pill hidden" title="A new version is available"></button>
         <span id="activeFilter" class="active-filter"></span>
         <button id="clearFilterBtn" class="clear-filter hidden" title="Clear filters">✕</button>
         <label class="sort">
@@ -99,6 +100,25 @@
       </div>
       <p class="diag-hint">Copy this and paste it to support to diagnose window / preview issues.</p>
       <textarea id="diagText" class="diag-text" readonly spellcheck="false"></textarea>
+    </div>
+  </div>
+
+  <div id="updateModal" class="diag-modal hidden">
+    <div class="diag-box">
+      <div class="diag-head">
+        <span class="diag-title" id="updateTitle">Update</span>
+        <button id="updateClose" class="diag-close" aria-label="Close">&times;</button>
+      </div>
+      <p class="diag-hint" id="updateSub"></p>
+      <textarea id="updateNotes" class="diag-text" readonly spellcheck="false"></textarea>
+      <div class="update-bar">
+        <div id="updateProgress" class="update-progress hidden">
+          <span class="scan-bar"><span id="updateFill" class="scan-fill"></span></span>
+          <span id="updatePct" class="scan-pct">0%</span>
+        </div>
+        <button id="updateLaunchBtn" class="diag-copy hidden">Launch new version</button>
+        <button id="updateDownloadBtn" class="diag-copy">Download &amp; install</button>
+      </div>
     </div>
   </div>
 

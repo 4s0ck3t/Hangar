@@ -31,6 +31,19 @@ Stack: **Python + Flask** backend, **SQLite** index, **vanilla-JS** frontend (no
 ## Texture sets (Poly Haven–style collapsing)
 A material ships as many maps sharing a base name (`wood_diffuse`, `wood_normal`, `wood_rough`…). `scanner.texture_set_info` strips role + resolution tokens (`MAP_ROLES`, `_RES_TOKEN`) to recover the shared base and keys it to the folder → `set_key`, plus `map_role` and `map_order` (diffuse=0 sorts first). Stored on `assets`. `query_assets(group="set")` uses window functions (`ROW_NUMBER`/`COUNT OVER PARTITION BY set_key`) to return one representative tile per set with `set_count`; the frontend always passes `group=set` (non-texture kinds have a unique `set_key`, so they pass through as 1). The drawer lists all maps via `/api/assets/<id>/set` (`store.set_members`); clicking a map swaps the preview.
 
+## In-app updater & diagnostics
+- **Updater:** `GET /api/update/check` reads the latest GitHub release (`GITHUB_REPO`),
+  compares tag vs `__version__` (`_version_tuple`, numeric per-component). The frontend
+  shows an "⬆ Update to vX" pill (boot-time `checkForUpdate`) → a modal with release notes.
+  `POST /api/update/download` runs a background thread (`UPDATE`/`UPDATE_LOCK`, progress via
+  `GET /api/update/status`) that downloads the zip to ~/Downloads and **extracts it to a
+  sibling `Hangar-<version>` folder** — never overwriting the running install, so a failed
+  update can't brick it. `POST /api/update/launch` starts the new exe (which binds a free
+  port, so it coexists with the old one). All network is stdlib `urllib`, degrades silently.
+- **Diagnostics:** `GET /api/diagnostics` returns version/platform/frozen/pythonnet/blender
+  /hdri-backends + `desktop.log` & `last_render.log`. The status-bar **Logs** button opens a
+  copy-all modal so users can export the launcher log (incl. why the native window fell back).
+
 ## Auto-categorization (keyword rule engine)
 Connecter-style rule-based classification — deterministic, no ML. Categories carry a
 `kind` scope (`model`/`hdri`/`texture`/`material`, or `""` = shared): a scoped rule only

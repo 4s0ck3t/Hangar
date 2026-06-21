@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.10"
+__version__ = "0.13.11"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -476,6 +476,155 @@ def set_blender():
                         "error": "That path doesn't exist."}), 200
     return jsonify({"ok": True, "blender": resolved,
                     "available": thumbs.blender_available()})
+
+
+# ---- in-app updater -------------------------------------------------------
+# Checks GitHub Releases, downloads + extracts the new build to a SIBLING folder
+# (never overwrites the running install, so a failed update can't brick it), then
+# reveals/launches it. The new instance binds a free port (see desktop.py), so it
+# can run alongside the old one.
+GITHUB_REPO = "4s0ck3t/Hangar"
+UPDATE = {"running": False, "pct": 0, "done": False, "path": None,
+          "folder": None, "exe": None, "error": None}
+UPDATE_LOCK = threading.Lock()
+
+
+def _version_tuple(s):
+    import re
+    nums = re.findall(r"\d+", s or "")
+    return tuple(int(n) for n in nums) if nums else (0,)
+
+
+def _fetch_latest_release():
+    import urllib.request
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Hangar-updater",
+        "Accept": "application/vnd.github+json",
+    })
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _downloads_dir():
+    home = os.path.expanduser("~")
+    dl = os.path.join(home, "Downloads")
+    if os.path.isdir(dl):
+        return dl
+    return home if os.path.isdir(home) else str(store.DATA_DIR)
+
+
+def _reveal_path(path):
+    sysname = platform.system()
+    try:
+        if sysname == "Windows":
+            subprocess.run(["explorer", "/select,", os.path.normpath(path)], check=False)
+        elif sysname == "Darwin":
+            subprocess.run(["open", "-R", path], check=False)
+        else:
+            opener = "xdg-open"
+            subprocess.run([opener, os.path.dirname(path)], check=False)
+    except Exception:
+        pass
+
+
+@app.get("/api/update/check")
+def update_check():
+    try:
+        rel = _fetch_latest_release()
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"Couldn't reach GitHub: {e}"}), 200
+    latest = (rel.get("tag_name") or "").lstrip("v")
+    asset = next((a for a in rel.get("assets", [])
+                  if (a.get("name") or "").lower().endswith(".zip")), None)
+    return jsonify({
+        "ok": True,
+        "current": __version__,
+        "latest": latest,
+        "update_available": _version_tuple(latest) > _version_tuple(__version__),
+        "notes": rel.get("body", ""),
+        "html_url": rel.get("html_url", ""),
+        "asset_url": asset.get("browser_download_url") if asset else None,
+        "asset_name": asset.get("name") if asset else None,
+        "asset_size": asset.get("size") if asset else None,
+    })
+
+
+def _do_update_download(url, name, version):
+    import urllib.request
+    import zipfile
+    import shutil
+    dest = os.path.join(_downloads_dir(), name)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Hangar-updater"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            total = int(resp.headers.get("Content-Length", 0) or 0)
+            got = 0
+            with open(dest, "wb") as fh:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    got += len(chunk)
+                    with UPDATE_LOCK:
+                        UPDATE["pct"] = int(got * 100 / total) if total else 0
+        # Extract to a fresh sibling folder so the running install is untouched.
+        folder = os.path.join(_downloads_dir(), f"Hangar-{version}")
+        if os.path.isdir(folder):
+            shutil.rmtree(folder, ignore_errors=True)
+        with zipfile.ZipFile(dest) as z:
+            z.extractall(folder)
+        exe = os.path.join(folder, "Hangar.exe")
+        exe = exe if os.path.exists(exe) else None
+        with UPDATE_LOCK:
+            UPDATE.update(running=False, done=True, pct=100,
+                          path=dest, folder=folder, exe=exe)
+        _reveal_path(exe or folder)
+    except Exception as e:
+        with UPDATE_LOCK:
+            UPDATE.update(running=False, done=False, error=str(e))
+
+
+@app.post("/api/update/download")
+def update_download():
+    data = request.get_json(force=True) or {}
+    url = data.get("url")
+    name = data.get("name") or "Hangar-windows.zip"
+    version = (data.get("version") or "latest").lstrip("v")
+    if not url:
+        return jsonify({"ok": False, "error": "No download URL provided."}), 200
+    with UPDATE_LOCK:
+        if UPDATE["running"]:
+            return jsonify({"ok": True, "running": True})
+        UPDATE.update(running=True, pct=0, done=False, path=None,
+                      folder=None, exe=None, error=None)
+    threading.Thread(target=_do_update_download, args=(url, name, version),
+                     daemon=True).start()
+    return jsonify({"ok": True, "running": True})
+
+
+@app.get("/api/update/status")
+def update_status():
+    with UPDATE_LOCK:
+        return jsonify(dict(UPDATE))
+
+
+@app.post("/api/update/launch")
+def update_launch():
+    with UPDATE_LOCK:
+        exe = UPDATE.get("exe")
+        folder = UPDATE.get("folder")
+    if not exe or not os.path.exists(exe):
+        if folder:
+            _reveal_path(folder)
+        return jsonify({"ok": False,
+                        "error": "Couldn't find the new Hangar.exe — opening the folder so you can run it."}), 200
+    try:
+        subprocess.Popen([exe], cwd=os.path.dirname(exe))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 200
+    return jsonify({"ok": True})
 
 
 def _open_browser():

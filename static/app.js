@@ -1000,6 +1000,66 @@ async function openDiagnostics() {
     ta.value = "Couldn't load diagnostics: " + e;
   }
 }
+// ---- in-app updater -------------------------------------------------------
+let _updateInfo = null;
+let _updatePoll = null;
+async function checkForUpdate() {
+  try {
+    const u = await api("update/check");
+    if (!u || !u.ok || !u.update_available) return;
+    _updateInfo = u;
+    const pill = $("#updatePill");
+    pill.textContent = `⬆ Update to v${u.latest}`;
+    pill.classList.remove("hidden");
+    pill.onclick = openUpdateModal;
+  } catch (_) { /* offline — no banner */ }
+}
+function openUpdateModal() {
+  if (!_updateInfo) return;
+  $("#updateTitle").textContent = `Update available — v${_updateInfo.latest}`;
+  $("#updateSub").textContent =
+    `You're on v${_updateInfo.current}. This downloads and unpacks v${_updateInfo.latest} ` +
+    `into a new folder (your current install is left untouched), then you can launch it.`;
+  $("#updateNotes").value = (_updateInfo.notes || "Release notes unavailable.").trim();
+  $("#updateProgress").classList.add("hidden");
+  $("#updateLaunchBtn").classList.add("hidden");
+  const btn = $("#updateDownloadBtn");
+  btn.disabled = false; btn.textContent = "Download & install";
+  $("#updateModal").classList.remove("hidden");
+}
+$("#updateClose").onclick = () => { $("#updateModal").classList.add("hidden"); if (_updatePoll) clearInterval(_updatePoll); };
+$("#updateModal").onclick = (e) => { if (e.target.id === "updateModal") $("#updateClose").onclick(); };
+$("#updateDownloadBtn").onclick = async () => {
+  if (!_updateInfo) return;
+  if (!_updateInfo.asset_url) { window.open(_updateInfo.html_url || "https://github.com/4s0ck3t/Hangar/releases", "_blank"); return; }
+  const btn = $("#updateDownloadBtn");
+  btn.disabled = true; btn.textContent = "Downloading…";
+  $("#updateProgress").classList.remove("hidden");
+  await post("update/download", { url: _updateInfo.asset_url, name: _updateInfo.asset_name, version: _updateInfo.latest });
+  if (_updatePoll) clearInterval(_updatePoll);
+  _updatePoll = setInterval(async () => {
+    let s; try { s = await api("update/status"); } catch (_) { return; }
+    $("#updateFill").style.width = (s.pct || 0) + "%";
+    $("#updatePct").textContent = (s.pct || 0) + "%";
+    if (s.done) {
+      clearInterval(_updatePoll); _updatePoll = null;
+      btn.textContent = "Downloaded ✓";
+      toast("Downloaded & unpacked — opening the new folder.", "success");
+      if (s.exe) $("#updateLaunchBtn").classList.remove("hidden");
+    } else if (s.error) {
+      clearInterval(_updatePoll); _updatePoll = null;
+      btn.disabled = false; btn.textContent = "Retry download";
+      $("#updateProgress").classList.add("hidden");
+      toast("Update failed: " + s.error, "error");
+    }
+  }, 500);
+};
+$("#updateLaunchBtn").onclick = async () => {
+  const r = await post("update/launch");
+  if (r.ok) toast("Launched the new version — you can close this window.", "success");
+  else toast(r.error || "Couldn't launch — run Hangar.exe from the opened folder.", "error");
+};
+
 $("#diagBtn").onclick = openDiagnostics;
 $("#diagClose").onclick = () => $("#diagModal").classList.add("hidden");
 $("#diagModal").onclick = (e) => { if (e.target.id === "diagModal") $("#diagModal").classList.add("hidden"); };
@@ -1101,4 +1161,5 @@ document.addEventListener("keydown", (e) => {
       st.hdri_backends && st.hdri_backends[0] === "none") {
     toast("HDR/EXR previews unavailable — install opencv-python-headless", "error");
   }
+  checkForUpdate();  // surfaces the update pill if a newer release exists
 })();
