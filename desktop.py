@@ -17,6 +17,7 @@ can see whether the frozen webview actually loads.
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -88,7 +89,42 @@ class Api:
 
 
 def _serve():
-    backend.run_server(open_browser=False)
+    try:
+        backend.run_server(open_browser=False)
+    except Exception:
+        # A blank window almost always means the server never came up — capture
+        # why (e.g. port already bound by an orphaned Hangar) instead of dying
+        # silently on a thread with no console.
+        _log("Flask server crashed:\n" + traceback.format_exc())
+
+
+def _pick_free_port(preferred):
+    """Use the preferred port if it's free, else let the OS assign one. Avoids a
+    blank window when an earlier Hangar process is still holding the default port."""
+    for candidate in (preferred, 0):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((backend.HOST, candidate))
+            port = s.getsockname()[1]
+            s.close()
+            return port
+        except OSError:
+            continue
+    return preferred
+
+
+def _wait_for_server(host, port, timeout=20.0):
+    """Block until Flask is actually accepting connections, so the window never
+    opens onto a not-yet-listening (blank) server."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.15)
+    return False
 
 
 # ---- self-test (CI runs this on real Windows) -----------------------------
@@ -222,11 +258,18 @@ def _run_in_default_browser(url):
 def main():
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
-    threading.Thread(target=_serve, daemon=True).start()
-    time.sleep(0.6)  # give Flask a moment to bind the port
+    # Bind to a guaranteed-free port (the default may be held by an orphaned
+    # instance), then start Flask there.
+    backend.PORT = _pick_free_port(backend.PORT)
     url = f"http://{backend.HOST}:{backend.PORT}"
-    _log(f"--- Hangar v{backend.__version__} starting (frozen={getattr(sys,'frozen',False)}, "
-         f"PYTHONNET_PYDLL={os.environ.get('PYTHONNET_PYDLL','<unset>')}) ---")
+    _log(f"--- Hangar v{backend.__version__} starting on {url} "
+         f"(frozen={getattr(sys, 'frozen', False)}, "
+         f"PYTHONNET_PYDLL={os.environ.get('PYTHONNET_PYDLL', '<unset>')}) ---")
+    threading.Thread(target=_serve, daemon=True).start()
+    if _wait_for_server(backend.HOST, backend.PORT):
+        _log("server is listening")
+    else:
+        _log("WARNING: server not reachable after 20s — window may be blank")
     if _try_pywebview(url):
         return
     if _launch_app_window(url):
