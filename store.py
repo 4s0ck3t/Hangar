@@ -79,9 +79,13 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE INDEX IF NOT EXISTS idx_assets_kind ON assets(kind);
 CREATE INDEX IF NOT EXISTS idx_assets_name ON assets(name);
-CREATE INDEX IF NOT EXISTS idx_assets_set_key ON assets(set_key);
 CREATE INDEX IF NOT EXISTS idx_asset_categories_asset ON asset_categories(asset_id);
 """
+# NOTE: the index on assets(set_key) is created in init_db() AFTER the column
+# migration — never put it in SCHEMA. On a fresh DB the CREATE TABLE includes
+# set_key, but on an upgrade the assets table predates the column, and a
+# CREATE INDEX referencing set_key inside this script would run before the
+# ALTER TABLE adds it ("no such column: set_key").
 
 # Starter taxonomy seeded on first run. Each category carries a keyword list used
 # to auto-suggest a category from an asset's folder/file name during scanning, and
@@ -164,6 +168,9 @@ def init_db():
         ):
             if col not in asset_cols:
                 conn.execute(ddl)
+        # Safe now that set_key is guaranteed to exist (fresh CREATE TABLE or the
+        # ALTER above). Must come after the migration — see the SCHEMA note.
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_set_key ON assets(set_key)")
         # Sensible default tag palette so new users aren't staring at a blank wall.
         defaults = [
             ("hero", "#E8B04B"), ("wip", "#E87D3E"), ("approved", "#3DBE8B"),
