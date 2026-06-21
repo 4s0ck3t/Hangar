@@ -10,8 +10,10 @@ standalone .exe").
 """
 
 import os
+import sys
 import threading
 import time
+import webbrowser
 
 os.environ["HANGAR_DESKTOP"] = "1"
 
@@ -39,6 +41,28 @@ def _on_start(window):
     window.maximize()
 
 
+def _run_in_browser():
+    """Fallback when the native window backend can't start (e.g. pywebview's
+    .NET/clr loader fails on this machine). The Flask server is already running
+    in a daemon thread, so just open the default browser and keep the process
+    alive to serve it."""
+    url = f"http://{backend.HOST}:{backend.PORT}"
+    sys.stderr.write(
+        f"[Hangar] Native window unavailable — opening in your browser instead:\n"
+        f"         {url}\n"
+        f"         (Quit Hangar from your taskbar / Task Manager when you're done.)\n"
+    )
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+
+
 def main():
     threading.Thread(target=_serve, daemon=True).start()
     time.sleep(0.6)  # give Flask a moment to bind the port
@@ -51,7 +75,13 @@ def main():
         min_size=(960, 620),
         background_color="#131418",
     )
-    webview.start(_on_start, window)
+    try:
+        webview.start(_on_start, window)
+    except Exception as e:
+        # Most commonly a frozen-build pythonnet/clr load failure on Windows.
+        # Don't crash to a traceback dialog — degrade to browser mode.
+        sys.stderr.write(f"[Hangar] webview.start failed: {e!r}\n")
+        _run_in_browser()
 
 
 if __name__ == "__main__":
