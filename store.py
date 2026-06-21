@@ -137,6 +137,28 @@ DEFAULT_CATEGORIES = [
                             "starry", "moonlit", "moon"]),
     ("Urban",        "🏙", "hdri", ["urban", "city", "street", "town", "rooftop",
                             "alley"]),
+    # Texture surface categories, modelled on Poly Haven's texture taxonomy.
+    ("Wood",         "🪵", "texture", ["wood", "wooden", "plank", "planks",
+                            "parquet", "timber", "bark", "log"]),
+    ("Bricks",       "🧱", "texture", ["brick", "bricks", "brickwall"]),
+    ("Concrete",     "⬜", "texture", ["concrete", "cement"]),
+    ("Metal",        "⚙", "texture", ["metal", "metallic", "steel", "iron",
+                            "rust", "rusty", "rusted", "aluminium", "aluminum",
+                            "copper", "bronze", "brass"]),
+    ("Stone",        "🪨", "texture", ["stone", "cobble", "cobblestone",
+                            "granite", "slate", "pebble", "pebbles"]),
+    ("Tiles",        "🔲", "texture", ["tile", "tiles", "tiling"]),
+    ("Fabric",       "🧵", "texture", ["fabric", "cloth", "textile", "denim",
+                            "wool", "cotton", "linen", "canvas"]),
+    ("Ground",       "🟫", "texture", ["ground", "dirt", "soil", "mud",
+                            "terrain", "sand", "gravel", "moss"]),
+    ("Plaster",      "🎨", "texture", ["plaster", "stucco"]),
+    ("Marble",       "🔘", "texture", ["marble"]),
+    ("Roof",         "🏠", "texture", ["roof", "roofing", "shingle", "shingles"]),
+    ("Leather",      "🟤", "texture", ["leather", "hide"]),
+    ("Plastic",      "🧴", "texture", ["plastic", "rubber"]),
+    ("Paper",        "📄", "texture", ["paper", "cardboard"]),
+    ("Asphalt",      "🛣", "texture", ["asphalt", "tarmac"]),
 ]
 # {category_id: (name, set(keywords))} cache, built lazily from the DB and
 # invalidated whenever a category is created/edited/removed. See _matchers().
@@ -221,7 +243,18 @@ def init_db():
                     "UPDATE categories SET kind=? WHERE name=? AND kind=''",
                     (kind, name),
                 )
+        # One-time: after new default categories ship (e.g. the texture set),
+        # back-fill auto-classification across the existing library so they're
+        # populated without the user having to hit ⚡. Bumped flag = re-run once.
+        need_reclassify = not conn.execute(
+            "SELECT 1 FROM settings WHERE key='autoclassify_v2'").fetchone()
     _invalidate_matchers()
+    if need_reclassify:
+        try:
+            auto_categorize_all()
+        except Exception:
+            pass
+        set_setting("autoclassify_v2", "1")
 
 
 # ---- settings -------------------------------------------------------------
