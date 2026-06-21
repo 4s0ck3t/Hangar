@@ -14,7 +14,7 @@ Stack: **Python + Flask** backend, **SQLite** index, **vanilla-JS** frontend (no
 ## Architecture
 | File | Role |
 |------|------|
-| `desktop.py` | pywebview native-window launcher (standalone app). Sets `HANGAR_DESKTOP=1`, runs Flask in a daemon thread, exposes `Api.pick_folder` to JS via `window.pywebview.api`. |
+| `desktop.py` | Desktop launcher. Sets `HANGAR_DESKTOP=1`, runs Flask in a daemon thread, then opens Hangar in a chrome-less **Edge/Chrome `--app` window** (`_find_chromium` → `subprocess` with a dedicated `--user-data-dir`; `proc.wait()` blocks until the window closes). Falls back to the default browser if no Chromium browser is found. **No pywebview / pythonnet / .NET** — that bridge was fragile to freeze with PyInstaller and crashed frozen builds (`Failed to resolve Python.Runtime.Loader.Initialize`). Folder picking uses the server-side Tk picker (`/api/pick-folder`), not a JS bridge. |
 | `app.py` | Flask server: REST API, background scan thread (`SCAN` dict + `SCAN_LOCK`), OS integration (reveal in file manager), native folder picker (tkinter fallback for browser mode), `.blend` render endpoint. Host `127.0.0.1`, port `HANGAR_PORT` (default 7575). |
 | `scanner.py` | `os.walk` folder walking + extension→kind classification. `count_files` (fast denominator pre-pass) then `scan_library` (stat + upsert). Mesh vertex/face stats computed lazily on first asset open via `compute_stats` (optional `trimesh`). |
 | `thumbs.py` | Thumbnail chain + caching (`~/.hangar/thumbs/<sha1>.jpg`). `.blend` embedded-preview extraction (`extract_blend_thumbnail`, pure-Python TEST-block parse), Blender discovery (`find_blender`), on-demand headless Workbench render (`_BLEND_RENDER_SCRIPT`). |

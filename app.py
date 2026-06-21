@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.2"
+__version__ = "0.13.3"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -121,8 +121,9 @@ def scan_status():
 def pick_folder():
     """Open a native OS folder chooser (browser-mode fallback).
 
-    In the desktop build the picker is handled by pywebview's native dialog;
-    this Tk-based path covers running Hangar in a plain browser.
+    The desktop app runs in an Edge/Chrome --app window (no JS bridge), so this
+    Tk-based server-side picker handles folder selection there and in a plain
+    browser. The frontend falls back to a path prompt if Tk is unavailable.
     """
     try:
         import tkinter as tk
