@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -299,7 +299,23 @@ def new_collection():
 @app.post("/api/categories")
 def new_category():
     data = request.get_json(force=True)
-    store.create_category(data.get("name", ""), data.get("icon", ""))
+    store.create_category(
+        data.get("name", ""), data.get("icon", ""), data.get("keywords", "")
+    )
+    return jsonify({"ok": True, "categories": store.list_categories()})
+
+
+@app.post("/api/categories/auto")
+def auto_categorize():
+    """Re-apply category keyword rules across the whole library (back-fill)."""
+    result = store.auto_categorize_all()
+    return jsonify({"ok": True, **result, "categories": store.list_categories()})
+
+
+@app.post("/api/categories/<int:category_id>/keywords")
+def update_category_keywords(category_id):
+    data = request.get_json(force=True)
+    store.update_category(category_id, data.get("keywords", ""))
     return jsonify({"ok": True, "categories": store.list_categories()})
 
 

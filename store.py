@@ -58,10 +58,11 @@ CREATE TABLE IF NOT EXISTS collection_assets (
     PRIMARY KEY (collection_id, asset_id)
 );
 CREATE TABLE IF NOT EXISTS categories (
-    id    INTEGER PRIMARY KEY,
-    name  TEXT UNIQUE NOT NULL,
-    icon  TEXT NOT NULL DEFAULT '',
-    sort  INTEGER NOT NULL DEFAULT 0
+    id        INTEGER PRIMARY KEY,
+    name      TEXT UNIQUE NOT NULL,
+    icon      TEXT NOT NULL DEFAULT '',
+    sort      INTEGER NOT NULL DEFAULT 0,
+    keywords  TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS asset_categories (
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -110,7 +111,8 @@ DEFAULT_CATEGORIES = [
                             "wizard", "knight", "dungeon"]),
     ("Food",         "🍎", ["food", "fruit", "drink", "meal", "vegetable", "bottle"]),
 ]
-# name -> compiled whole-word keyword matchers (built lazily).
+# {category_id: (name, set(keywords))} cache, built lazily from the DB and
+# invalidated whenever a category is created/edited/removed. See _matchers().
 _CATEGORY_MATCHERS = None
 
 
@@ -124,6 +126,10 @@ def connect():
 def init_db():
     with connect() as conn:
         conn.executescript(SCHEMA)
+        # Migrate older DBs that predate the per-category keyword column.
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(categories)")}
+        if "keywords" not in cols:
+            conn.execute("ALTER TABLE categories ADD COLUMN keywords TEXT NOT NULL DEFAULT ''")
         # Sensible default tag palette so new users aren't staring at a blank wall.
         defaults = [
             ("hero", "#E8B04B"), ("wip", "#E87D3E"), ("approved", "#3DBE8B"),
@@ -133,12 +139,20 @@ def init_db():
             conn.execute(
                 "INSERT OR IGNORE INTO tags(name, color) VALUES (?, ?)", (name, color)
             )
-        # Seed the starter category taxonomy (Sci-Fi, Buildings, …).
-        for sort, (name, icon, _kw) in enumerate(DEFAULT_CATEGORIES):
+        # Seed the starter category taxonomy (Sci-Fi, Buildings, …) with its
+        # keyword rules. On upgrade, back-fill keywords for seeded categories that
+        # are still blank — but never clobber keywords a user has edited.
+        for sort, (name, icon, kws) in enumerate(DEFAULT_CATEGORIES):
             conn.execute(
-                "INSERT OR IGNORE INTO categories(name, icon, sort) VALUES (?, ?, ?)",
-                (name, icon, sort),
+                "INSERT OR IGNORE INTO categories(name, icon, sort, keywords) "
+                "VALUES (?, ?, ?, ?)",
+                (name, icon, sort, ",".join(kws)),
             )
+            conn.execute(
+                "UPDATE categories SET keywords=? WHERE name=? AND keywords=''",
+                (",".join(kws), name),
+            )
+    _invalidate_matchers()
 
 
 # ---- settings -------------------------------------------------------------
@@ -214,9 +228,8 @@ def upsert_asset(meta):
             (meta["path"], meta["name"], meta["ext"], meta["kind"],
              meta["size"], meta["mtime"], time.time()),
         )
-        # Auto-suggest categories for new model assets from their folder/file name.
-        if meta["kind"] == "model":
-            _auto_categorize(conn, cur.lastrowid, meta["path"])
+        # Auto-suggest categories for any new asset from its folder/file name.
+        _auto_categorize(conn, cur.lastrowid, meta["path"])
         return cur.lastrowid
 
 
@@ -467,7 +480,7 @@ def set_collection_membership(collection_name, asset_id, add=True):
 def list_categories():
     with connect() as conn:
         rows = conn.execute(
-            "SELECT cat.id, cat.name, cat.icon, COUNT(ac.asset_id) c "
+            "SELECT cat.id, cat.name, cat.icon, cat.keywords, COUNT(ac.asset_id) c "
             "FROM categories cat "
             "LEFT JOIN asset_categories ac ON ac.category_id=cat.id "
             "GROUP BY cat.id ORDER BY cat.sort, cat.name COLLATE NOCASE"
@@ -475,21 +488,34 @@ def list_categories():
     return [dict(r) for r in rows]
 
 
-def create_category(name, icon=""):
+def create_category(name, icon="", keywords=""):
     name = (name or "").strip()
     if not name:
         return
+    keywords = _clean_keywords(keywords)
     with connect() as conn:
         nxt = conn.execute("SELECT COALESCE(MAX(sort), -1) + 1 m FROM categories").fetchone()["m"]
         conn.execute(
-            "INSERT OR IGNORE INTO categories(name, icon, sort) VALUES (?, ?, ?)",
-            (name, icon, nxt),
+            "INSERT OR IGNORE INTO categories(name, icon, sort, keywords) VALUES (?, ?, ?, ?)",
+            (name, icon, nxt, keywords),
         )
+    _invalidate_matchers()
+
+
+def update_category(category_id, keywords):
+    """Replace a category's auto-match keyword rules."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE categories SET keywords=? WHERE id=?",
+            (_clean_keywords(keywords), category_id),
+        )
+    _invalidate_matchers()
 
 
 def remove_category(category_id):
     with connect() as conn:
         conn.execute("DELETE FROM categories WHERE id=?", (category_id,))
+    _invalidate_matchers()
 
 
 def set_category_membership(category_name, asset_id, add=True):
@@ -511,22 +537,50 @@ def set_category_membership(category_name, asset_id, add=True):
             )
 
 
-def _category_matchers():
-    """name -> set of keywords, built once from DEFAULT_CATEGORIES."""
+def _clean_keywords(raw):
+    """Normalise a keyword string/list into a comma-separated, lower-cased set."""
+    if isinstance(raw, (list, tuple, set)):
+        parts = raw
+    else:
+        parts = re.split(r"[,\n]+", str(raw or ""))
+    seen = []
+    for p in parts:
+        p = p.strip().lower()
+        if p and p not in seen:
+            seen.append(p)
+    return ",".join(seen)
+
+
+def _invalidate_matchers():
+    """Drop the cached keyword matchers so the next match rebuilds from the DB."""
+    global _CATEGORY_MATCHERS
+    _CATEGORY_MATCHERS = None
+
+
+def _matchers(conn):
+    """{category_id: (name, set(keywords))} built once from the DB and cached.
+
+    Cache is invalidated whenever categories are created/edited/removed, so
+    user-defined categories take part in auto-classification just like the
+    seeded ones. Categories with no keywords are skipped (manual-only).
+    """
     global _CATEGORY_MATCHERS
     if _CATEGORY_MATCHERS is None:
-        _CATEGORY_MATCHERS = {name: set(kws) for name, _icon, kws in DEFAULT_CATEGORIES}
+        out = {}
+        for r in conn.execute("SELECT id, name, keywords FROM categories").fetchall():
+            kws = {k for k in (r["keywords"] or "").split(",") if k}
+            if kws:
+                out[r["id"]] = (r["name"], kws)
+        _CATEGORY_MATCHERS = out
     return _CATEGORY_MATCHERS
 
 
-def _auto_categorize(conn, asset_id, path):
-    """Attach seeded categories whose keywords appear in the asset's path.
+def _match_category_ids(path, matchers):
+    """Category ids whose keywords appear as whole tokens in the asset path.
 
     Splits the lower-cased path into word tokens and matches each keyword as a
     whole token (with simple singular/plural tolerance), so "car_sedan" hits
-    Vehicles and a "vehicles" folder hits the "vehicle" keyword. Runs inside the
-    caller's transaction (shares `conn`) so the new asset row is visible to the
-    foreign-key check. Only touches the seeded default categories.
+    Vehicles and a "vehicles" folder hits the "vehicle" keyword.
     """
     tokens = set(re.split(r"[^a-z0-9]+", path.lower()))
     tokens.discard("")
@@ -536,16 +590,44 @@ def _auto_categorize(conn, asset_id, path):
                 or (kw + "s") in tokens
                 or (kw.endswith("s") and kw[:-1] in tokens))
 
-    matched = [name for name, kws in _category_matchers().items()
-               if any(hit(kw) for kw in kws)]
-    if not matched:
-        return
-    placeholders = ",".join("?" * len(matched))
-    rows = conn.execute(
-        f"SELECT id FROM categories WHERE name IN ({placeholders})", matched
-    ).fetchall()
-    for r in rows:
+    return [cid for cid, (_name, kws) in matchers.items()
+            if any(hit(kw) for kw in kws)]
+
+
+def _auto_categorize(conn, asset_id, path):
+    """Attach every category whose keyword rules match the asset's path.
+
+    Runs inside the caller's transaction (shares `conn`) so the new asset row is
+    visible to the foreign-key check. Adds links only; never removes membership a
+    user set by hand.
+    """
+    for cid in _match_category_ids(path, _matchers(conn)):
         conn.execute(
             "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) VALUES (?, ?)",
-            (r["id"], asset_id),
+            (cid, asset_id),
         )
+
+
+def auto_categorize_all():
+    """Re-apply keyword rules across the whole index (back-fill).
+
+    Useful after adding/editing a category's keywords or importing assets that
+    were indexed before a rule existed. Only adds memberships, so manual
+    categorisation is preserved. Returns counts for a UI toast.
+    """
+    added = 0
+    touched = set()
+    with connect() as conn:
+        matchers = _matchers(conn)
+        if not matchers:
+            return {"links_added": 0, "assets_matched": 0}
+        for a in conn.execute("SELECT id, path FROM assets WHERE missing=0").fetchall():
+            for cid in _match_category_ids(a["path"], matchers):
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) "
+                    "VALUES (?, ?)", (cid, a["id"]),
+                )
+                if cur.rowcount:
+                    added += cur.rowcount
+                    touched.add(a["id"])
+    return {"links_added": added, "assets_matched": len(touched)}

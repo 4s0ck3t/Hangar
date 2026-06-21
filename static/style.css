@@ -144,11 +144,17 @@ button, input, select { font-family: inherit; color: inherit; }
 .cat-ico { font-size: 13px; line-height: 1; }
 .cat-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cat-remove {
-  margin-left: auto; background: none; border: none; color: var(--faint);
+  background: none; border: none; color: var(--faint);
   cursor: pointer; font-size: 14px; opacity: 0; transition: opacity .12s;
 }
 .filter-list li.cat-item:hover .cat-remove { opacity: 1; }
 .cat-remove:hover { color: var(--k-model); }
+.cat-kw {
+  background: none; border: none; color: var(--faint);
+  cursor: pointer; font-size: 12px; opacity: 0; transition: opacity .12s;
+}
+.filter-list li.cat-item:hover .cat-kw { opacity: 1; }
+.cat-kw:hover { color: var(--k-model); }
 
 /* ---- status bar ---- */
 .statusbar {

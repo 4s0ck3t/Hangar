@@ -43,6 +43,32 @@ Indexed types:
 
 ---
 
+## Categories (auto-assigned)
+
+Hangar files your assets into **categories** automatically as it scans — no
+tagging by hand. It works purely on names: each category carries a list of
+**keywords**, and any asset whose folder or file name contains one of them is
+filed there. So `…/vehicles/cars/sedan.fbx` lands in **Vehicles**, a
+`forest_hdri.hdr` lands in **Nature**, and a `mech_droid.obj` lands in
+**Sci-Fi**. An asset can belong to several categories at once. This runs on
+every file as it's indexed, across all asset types (models, textures, HDRIs,
+materials).
+
+Hangar ships with a starter taxonomy (Sci-Fi, Buildings, Architecture,
+Vehicles, Characters, Weapons, Nature, Furniture, Props, Industrial, Fantasy,
+Food). You can shape it to your own library:
+
+- **Add a category** with the **+** next to *Categories* and give it keywords
+  (e.g. *Robots* → `robot, droid, mech`).
+- **Edit a category's keywords** — hover it and click **✎**.
+- **Auto-classify (⚡)** re-runs all the rules across everything already
+  indexed. Use it after adding a category or editing keywords to back-fill
+  matches; it only ever *adds* — categories you assigned by hand are never
+  removed.
+
+You can also drag a card onto a category, or set categories per-asset in the
+detail drawer.
+
 ## Send to Blender
 
 1. In Blender: **Edit ▸ Preferences ▸ Add-ons ▸ Install…**, choose

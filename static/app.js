@@ -169,11 +169,29 @@ function renderCategoryFilters(cats) {
     li.className = "cat-item";
     if (state.filter.category === c.name) li.classList.add("active");
     const icon = c.icon ? `<span class="cat-ico">${c.icon}</span>` : `<span class="dot" style="background:var(--k-model)"></span>`;
+    const kwTitle = c.keywords
+      ? `Auto-match keywords: ${c.keywords}\nClick to edit`
+      : "No auto-match keywords yet — click to add";
     li.innerHTML =
       icon +
       `<span class="cat-name">${c.name}</span><span class="count">${c.c}</span>` +
+      `<button class="cat-kw" title="${kwTitle}">✎</button>` +
       `<button class="cat-remove" title="Delete category">&times;</button>`;
     li.onclick = () => { resetFilter(); state.filter.category = c.name; refresh(); };
+
+    li.querySelector(".cat-kw").onclick = async (e) => {
+      e.stopPropagation();
+      const next = prompt(
+        `Auto-match keywords for "${c.name}" (comma-separated).\n` +
+        "Any asset whose folder/file name contains one of these is filed here when you Auto-classify (⚡).",
+        c.keywords || ""
+      );
+      if (next === null) return;
+      await post(`categories/${c.id}/keywords`, { keywords: next });
+      const r = await post("categories/auto", {});
+      if (r.ok && r.links_added) toast(`Filed ${r.assets_matched} asset${r.assets_matched === 1 ? "" : "s"}`, "success");
+      await loadState(); refresh();
+    };
 
     li.querySelector(".cat-remove").onclick = async (e) => {
       e.stopPropagation();
@@ -883,7 +901,27 @@ $("#addCollectionBtn").onclick = async () => {
 $("#addCategoryBtn").onclick = async () => {
   const name = prompt("New category name (e.g. Robots):"); if (!name) return;
   const icon = prompt("Icon emoji (optional — press Cancel to skip):") || "";
-  await post("categories", { name, icon }); loadState();
+  const keywords = prompt(
+    "Auto-match keywords (comma-separated, optional).\n" +
+    "Any asset whose folder/file name contains one of these is auto-filed here.\n" +
+    "e.g. robot, droid, mech"
+  ) || "";
+  await post("categories", { name, icon, keywords });
+  if (keywords.trim()) await post("categories/auto", {});
+  loadState();
+};
+
+$("#autoClassifyBtn").onclick = async () => {
+  toast("Auto-classifying…");
+  const r = await post("categories/auto", {});
+  if (r.ok) {
+    toast(r.links_added
+      ? `Filed ${r.assets_matched} asset${r.assets_matched === 1 ? "" : "s"} (${r.links_added} new tags)`
+      : "Everything already categorised", "success");
+    loadState(); refresh();
+  } else {
+    toast("Auto-classify failed.", "error");
+  }
 };
 
 let searchTimer;
