@@ -1103,6 +1103,33 @@ $("#updateDownloadBtn").onclick = async () => {
     }
   }, 500);
 };
+// Manual "Check for updates" — explicit feedback for every outcome so it's
+// never a mystery whether a check ran (unlike the silent boot-time check).
+async function manualCheckUpdate() {
+  const btn = $("#checkUpdateBtn");
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = "Checking…";
+  let u;
+  try { u = await api("update/check"); }
+  catch (e) { u = null; }
+  btn.disabled = false; btn.textContent = prev;
+  if (!u || !u.ok) {
+    toast((u && u.error) || "Couldn't reach GitHub to check for updates.", "error");
+    return;
+  }
+  if (u.update_available) {
+    _updateInfo = u;
+    const pill = $("#updatePill");
+    pill.textContent = `⬆ Update to v${u.latest}`;
+    pill.classList.remove("hidden");
+    pill.onclick = openUpdateModal;
+    openUpdateModal();
+  } else {
+    toast(`You're on the latest version (v${u.current}).`, "success");
+  }
+}
+$("#checkUpdateBtn").onclick = manualCheckUpdate;
+
 $("#updateLaunchBtn").onclick = async () => {
   const r = await post("update/launch");
   if (r.ok) toast("Launched the new version — you can close this window.", "success");
