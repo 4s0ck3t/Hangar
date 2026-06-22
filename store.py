@@ -119,10 +119,9 @@ DEFAULT_CATEGORIES = [
                             "magic", "wizard", "knight", "dungeon"]),
     ("Food",         "🍎", "model", ["food", "fruit", "drink", "meal", "vegetable",
                             "bottle"]),
-    # Shared across kinds (a forest model and a forest HDRI both fit here).
-    ("Nature",       "🌲", "", ["nature", "tree", "trees", "plant", "plants", "rock",
-                            "rocks", "terrain", "foliage", "grass", "environment",
-                            "landscape", "forest", "flower", "mountain"]),
+    ("Nature",       "🌲", "model", ["nature", "tree", "trees", "plant", "plants",
+                            "rock", "rocks", "terrain", "foliage", "grass",
+                            "environment", "landscape", "forest", "flower", "mountain"]),
     # HDRI environment categories, modelled on Poly Haven's taxonomy.
     ("Outdoor",      "🌤", "hdri", ["outdoor", "exterior", "outside", "field",
                             "park", "garden", "courtyard"]),

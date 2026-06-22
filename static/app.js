@@ -23,11 +23,25 @@ const MODEL_EXT_GROUPS = [
   { label: "3DS",     exts: [".3ds"] },
 ];
 
+function loadCollapsed() {
+  try { return new Set(JSON.parse(localStorage.getItem("hangar_collapsed") || "[]")); }
+  catch (_) { return new Set(); }
+}
 const state = {
   filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "", favorite: false },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
+  collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
 const $ = (s) => document.querySelector(s);
+
+// Collapse/expand a Library type's nested categories + formats, and persist it.
+function toggleCollapse(kind) {
+  if (state.collapsed.has(kind)) state.collapsed.delete(kind);
+  else state.collapsed.add(kind);
+  try { localStorage.setItem("hangar_collapsed", JSON.stringify([...state.collapsed])); }
+  catch (_) { /* ignore */ }
+  loadState();  // re-render the sidebar
+}
 const thumbBust = {};
 function thumbUrl(id) {
   return `/api/thumb/${id}` + (thumbBust[id] ? `?t=${thumbBust[id]}` : "");
@@ -95,6 +109,12 @@ function renderKindFilters(counts, cats) {
   ];
   const ul = $("#kindFilters"); ul.innerHTML = "";
   for (const [kind, key, count] of items) {
+    const kindCats = cats.filter((c) => (c.kind || "") === kind);
+    const hasExt = kind === "model" && count > 0 &&
+      MODEL_EXT_GROUPS.some((g) => g.exts.some((e) => (modelByExt[e] || 0) > 0));
+    const hasChildren = kindCats.length > 0 || hasExt;
+    const collapsed = state.collapsed.has(kind);
+
     const li = document.createElement("li");
     li.className = "kind-item";
     const isPlainKind = !state.filter.ext && !state.filter.favorite
@@ -102,16 +122,25 @@ function renderKindFilters(counts, cats) {
     const active = isPlainKind && state.filter.kind === kind;
     if (active) li.classList.add("active");
     const color = KIND_COLORS[kind] || "var(--mute)";
-    li.innerHTML =
+    const twisty = hasChildren
+      ? `<span class="twisty">${collapsed ? "▸" : "▾"}</span>`
+      : `<span class="twisty-spacer"></span>`;
+    li.innerHTML = twisty +
       `<span class="dot" style="background:${color}"></span>` +
       `<span>${KIND_LABELS[key]}</span><span class="count">${count}</span>`;
     li.onclick = () => { resetFilter(); state.filter.kind = kind; refresh(); };
+    if (hasChildren) {
+      li.querySelector(".twisty").onclick = (e) => {
+        e.stopPropagation();
+        toggleCollapse(kind);
+      };
+    }
     ul.appendChild(li);
 
-    // Categories nested under their type. Shared categories (kind "") sit under
-    // "All assets"; each scoped category sits under its own type.
-    for (const c of cats.filter((c) => (c.kind || "") === kind))
-      ul.appendChild(buildCategoryItem(c, true));
+    if (collapsed) continue;  // children hidden
+
+    // Categories nested under their type.
+    for (const c of kindCats) ul.appendChild(buildCategoryItem(c, true));
 
     // Model file-format subcategories, under Models below its categories.
     if (kind === "model" && count > 0) {
@@ -483,16 +512,15 @@ function buildCard(a, i) {
     }
   };
 
-  // Drag support — let models be dropped into collections.
-  if (a.kind === "model") {
-    card.draggable = true;
-    card.addEventListener("dragstart", (e) => {
-      e.dataTransfer.setData("text/x-hangar-asset-id", String(a.id));
-      e.dataTransfer.effectAllowed = "copy";
-      card.classList.add("dragging");
-    });
-    card.addEventListener("dragend", () => card.classList.remove("dragging"));
-  }
+  // Drag support — any asset can be dropped onto a sidebar category or
+  // collection to file it there (works for models, textures, HDRIs, materials).
+  card.draggable = true;
+  card.addEventListener("dragstart", (e) => {
+    e.dataTransfer.setData("text/x-hangar-asset-id", String(a.id));
+    e.dataTransfer.effectAllowed = "copy";
+    card.classList.add("dragging");
+  });
+  card.addEventListener("dragend", () => card.classList.remove("dragging"));
   return card;
 }
 

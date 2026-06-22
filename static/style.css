@@ -104,6 +104,14 @@ button, input, select { font-family: inherit; color: inherit; }
 }
 .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
 
+/* Collapse/expand toggle on Library type rows */
+.twisty {
+  width: 14px; flex: none; text-align: center; font-size: 9px;
+  color: var(--faint); cursor: pointer; user-select: none; margin-right: -3px;
+}
+.twisty:hover { color: var(--ink); }
+.twisty-spacer { width: 14px; flex: none; margin-right: -3px; }
+
 /* Model subcategory items */
 .filter-list li.sub-item {
   padding: 5px 8px 5px 26px; font-size: 12px;
