@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.16"
+__version__ = "0.13.17"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -396,6 +396,26 @@ def serve_asset_file(asset_id):
         ".fbx": "application/octet-stream",
     }[asset["ext"]]
     return send_file(path, mimetype=mime)
+
+
+@app.post("/api/assets/<int:asset_id>/thumb")
+def save_thumb(asset_id):
+    """Cache a viewer-rendered preview (data URL) as this asset's thumbnail, so
+    the grid shows it and re-opening is instant."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    data = request.get_json(force=True) or {}
+    img = data.get("image", "")
+    if "," in img:  # strip a data:image/...;base64, prefix
+        img = img.split(",", 1)[1]
+    import base64
+    try:
+        raw = base64.b64decode(img)
+    except Exception:
+        return jsonify({"error": "Bad image data."}), 400
+    ok = thumbs.save_thumbnail_bytes(asset, raw)
+    return jsonify({"ok": bool(ok)})
 
 
 @app.post("/api/assets/<int:asset_id>/reveal")

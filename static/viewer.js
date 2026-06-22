@@ -23,7 +23,8 @@ export function startViewer(container, assetId, ext) {
   const w = container.clientWidth || 380;
   const h = container.clientHeight || 380;
 
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  // preserveDrawingBuffer so we can snapshot the canvas to cache a thumbnail.
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(w, h);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -31,7 +32,7 @@ export function startViewer(container, assetId, ext) {
   renderer.toneMappingExposure = 1.2;
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x131418);
+  scene.background = new THREE.Color(0xf3f4f6);  // light neutral — reads as white
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 2.0));
   const sun = new THREE.DirectionalLight(0xfff5e0, 2.5);
@@ -72,6 +73,24 @@ export function startViewer(container, assetId, ext) {
       mixer.clipAction(animations[0]).play();
       scene.userData._mixer = mixer;
       scene.userData._clock = clock;
+    }
+
+    // Snapshot the framed model and cache it as this asset's thumbnail, so the
+    // grid shows a real preview and re-opening is instant. Once only.
+    if (assetId != null && !scene.userData._snapped) {
+      scene.userData._snapped = true;
+      setTimeout(() => {
+        try {
+          renderer.render(scene, camera);  // fresh frame in the preserved buffer
+          const dataUrl = renderer.domElement.toDataURL('image/jpeg', 0.85);
+          fetch(`/api/assets/${assetId}/thumb`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: dataUrl }),
+          }).then(() => { if (window.onViewerThumbCached) window.onViewerThumbCached(assetId); })
+            .catch(() => {});
+        } catch (_) { /* capture not available — skip */ }
+      }, 450);
     }
   };
 

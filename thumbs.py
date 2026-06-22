@@ -61,6 +61,21 @@ def get_or_make(asset):
     return None
 
 
+def save_thumbnail_bytes(asset, data):
+    """Persist a provided image (raw bytes, e.g. a snapshot from the 3D viewer)
+    as this asset's cached thumbnail. Best-effort; returns True on success."""
+    import io
+    from PIL import Image
+    try:
+        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        with Image.open(io.BytesIO(data)) as img:
+            img.load()
+            return _save_downscaled(img, _thumb_path(asset))
+    except Exception:
+        log.exception("save_thumbnail_bytes failed for %s", asset.get("path", "?"))
+        return False
+
+
 def _save_downscaled(img, out):
     from PIL import Image
     # Composite transparent images onto a dark background so JPEG is clean.

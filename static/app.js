@@ -613,6 +613,24 @@ function renderGrid(assets, total) {
   renderWindow();
 }
 
+// When the 3D viewer caches a thumbnail for an asset, refresh that grid card so
+// the rendered preview replaces the format badge without a full reload.
+window.onViewerThumbCached = (id) => {
+  thumbBust[id] = Date.now();
+  const card = $(`#grid .card[data-id="${id}"]`);
+  const thumb = card && card.querySelector(".card-thumb");
+  if (!thumb) return;
+  const img = new Image();
+  img.onload = () => {
+    const existing = thumb.querySelector("img");
+    const tile = thumb.querySelector(".badge-tile");
+    if (existing) existing.src = img.src;
+    else if (tile) tile.replaceWith(img);
+  };
+  img.src = thumbUrl(id);
+  img.alt = "";
+};
+
 // ---- detail drawer --------------------------------------------------------
 let allTags = [];
 
@@ -710,7 +728,10 @@ async function openDrawer(id, idx) {
 
   // Load preview: 3D viewer for GLB/GLTF/FBX, thumbnail for everything else.
   if (VIEWER_EXTS.has(a.ext)) {
-    getViewerMod().then(mod => mod.startViewer($("#dPreview"), a.id, a.ext));
+    const pv = $("#dPreview");
+    // Show any cached thumbnail instantly as a poster while the 3D loads.
+    if (pv) pv.style.backgroundImage = `url("${thumbUrl(a.id)}")`;
+    getViewerMod().then(mod => mod.startViewer(pv, a.id, a.ext));
   } else {
     loadPreview(a);
   }
