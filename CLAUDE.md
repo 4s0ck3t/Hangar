@@ -94,8 +94,13 @@ pyinstaller --noconsole --name Hangar --add-data "static;static" desktop.py   # 
 pyinstaller            --name Hangar --add-data "static:static" desktop.py     # Linux
 ```
 `;` is the Windows add-data separator (`:` on macOS/Linux). Build per-platform (no cross-build).
-Windows native window needs the Edge WebView2 runtime (default on Win10/11); otherwise (and on
-Linux) desktop.py falls back to the Edge/Chrome `--app` window, then the browser.
+Windows native window needs the Edge WebView2 runtime (default on Win10/11). The Windows build
+bundles the ~2 MB WebView2 Evergreen bootstrapper (`--add-data MicrosoftEdgeWebview2Setup.exe;.`,
+fetched in CI from `go.microsoft.com/fwlink/p/?LinkId=2124703`); `desktop._ensure_webview2()`
+checks the EdgeUpdate registry key and runs it `/silent /install` (per-user) when missing.
+Otherwise (and on Linux) desktop.py falls back to the Edge/Chrome `--app` window (with
+`--no-sandbox` when running as root), then the browser. No small bundled webview runtime exists
+for Linux — a true native window there needs system WebKitGTK + PyGObject.
 
 **Updater needs a PUBLIC repo:** unauthenticated GitHub API + asset downloads 404 on a private
 repo, so the update pill never appears. `_platform_asset` selects `.zip` (Windows) / `.tar.gz`

@@ -27,11 +27,19 @@ jobs:
           pip install trimesh>=4.0 numpy>=1.24 imageio>=2.30 pyopengl>=3.1
           pip install opencv-python-headless>=4.8
 
+      - name: Fetch WebView2 Evergreen bootstrapper (~2 MB)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" `
+            -OutFile MicrosoftEdgeWebview2Setup.exe
+          Get-Item MicrosoftEdgeWebview2Setup.exe | Select-Object Name,Length
+
       - name: Build Hangar (onedir — fewer AV false-positives than onefile)
         run: >
           pyinstaller --noconsole --name Hangar
           --icon hangar.ico
           --add-data "static;static"
+          --add-data "MicrosoftEdgeWebview2Setup.exe;."
           --collect-all webview
           --collect-all pythonnet
           --collect-all clr_loader

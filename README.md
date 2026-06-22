@@ -34,6 +34,18 @@ So it works out of the box on Windows, macOS and Linux; on Linux you just need
 either a WebKit backend for pywebview *or* any Chromium-based browser installed
 (Edge/Chrome/Chromium) — most desktops already have one.
 
+**Windows:** the packaged build bundles the tiny (~2 MB) WebView2 Evergreen
+bootstrapper and silently installs the runtime on first launch if it's missing,
+so the native window works even on a machine without it.
+
+**Linux native window (optional):** the `--app` window is the default and needs
+no extra packages. If you'd rather have a true pywebview window from source,
+install the WebKitGTK backend, e.g. on Debian/Ubuntu:
+`sudo apt install python3-gi gir1.2-webkit2-4.1` (there's no small bundled
+runtime for Linux the way Windows has WebView2). Avoid running as **root** —
+browsers refuse the sandbox as root (Hangar passes `--no-sandbox` to cope, but
+a normal user account is better).
+
 ### Or run it as a local web app
 
 ```bash

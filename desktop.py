@@ -155,6 +155,51 @@ def _selftest():
 
 
 # ---- window strategies ----------------------------------------------------
+def _webview2_installed():
+    """True if the Edge WebView2 runtime is registered (Windows). Non-Windows
+    returns True (not applicable)."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import winreg
+    except Exception:
+        return True  # can't check — assume present rather than block
+    guid = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"  # WebView2 Evergreen runtime
+    keys = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients" + "\\" + guid),
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\EdgeUpdate\Clients" + "\\" + guid),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\EdgeUpdate\Clients" + "\\" + guid),
+    ]
+    for root, path in keys:
+        try:
+            with winreg.OpenKey(root, path) as k:
+                pv, _ = winreg.QueryValueEx(k, "pv")
+                if pv and pv != "0.0.0.0":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _ensure_webview2():
+    """If the WebView2 runtime is missing on Windows, install it via the bundled
+    Evergreen bootstrapper (~2 MB stub; downloads the runtime, per-user, no admin).
+    No-op on non-Windows or if already present / bootstrapper not bundled."""
+    if _webview2_installed():
+        return
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    boot = os.path.join(base, "MicrosoftEdgeWebview2Setup.exe")
+    if not os.path.exists(boot):
+        _log("WebView2 runtime missing and bootstrapper not bundled — using fallback window")
+        return
+    _log("WebView2 runtime missing — installing via bundled bootstrapper (one-time)…")
+    try:
+        subprocess.run([boot, "/silent", "/install"], timeout=600)
+        _log("WebView2 bootstrapper finished; installed=" + str(_webview2_installed()))
+    except Exception:
+        _log("WebView2 bootstrapper failed:\n" + traceback.format_exc())
+
+
 def _try_pywebview(url):
     """Open the real native window. Returns True if it ran (and the user closed
     it), False if the backend couldn't start so we should fall back. The full
@@ -291,6 +336,7 @@ def main():
         _log("server is listening")
     else:
         _log("WARNING: server not reachable after 20s — window may be blank")
+    _ensure_webview2()  # Windows: install the WebView2 runtime if it's missing
     if _try_pywebview(url):
         return
     if _launch_app_window(url):
