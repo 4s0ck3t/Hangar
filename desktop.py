@@ -276,13 +276,24 @@ def _keep_alive():
         pass
 
 
+def _cleanup_profile(profile):
+    try:
+        shutil.rmtree(profile, ignore_errors=True)
+    except Exception:
+        pass
+
+
 def _launch_app_window(url):
     browser = _find_chromium()
     if not browser:
         _log("no Chromium browser found for --app fallback")
         return False
-    profile = os.path.join(tempfile.gettempdir(), "hangar-app-profile")
-    args = [browser, f"--app={url}", f"--user-data-dir={profile}",
+    # A UNIQUE profile per launch + --new-window, so a new Hangar always opens
+    # its OWN app window connected to ITS server. With a shared profile, Chromium
+    # would re-focus an older still-running Hangar's window instead — which is why
+    # a freshly-updated build could keep showing the previous version.
+    profile = os.path.join(tempfile.gettempdir(), f"hangar-app-{os.getpid()}")
+    args = [browser, f"--app={url}", f"--user-data-dir={profile}", "--new-window",
             "--window-size=1320,860", "--no-first-run", "--no-default-browser-check"]
     # Chromium refuses to start as root unless sandboxing is disabled.
     if hasattr(os, "geteuid") and os.geteuid() == 0:
@@ -302,11 +313,13 @@ def _launch_app_window(url):
         rc = proc.wait(timeout=2.5)
     except subprocess.TimeoutExpired:
         proc.wait()      # foreground window — block until the user closes it
+        _cleanup_profile(profile)
         return True
     if rc == 0:
         _log("--app launcher handed off (exit 0); keeping server alive")
         _keep_alive()
         return True
+    _cleanup_profile(profile)
     _log(f"--app window exited early (rc={rc}) — falling back to browser")
     return False
 
