@@ -85,12 +85,21 @@ python app.py         # browser at http://127.0.0.1:7575
 Env: `HANGAR_HOME` (data dir), `HANGAR_PORT` (port), `HANGAR_BLENDER` (blender executable),
 `HANGAR_DESKTOP` (set by desktop.py).
 
-## Build (Windows)
+## Build (CI: Windows + Linux)
+`.github/workflows/release-windows.yml` and `release-linux.yml` build on every `v*` tag
+(onedir) and attach `Hangar-windows.zip` / `Hangar-linux.tar.gz` to the GitHub release.
+By hand:
 ```bash
-pyinstaller --noconsole --name Hangar --add-data "static;static" desktop.py
+pyinstaller --noconsole --name Hangar --add-data "static;static" desktop.py   # Windows
+pyinstaller            --name Hangar --add-data "static:static" desktop.py     # Linux
 ```
-`;` is the Windows add-data separator (`:` on macOS/Linux). Build per-platform on the target OS.
-Target needs the Edge WebView2 runtime (default on Win10/11).
+`;` is the Windows add-data separator (`:` on macOS/Linux). Build per-platform (no cross-build).
+Windows native window needs the Edge WebView2 runtime (default on Win10/11); otherwise (and on
+Linux) desktop.py falls back to the Edge/Chrome `--app` window, then the browser.
+
+**Updater needs a PUBLIC repo:** unauthenticated GitHub API + asset downloads 404 on a private
+repo, so the update pill never appears. `_platform_asset` selects `.zip` (Windows) / `.tar.gz`
+(Linux); the downloader handles both archive types and resolves `Hangar.exe` vs `Hangar`.
 
 ## TODO (from handoff — confirm with owner before any large refactor)
 1. **Verify on Windows:** standalone window (`desktop.py`), native folder picker (pywebview dialog + tkinter fallback), background scan + bottom status-bar progress, thumbnail sizing.

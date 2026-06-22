@@ -1,0 +1,52 @@
+name: Build Linux executable
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install Flask>=3.0 Pillow>=10.0 pyinstaller>=6.0
+          pip install trimesh>=4.0 numpy>=1.24 imageio>=2.30
+          pip install opencv-python-headless>=4.8
+
+      - name: Build Hangar (onedir)
+        run: >
+          pyinstaller --name Hangar
+          --add-data "static:static"
+          --collect-all trimesh
+          --collect-all cv2
+          --hidden-import imageio
+          --hidden-import numpy
+          desktop.py
+
+      - name: Tarball the build folder
+        run: tar -C dist/Hangar -czf dist/Hangar-linux.tar.gz .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hangar-linux
+          path: dist/Hangar-linux.tar.gz
+
+      - name: Attach to release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Hangar-linux.tar.gz

@@ -6,16 +6,33 @@ Your files are never moved or copied; Hangar only reads and indexes them.
 
 ---
 
-## Run it (standalone app)
+## Download
+
+Grab the latest build from the [Releases page](https://github.com/4s0ck3t/Hangar/releases/latest):
+- **Windows** — `Hangar-windows.zip` (extract, run `Hangar.exe`)
+- **Linux** — `Hangar-linux.tar.gz` (extract, run `./Hangar`)
+
+Once you're running a build, Hangar checks for newer releases on launch and
+shows an **⬆ Update** pill — one click downloads and unpacks the new version
+beside the current one. (Requires the GitHub repo to be public.)
+
+## Run it from source (standalone app)
 
 ```bash
 pip install -r requirements.txt
 python desktop.py
 ```
 
-`desktop.py` opens Hangar in its own native window — no browser tab. On
-Windows it renders through the built-in Edge WebView2 runtime (present on
-Windows 10/11 by default).
+`desktop.py` opens Hangar in its own window. It tries, in order:
+1. a **native window** (pywebview — Edge WebView2 on Windows, WebKit on macOS,
+   GTK/Qt WebKit on Linux if installed),
+2. a chrome-less **Edge/Chrome `--app` window** (used automatically if the
+   native backend isn't available — common on Linux), then
+3. your **default browser**.
+
+So it works out of the box on Windows, macOS and Linux; on Linux you just need
+either a WebKit backend for pywebview *or* any Chromium-based browser installed
+(Edge/Chrome/Chromium) — most desktops already have one.
 
 ### Or run it as a local web app
 
@@ -102,21 +119,33 @@ an embedded preview — use **Render preview** for those.
 
 ---
 
-## Build a standalone .exe (Windows)
+## Build standalone executables
 
-To hand someone a single double-click `Hangar.exe`:
+CI builds both platforms automatically on every `v*` tag (see
+`.github/workflows/release-{windows,linux}.yml`) and attaches them to the
+GitHub release. To build by hand:
 
+**Windows** (`dist/Hangar/Hangar.exe`):
 ```bash
 pip install pyinstaller
 pyinstaller --noconsole --name Hangar --add-data "static;static" desktop.py
 ```
 
-The build lands in `dist/Hangar/Hangar.exe`. Notes:
-- The `;` in `--add-data` is the Windows separator (macOS/Linux use `:`).
-- PyInstaller builds per-platform — run this **on the Windows machine** to get
-  a Windows .exe (you can't cross-build it from macOS/Linux).
-- The target PC needs the Edge **WebView2 runtime** (already on Win10/11).
-- For one loose file instead of a folder, add `--onefile` (slower to start).
+**Linux** (`dist/Hangar/Hangar`):
+```bash
+pip install pyinstaller
+pyinstaller --name Hangar --add-data "static:static" desktop.py
+```
+
+Notes:
+- `--add-data` separator is `;` on Windows, `:` on macOS/Linux.
+- PyInstaller builds **per-platform** — you can't cross-build (build the Windows
+  exe on Windows, the Linux binary on Linux).
+- Windows targets need the Edge **WebView2 runtime** (already on Win10/11) for
+  the native window; otherwise Hangar falls back to an Edge/Chrome `--app`
+  window. Linux uses the `--app` window / browser fallback.
+- For one loose file instead of a folder, add `--onefile` (slower to start;
+  also trips more AV false-positives on Windows).
 
 ---
 

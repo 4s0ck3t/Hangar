@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.12"
+__version__ = "0.13.13"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -528,6 +528,24 @@ def _reveal_path(path):
         pass
 
 
+def _platform_asset(assets):
+    """Pick the release asset for the current OS: Windows -> the .zip, Linux ->
+    the .tar.gz, falling back to any archive if the named one is missing."""
+    sysname = platform.system()
+    ext = {"Windows": ".zip", "Linux": ".tar.gz", "Darwin": ".zip"}.get(sysname, ".zip")
+    kw = {"Windows": "windows", "Linux": "linux", "Darwin": "mac"}.get(sysname, "")
+    names = [(a, (a.get("name") or "").lower()) for a in assets]
+    by_ext = [a for a, n in names if n.endswith(ext)]
+    preferred = [a for a in by_ext if kw in (a.get("name") or "").lower()]
+    if preferred:
+        return preferred[0]
+    if by_ext:
+        return by_ext[0]
+    # last resort: any archive at all
+    arch = [a for a, n in names if n.endswith((".zip", ".tar.gz", ".tgz"))]
+    return arch[0] if arch else None
+
+
 @app.get("/api/update/check")
 def update_check():
     try:
@@ -535,8 +553,7 @@ def update_check():
     except Exception as e:
         return jsonify({"ok": False, "error": f"Couldn't reach GitHub: {e}"}), 200
     latest = (rel.get("tag_name") or "").lstrip("v")
-    asset = next((a for a in rel.get("assets", [])
-                  if (a.get("name") or "").lower().endswith(".zip")), None)
+    asset = _platform_asset(rel.get("assets", []))
     return jsonify({
         "ok": True,
         "current": __version__,
@@ -553,6 +570,7 @@ def update_check():
 def _do_update_download(url, name, version):
     import urllib.request
     import zipfile
+    import tarfile
     import shutil
     dest = os.path.join(_downloads_dir(), name)
     try:
@@ -573,10 +591,29 @@ def _do_update_download(url, name, version):
         folder = os.path.join(_downloads_dir(), f"Hangar-{version}")
         if os.path.isdir(folder):
             shutil.rmtree(folder, ignore_errors=True)
-        with zipfile.ZipFile(dest) as z:
-            z.extractall(folder)
-        exe = os.path.join(folder, "Hangar.exe")
-        exe = exe if os.path.exists(exe) else None
+        low = name.lower()
+        if low.endswith((".tar.gz", ".tgz")):
+            with tarfile.open(dest, "r:gz") as t:
+                t.extractall(folder)
+        else:
+            with zipfile.ZipFile(dest) as z:
+                z.extractall(folder)
+        # The launcher binary: Hangar.exe on Windows, Hangar on Linux/macOS.
+        exe_name = "Hangar.exe" if platform.system() == "Windows" else "Hangar"
+        exe = os.path.join(folder, exe_name)
+        if not os.path.exists(exe):
+            # Some archives nest everything under a top folder — search one level.
+            for root, _dirs, files in os.walk(folder):
+                if exe_name in files:
+                    exe = os.path.join(root, exe_name)
+                    break
+            else:
+                exe = None
+        if exe and platform.system() != "Windows":
+            try:
+                os.chmod(exe, 0o755)
+            except Exception:
+                pass
         with UPDATE_LOCK:
             UPDATE.update(running=False, done=True, pct=100,
                           path=dest, folder=folder, exe=exe)
