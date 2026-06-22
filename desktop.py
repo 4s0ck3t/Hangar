@@ -222,23 +222,48 @@ def _find_chromium():
     return None
 
 
+def _keep_alive():
+    """Block the foreground process so the daemon Flask thread keeps serving."""
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+
+
 def _launch_app_window(url):
     browser = _find_chromium()
     if not browser:
         _log("no Chromium browser found for --app fallback")
         return False
     profile = os.path.join(tempfile.gettempdir(), "hangar-app-profile")
+    args = [browser, f"--app={url}", f"--user-data-dir={profile}",
+            "--window-size=1320,860", "--no-first-run", "--no-default-browser-check"]
+    # Chromium refuses to start as root unless sandboxing is disabled.
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        args.append("--no-sandbox")
+        _log("running as root — adding --no-sandbox so Chromium will start")
     try:
         _log(f"launching Edge/Chrome --app window via {browser}")
-        proc = subprocess.Popen([
-            browser, f"--app={url}", f"--user-data-dir={profile}",
-            "--window-size=1320,860", "--no-first-run", "--no-default-browser-check",
-        ])
+        proc = subprocess.Popen(args)
     except Exception:
         _log("couldn't launch --app window:\n" + traceback.format_exc())
         return False
-    proc.wait()
-    return True
+    # If it dies almost immediately it never really opened (bad flags, no display,
+    # sandbox refusal): treat a non-zero quick exit as failure so we fall through
+    # to the browser. A quick exit of 0 means it handed off to a browser process
+    # that owns the window — keep this process alive so Flask keeps serving it.
+    try:
+        rc = proc.wait(timeout=2.5)
+    except subprocess.TimeoutExpired:
+        proc.wait()      # foreground window — block until the user closes it
+        return True
+    if rc == 0:
+        _log("--app launcher handed off (exit 0); keeping server alive")
+        _keep_alive()
+        return True
+    _log(f"--app window exited early (rc={rc}) — falling back to browser")
+    return False
 
 
 def _run_in_default_browser(url):
@@ -248,11 +273,7 @@ def _run_in_default_browser(url):
         webbrowser.open(url)
     except Exception:
         pass
-    try:
-        while True:
-            time.sleep(3600)
-    except KeyboardInterrupt:
-        pass
+    _keep_alive()
 
 
 def main():
