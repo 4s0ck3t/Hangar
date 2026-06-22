@@ -17,6 +17,7 @@ can see whether the frozen webview actually loads.
 
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -334,9 +335,54 @@ def _run_in_default_browser(url):
     _keep_alive()
 
 
+def _kill_stale_instances():
+    """Terminate other running Hangar instances so an updated build is never
+    shadowed by an orphaned older one (e.g. a previous version stuck keeping its
+    server alive). Best-effort; only targets processes named exactly Hangar, and
+    never the current process. Frozen builds only."""
+    if not getattr(sys, "frozen", False):
+        return
+    me = os.getpid()
+    try:
+        if sys.platform == "win32":
+            import csv
+            import io
+            out = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq Hangar.exe", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=10).stdout
+            for row in csv.reader(io.StringIO(out)):
+                if len(row) >= 2 and row[0].strip().lower() == "hangar.exe":
+                    try:
+                        pid = int(row[1].strip())
+                    except ValueError:
+                        continue
+                    if pid != me:
+                        subprocess.run(["taskkill", "/F", "/PID", str(pid)],
+                                       capture_output=True, timeout=10)
+                        _log(f"terminated stale Hangar.exe pid {pid}")
+        else:
+            out = subprocess.run(["pgrep", "-x", "Hangar"],
+                                 capture_output=True, text=True, timeout=10).stdout
+            for tok in out.split():
+                try:
+                    pid = int(tok)
+                except ValueError:
+                    continue
+                if pid != me:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                        _log(f"terminated stale Hangar pid {pid}")
+                    except Exception:
+                        pass
+    except Exception:
+        _log("stale-instance cleanup skipped:\n" + traceback.format_exc())
+
+
 def main():
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
+    # Clear out any orphaned older instances before we bind a port / open a window.
+    _kill_stale_instances()
     # Bind to a guaranteed-free port (the default may be held by an orphaned
     # instance), then start Flask there.
     backend.PORT = _pick_free_port(backend.PORT)

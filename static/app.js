@@ -24,8 +24,12 @@ const MODEL_EXT_GROUPS = [
 ];
 
 function loadCollapsed() {
-  try { return new Set(JSON.parse(localStorage.getItem("hangar_collapsed") || "[]")); }
-  catch (_) { return new Set(); }
+  // Default (first run / no saved choice): only Models expanded.
+  const DEFAULT = ["texture", "hdri", "material"];
+  const saved = localStorage.getItem("hangar_collapsed");
+  if (saved == null) return new Set(DEFAULT);
+  try { return new Set(JSON.parse(saved)); }
+  catch (_) { return new Set(DEFAULT); }
 }
 const state = {
   filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "", favorite: false },
