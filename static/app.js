@@ -38,12 +38,19 @@ const state = {
 };
 const $ = (s) => document.querySelector(s);
 
+// The four collapsible Library types.
+const TYPE_KINDS = ["model", "texture", "hdri", "material"];
+
+function persistCollapsed() {
+  try { localStorage.setItem("hangar_collapsed", JSON.stringify([...state.collapsed])); }
+  catch (_) { /* ignore */ }
+}
+
 // Collapse/expand a Library type's nested categories + formats, and persist it.
 function toggleCollapse(kind) {
   if (state.collapsed.has(kind)) state.collapsed.delete(kind);
   else state.collapsed.add(kind);
-  try { localStorage.setItem("hangar_collapsed", JSON.stringify([...state.collapsed])); }
-  catch (_) { /* ignore */ }
+  persistCollapsed();
   loadState();  // re-render the sidebar
 }
 const thumbBust = {};
@@ -132,7 +139,16 @@ function renderKindFilters(counts, cats) {
     li.innerHTML = twisty +
       `<span class="dot" style="background:${color}"></span>` +
       `<span>${KIND_LABELS[key]}</span><span class="count">${count}</span>`;
-    li.onclick = () => { resetFilter(); state.filter.kind = kind; refresh(); };
+    li.onclick = () => {
+      resetFilter();
+      state.filter.kind = kind;
+      // Accordion: selecting a type expands it and collapses the other types.
+      if (TYPE_KINDS.includes(kind)) {
+        state.collapsed = new Set(TYPE_KINDS.filter((k) => k !== kind));
+        persistCollapsed();
+      }
+      refresh();
+    };
     if (hasChildren) {
       li.querySelector(".twisty").onclick = (e) => {
         e.stopPropagation();
