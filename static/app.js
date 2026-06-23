@@ -484,9 +484,9 @@ let drawerAssetId = null; // id of the asset currently shown in the drawer
 
 async function refresh() {
   const f = state.filter;
-  // Grouped view: a plain type selection (Models/Textures/…) with no other
-  // filter shows all of that type split into category sections.
-  const grouped = TYPE_KINDS.includes(f.kind) && !f.ext && !f.tag
+  // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
+  // with no other filter splits the grid into category sections.
+  const grouped = (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
     && !f.collection && !f.category && !f.folder && !f.favorite && !state.search;
 
   const p = new URLSearchParams();
@@ -526,15 +526,20 @@ function renderGroupedGrid(assets, kind, total) {
   grid.classList.add("grouped");
   bindGridDragScroll();   // scroll to off-screen categories while dragging a tile
 
-  const cats = allCategories.filter((c) => (c.kind || "") === kind);
+  // "All assets" (no kind) groups by every category across all types; a plain
+  // type view groups by just that type's categories.
+  const cats = kind
+    ? allCategories.filter((c) => (c.kind || "") === kind)
+    : allCategories.slice();
   const catNames = new Set(cats.map((c) => c.name));
   const sections = cats.map((c) => ({
     cat: c, items: assets.filter((a) => (a.categories || []).includes(c.name)),
   }));
+  // Unclassified assets (in none of the shown categories) always sit at the top.
   const uncategorized = assets.filter(
     (a) => !(a.categories || []).some((n) => catNames.has(n)));
   if (uncategorized.length)
-    sections.push({ cat: { name: "Uncategorized", icon: "📂" }, items: uncategorized, uncat: true });
+    sections.unshift({ cat: { name: "Unclassified", icon: "📂" }, items: uncategorized, uncat: true });
 
   const idxOf = new Map(assets.map((a, i) => [a, i]));
   const frag = document.createDocumentFragment();
@@ -600,7 +605,7 @@ function renderGroupedGrid(assets, kind, total) {
   // Inline affordance to spin up another category for this very type.
   const adder = document.createElement("button");
   adder.className = "section-add";
-  adder.innerHTML = `<span class="sa-plus">＋</span> New ${KIND_LABELS[kind] || kind} category`;
+  adder.innerHTML = `<span class="sa-plus">＋</span> New ${kind ? (KIND_LABELS[kind] || kind) + " " : ""}category`;
   adder.onclick = async () => { if (await promptNewCategory(kind)) refresh(); };
   frag.appendChild(adder);
 
