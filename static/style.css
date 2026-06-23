@@ -626,11 +626,28 @@ button, input, select { font-family: inherit; color: inherit; }
 }
 .batch-coll-btn:hover, .batch-cat-btn:hover { background: var(--raised-hi); border-color: var(--select); }
 .batch-del-btn:hover { background: rgba(232,121,74,.14); border-color: var(--k-model); color: var(--k-model); }
+.batch-blend-btn {
+  font-size: 11.5px; padding: 5px 11px; border-radius: 7px; cursor: pointer;
+  background: var(--select); border: 1px solid var(--select); color: #fff; font-weight: 600;
+  transition: filter .12s;
+}
+.batch-blend-btn:hover { filter: brightness(1.12); }
+.batch-blend-btn:disabled { opacity: .6; cursor: default; }
 .batch-clear {
   font-size: 13px; line-height: 1; padding: 4px 7px; border-radius: 6px; cursor: pointer;
   background: transparent; border: 1px solid transparent; color: var(--faint);
 }
 .batch-clear:hover { color: var(--ink); background: rgba(255,255,255,.06); }
+
+/* ---- hover quick-preview ---- */
+.hover-preview {
+  position: fixed; z-index: 55; pointer-events: none;
+  border-radius: 10px; overflow: hidden;
+  background: #131418; border: 1px solid var(--line);
+  box-shadow: 0 16px 44px rgba(0,0,0,.55);
+  animation: hoverpop .14s ease both;
+}
+@keyframes hoverpop { from { opacity: 0; transform: scale(.96); } to { opacity: 1; transform: scale(1); } }
 
 /* focus + motion + responsive floor */
 :focus-visible { outline: 2px solid var(--select); outline-offset: 2px; }

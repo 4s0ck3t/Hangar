@@ -407,10 +407,16 @@ function updateBatchBar() {
         `<button class="batch-tag-btn" data-tag="${t.name}" style="border-color:${t.color}40;color:${t.color}">${t.name}</button>`
       ).join("")
     : '<span style="color:var(--faint);font-size:11px">No tags yet</span>';
+  // "Send to Blender" only when the bridge has rendered at least once / Blender
+  // is configured — otherwise the queue piles up with nothing reading it.
+  const blendBtn = appCaps.blenderReady
+    ? `<button class="batch-blend-btn" id="batchBlendBtn">⮞ Send to Blender</button>`
+    : "";
   bar.innerHTML = `
     <span class="batch-count">${selection.size} selected</span>
     <div class="batch-sep"></div>
     <div class="batch-tags">${tags}</div>
+    ${blendBtn}
     <button class="batch-coll-btn" id="batchCollBtn">+ Collection</button>
     <button class="batch-cat-btn" id="batchCatBtn">+ Category</button>
     <button class="batch-del-btn" id="batchDelBtn">Remove from Hangar</button>
@@ -447,6 +453,24 @@ function updateBatchBar() {
     clearSelection(); refresh(); loadState();
   };
   $("#batchClearBtn").onclick = clearSelection;
+  const blend = $("#batchBlendBtn");
+  if (blend) blend.onclick = async () => {
+    blend.disabled = true; blend.textContent = "Sending…";
+    let r; try { r = await post("assets/batch/send-blender", { ids: [...selection] }); }
+    catch (_) { r = null; }
+    blend.disabled = false; blend.textContent = "⮞ Send to Blender";
+    if (r && r.ok) {
+      const parts = [];
+      if (r.model) parts.push(`${r.model} model${r.model > 1 ? "s" : ""}`);
+      if (r.material) parts.push(`${r.material} material${r.material > 1 ? "s" : ""}`);
+      if (r.hdri) parts.push(`${r.hdri} HDRI${r.hdri > 1 ? "s" : ""}`);
+      toast(parts.length
+        ? `Queued ${parts.join(", ")} for Blender.`
+        : "Nothing sendable in the selection.", parts.length ? "success" : "error");
+    } else {
+      toast((r && r.error) || "Couldn't queue for Blender. Is the bridge connected?", "error");
+    }
+  };
 }
 
 function clearSelection() {
@@ -475,6 +499,68 @@ async function getViewerMod() {
 }
 function destroyViewerIfActive() {
   if (_viewerMod) _viewerMod.destroyViewer();
+}
+
+// ---- hover quick-preview --------------------------------------------------
+// Dwell on a model card and a small auto-rotating 3D preview floats beside it.
+// Uses a SEPARATE viewer module instance so it never clobbers the drawer's
+// viewer (or its thumbnail snapshot). One popup at a time; torn down on leave.
+let _hoverMod = null;
+let _hoverTimer = null;
+let _hoverEl = null;
+let _hoverForId = null;
+const HOVER_DELAY = 480;  // ms of dwell before the preview spins up
+
+async function getHoverMod() {
+  // A second dynamic import shares the cached module, so we reuse one renderer
+  // for hover. The drawer viewer and hover viewer never run simultaneously in
+  // practice (hover is cancelled the moment the drawer opens).
+  if (!_hoverMod) _hoverMod = await import('/viewer.js');
+  return _hoverMod;
+}
+
+function _closeHoverPreview() {
+  if (_hoverTimer) { clearTimeout(_hoverTimer); _hoverTimer = null; }
+  if (_hoverMod) _hoverMod.destroyViewer();
+  if (_hoverEl) { _hoverEl.remove(); _hoverEl = null; }
+  _hoverForId = null;
+}
+
+function _openHoverPreview(a, card) {
+  // Don't fight the drawer or a drag/selection gesture.
+  if (isDrawerOpen() || selection.size > 0 || _dragScrollDir) return;
+  _hoverForId = a.id;
+  const pop = document.createElement("div");
+  pop.className = "hover-preview";
+  document.body.appendChild(pop);
+  // Position to the card's right, flipping left near the viewport edge.
+  const r = card.getBoundingClientRect();
+  const W = 240, H = 240, gap = 10;
+  let left = r.right + gap;
+  if (left + W > window.innerWidth - 8) left = r.left - W - gap;
+  let top = r.top + r.height / 2 - H / 2;
+  top = Math.max(8, Math.min(top, window.innerHeight - H - 8));
+  pop.style.left = `${left}px`;
+  pop.style.top = `${top}px`;
+  pop.style.width = `${W}px`;
+  pop.style.height = `${H}px`;
+  getHoverMod().then(mod => {
+    // The user may have moved on before the module/import resolved.
+    if (_hoverForId !== a.id || !_hoverEl) return;
+    mod.startViewer(pop, a.id, a.ext, { autoRotate: true, noThumb: true });
+  });
+  _hoverEl = pop;
+}
+
+function bindHoverPreview(card, a) {
+  if (!VIEWER_EXTS.has(a.ext)) return;  // only GLB/GLTF/FBX have a browser loader
+  card.addEventListener("mouseenter", () => {
+    if (_hoverTimer) clearTimeout(_hoverTimer);
+    _hoverTimer = setTimeout(() => _openHoverPreview(a, card), HOVER_DELAY);
+  });
+  card.addEventListener("mouseleave", _closeHoverPreview);
+  // Any click/drag intent should drop the preview immediately.
+  card.addEventListener("mousedown", _closeHoverPreview);
 }
 
 // ---- grid -----------------------------------------------------------------
@@ -724,6 +810,8 @@ function buildCard(a, i) {
     e.preventDefault();
     showCategoryMenu(e.clientX, e.clientY, a);
   });
+  // Hover dwell → floating auto-rotating 3D quick-preview (viewable models only).
+  bindHoverPreview(card, a);
   return card;
 }
 
@@ -941,6 +1029,8 @@ function bindVirtual() {
   _vBound = true;
   const grid = $("#grid");
   grid.addEventListener("scroll", () => {
+    // Scrolling recycles cards out of the DOM, orphaning any hover popup.
+    if (_hoverEl || _hoverTimer) _closeHoverPreview();
     if (_vRaf) return;
     _vRaf = requestAnimationFrame(() => { _vRaf = 0; renderWindow(); });
   }, { passive: true });
@@ -1105,6 +1195,7 @@ function syncFavoriteInGrid(id, fav) {
 }
 
 async function openDrawer(id, idx) {
+  _closeHoverPreview();
   destroyViewerIfActive();
   // idx is the position in currentAssets — used for prev/next navigation.
   if (idx === undefined) idx = currentAssets.findIndex(a => a.id === id);

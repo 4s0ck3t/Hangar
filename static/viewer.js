@@ -6,7 +6,10 @@ import { OrbitControls } from '/OrbitControls.js';
 
 let renderer, scene, camera, controls, animId, resizeObs;
 
-export function startViewer(container, assetId, ext) {
+// opts.autoRotate  — spin the model automatically (used by hover quick-preview)
+// opts.noThumb     — don't cache a thumbnail snapshot (set automatically when autoRotate)
+export function startViewer(container, assetId, ext, opts = {}) {
+  const { autoRotate = false, noThumb = autoRotate } = opts;
   destroyViewer();
 
   const canvas = document.createElement('canvas');
@@ -24,7 +27,7 @@ export function startViewer(container, assetId, ext) {
   const h = container.clientHeight || 380;
 
   // preserveDrawingBuffer so we can snapshot the canvas to cache a thumbnail.
-  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: !noThumb });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(w, h);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -46,6 +49,12 @@ export function startViewer(container, assetId, ext) {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.06;
+  if (autoRotate) {
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 3.0;
+    controls.enableZoom = false;
+    controls.enablePan = false;
+  }
 
   // Mount a loaded object (GLTF scene or FBX group), frame it, wire animations.
   const onLoaded = (object, animations) => {
@@ -77,7 +86,8 @@ export function startViewer(container, assetId, ext) {
 
     // Snapshot the framed model and cache it as this asset's thumbnail, so the
     // grid shows a real preview and re-opening is instant. Once only.
-    if (assetId != null && !scene.userData._snapped) {
+    // Skip in hover/autoRotate mode — we don't want hover to claim the thumbnail.
+    if (!noThumb && assetId != null && !scene.userData._snapped) {
       scene.userData._snapped = true;
       setTimeout(() => {
         try {
