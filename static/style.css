@@ -560,3 +560,25 @@ button, input, select { font-family: inherit; color: inherit; }
 .update-bar .diag-copy { margin-left: 0; }
 .update-bar .diag-copy.hidden { display: none; }
 .update-progress.hidden { display: none; }
+
+/* ---- unavailable / offline folders & files ---- */
+.library-list li.lib-offline .lib-name { color: var(--k-model); }
+.lib-warn { color: var(--k-model); font-size: 12px; margin-left: 2px; flex: none; }
+.offline-banner {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 10px 22px 0; padding: 9px 13px;
+  background: rgba(232,121,74,.12); border: 1px solid rgba(232,121,74,.45);
+  border-radius: 8px; color: var(--ink); font-size: 12.5px;
+}
+.offline-banner .ob-ico { color: var(--k-model); font-size: 14px; }
+.offline-banner strong { color: var(--k-model); }
+.ob-rescan {
+  background: var(--raised); border: 1px solid var(--line); color: var(--ink);
+  border-radius: 6px; padding: 2px 10px; cursor: pointer; font-size: 12px;
+}
+.ob-rescan:hover { background: var(--raised-hi); }
+.d-missing {
+  margin: 8px 0 0; padding: 8px 10px; font-size: 12px; line-height: 1.45;
+  color: var(--ink); background: rgba(232,121,74,.12);
+  border: 1px solid rgba(232,121,74,.45); border-radius: 7px;
+}

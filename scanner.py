@@ -111,6 +111,12 @@ def scan_library(library_path, on_file=None):
     report progress.
     """
     library_path = str(Path(library_path).expanduser().resolve())
+    # If the folder isn't reachable (drive unplugged, share down, moved, no
+    # permission), DON'T walk it — otherwise mark_missing would flag every asset
+    # as gone and they'd silently disappear. Signal "unavailable" with None so
+    # callers can surface it instead.
+    if not os.path.isdir(library_path):
+        return None
     seen = set()
     found = 0
     for root, dirs, files in os.walk(library_path):
@@ -150,7 +156,9 @@ def scan_library(library_path, on_file=None):
 def scan_all(on_file=None):
     total = 0
     for lib in store.list_libraries():
-        total += scan_library(lib["path"], on_file=on_file)
+        n = scan_library(lib["path"], on_file=on_file)
+        if n:  # None = unavailable folder; skip
+            total += n
     return total
 
 

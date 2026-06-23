@@ -92,8 +92,32 @@ async function loadState() {
   renderTagFilters(s.tags);
   renderCollectionFilters(s.collections);
   renderLibraries(s.libraries);
+  renderOfflineBanner(s.libraries);
   renderStatusBar(s.counts, s.version);
   return s;
+}
+
+// Persistent notice when one or more added folders can't be reached, so missing
+// models are explained rather than silently absent.
+function renderOfflineBanner(libs) {
+  const offline = (libs || []).filter((l) => l.available === false);
+  let banner = $("#offlineBanner");
+  if (!offline.length) { if (banner) banner.remove(); return; }
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "offlineBanner";
+    banner.className = "offline-banner";
+    const main = document.querySelector(".main");
+    main.insertBefore(banner, $("#grid"));
+  }
+  const names = offline.map((l) => l.name).join(", ");
+  banner.innerHTML =
+    `<span class="ob-ico">⚠</span> ` +
+    `${offline.length === 1 ? "Folder" : offline.length + " folders"} not accessible: ` +
+    `<strong>${names}</strong> — ${offline.length === 1 ? "its" : "their"} assets are kept ` +
+    `indexed but can't be opened. Reconnect the drive/folder, then ` +
+    `<button id="obRescan" class="ob-rescan">Rescan</button>.`;
+  $("#obRescan").onclick = () => $("#rescanBtn").click();
 }
 
 function renderStatusBar(counts, version) {
@@ -322,12 +346,16 @@ function renderLibraries(libs) {
   }
   for (const lib of libs) {
     const li = document.createElement("li");
-    li.className = "lib-item";
-    li.title = `${lib.path}\n(click to show contents)`;
+    li.className = "lib-item" + (lib.available === false ? " lib-offline" : "");
+    li.title = lib.available === false
+      ? `${lib.path}\n⚠ Not accessible right now (drive disconnected, moved, or no permission).\nIts ${lib.asset_count || 0} assets stay indexed; reconnect the folder and Rescan.`
+      : `${lib.path}\n(click to show contents)`;
     if (state.filter.folder === lib.path) li.classList.add("active");
+    const dotColor = lib.available === false ? "var(--k-model)" : "var(--faint)";
+    const warn = lib.available === false ? `<span class="lib-warn" title="Folder unavailable">⚠</span>` : "";
     li.innerHTML =
-      `<span class="dot" style="background:var(--faint)"></span>` +
-      `<span class="lib-name">${lib.name}</span>` +
+      `<span class="dot" style="background:${dotColor}"></span>` +
+      `<span class="lib-name">${lib.name}</span>` + warn +
       `<button class="lib-remove" title="Remove">&times;</button>`;
     // Click the folder to filter the grid to everything under it.
     li.onclick = () => { resetFilter(); state.filter.folder = lib.path; refresh(); };
@@ -712,6 +740,7 @@ async function openDrawer(id, idx) {
     <div class="d-body">
       <h2 class="d-name">${a.name}</h2>
       <div class="d-path" id="dPath" title="${a.path}">${a.path}</div>
+      ${a.exists === false ? `<div class="d-missing">⚠ This file isn't accessible right now — the drive/folder may be disconnected, moved, or deleted.</div>` : ""}
       <div class="d-format-row">
         <span class="d-format-badge" style="color:${color};border-color:${color}40">${ext}</span>
         <span class="d-kind-label">${a.kind}</span>

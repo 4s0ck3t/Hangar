@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.21"
+__version__ = "0.13.22"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -35,7 +35,8 @@ store.init_db()
 
 # ---- background scan state ------------------------------------------------
 SCAN = {"running": False, "scanned": 0, "total": 0,
-        "current": "", "library": "", "indexed": 0, "finished_at": 0}
+        "current": "", "library": "", "indexed": 0, "unavailable": [],
+        "finished_at": 0}
 SCAN_LOCK = threading.Lock()
 
 
@@ -43,7 +44,7 @@ def _run_scan(libs):
     """libs: list of (path, name). Runs in a daemon thread."""
     with SCAN_LOCK:
         SCAN.update(running=True, scanned=0, total=0, current="",
-                    library="", indexed=0)
+                    library="", indexed=0, unavailable=[])
     total = 0
     for path, _ in libs:
         try:
@@ -61,16 +62,21 @@ def _run_scan(libs):
             SCAN["current"] = full
 
     indexed = 0
+    unavailable = []
     for path, name in libs:
         with SCAN_LOCK:
             SCAN["library"] = name
         try:
-            indexed += scanner.scan_library(path, on_file=on_file)
+            n = scanner.scan_library(path, on_file=on_file)
+            if n is None:
+                unavailable.append(name)  # folder unreachable — assets kept, not wiped
+            else:
+                indexed += n
         except Exception as e:
             print(f"[Hangar] scan error in {path}: {e}")
     with SCAN_LOCK:
         SCAN.update(running=False, indexed=indexed, current="",
-                    finished_at=time.time())
+                    unavailable=unavailable, finished_at=time.time())
 
 
 def _start_scan(libs):
@@ -238,6 +244,8 @@ def asset_detail(asset_id):
         v, f = scanner.compute_stats(asset)
         store.save_stats(asset_id, v, f)
         asset["vertices"], asset["faces"], asset["stats_done"] = v, f, 1
+    # Whether the file is reachable right now, so the drawer can flag it.
+    asset["exists"] = os.path.exists(asset["path"])
     return jsonify(asset)
 
 

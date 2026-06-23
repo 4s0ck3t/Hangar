@@ -301,7 +301,17 @@ def remove_library(library_id):
 def list_libraries():
     with connect() as conn:
         rows = conn.execute("SELECT * FROM libraries ORDER BY name").fetchall()
-    return [dict(r) for r in rows]
+        libs = []
+        for r in rows:
+            d = dict(r)
+            # Is the source folder reachable right now? (drive unplugged, network
+            # share down, moved, or no permission all read as unavailable.)
+            d["available"] = os.path.isdir(d["path"])
+            d["asset_count"] = conn.execute(
+                "SELECT COUNT(*) c FROM assets WHERE path LIKE ?",
+                (d["path"].rstrip("/\\") + os.sep + "%",)).fetchone()["c"]
+            libs.append(d)
+    return libs
 
 
 # ---- assets ---------------------------------------------------------------
