@@ -526,20 +526,29 @@ function renderGroupedGrid(assets, kind, total) {
   grid.classList.add("grouped");
   bindGridDragScroll();   // scroll to off-screen categories while dragging a tile
 
-  // "All assets" (no kind) groups by every category across all types; a plain
-  // type view groups by just that type's categories.
-  const cats = kind
-    ? allCategories.filter((c) => (c.kind || "") === kind)
-    : allCategories.slice();
-  const catNames = new Set(cats.map((c) => c.name));
-  const sections = cats.map((c) => ({
-    cat: c, items: assets.filter((a) => (a.categories || []).includes(c.name)),
-  }));
-  // Unclassified assets (in none of the shown categories) always sit at the top.
-  const uncategorized = assets.filter(
-    (a) => !(a.categories || []).some((n) => catNames.has(n)));
-  if (uncategorized.length)
-    sections.unshift({ cat: { name: "Unclassified", icon: "📂" }, items: uncategorized, uncat: true });
+  // "All assets" (no kind) groups by the four asset TYPES — one section each for
+  // Models / Textures / HDRIs / Materials. A plain type view instead groups by
+  // that type's categories, with Unclassified pinned to the top.
+  const isAll = !kind;
+  let sections;
+  if (isAll) {
+    sections = TYPE_KINDS
+      .map((k) => ({
+        cat: { name: KIND_LABELS[k], icon: "" }, typeKind: k,
+        items: assets.filter((a) => a.kind === k),
+      }))
+      .filter((s) => s.items.length);
+  } else {
+    const cats = allCategories.filter((c) => (c.kind || "") === kind);
+    const catNames = new Set(cats.map((c) => c.name));
+    sections = cats.map((c) => ({
+      cat: c, items: assets.filter((a) => (a.categories || []).includes(c.name)),
+    }));
+    const uncategorized = assets.filter(
+      (a) => !(a.categories || []).some((n) => catNames.has(n)));
+    if (uncategorized.length)
+      sections.unshift({ cat: { name: "Unclassified", icon: "📂" }, items: uncategorized, uncat: true });
+  }
 
   const idxOf = new Map(assets.map((a, i) => [a, i]));
   const frag = document.createDocumentFragment();
@@ -548,20 +557,36 @@ function renderGroupedGrid(assets, kind, total) {
     // can be dragged into a category that has no assets yet. (Uncategorized is
     // only ever added when it has items, so it's never shown empty.)
     const section = document.createElement("div");
-    section.className = "grid-section" + (s.items.length ? "" : " is-empty");
+    section.className = "grid-section" + (s.items.length ? "" : " is-empty")
+      + (s.typeKind ? " type-section" : "");
     const head = document.createElement("div");
-    head.className = "section-head" + (s.uncat ? " uncat" : "");
+    head.className = "section-head" + (s.uncat ? " uncat" : "") + (s.typeKind ? " type-head" : "");
+    const ico = s.typeKind
+      ? `<span class="kind-dot" style="background:${KIND_COLORS[s.typeKind]}"></span>`
+      : `<span class="section-ico">${s.cat.icon || ""}</span>`;
     head.innerHTML =
-      `<span class="section-ico">${s.cat.icon || ""}</span>` +
+      ico +
       `<span class="section-name">${s.cat.name}</span>` +
       `<span class="section-count">${s.items.length}</span>`;
+    // In "All assets", a type header drills into that type's category view.
+    if (s.typeKind) {
+      head.title = `Open ${s.cat.name}`;
+      head.onclick = () => {
+        resetFilter();
+        state.filter.kind = s.typeKind;
+        state.collapsed = new Set(TYPE_KINDS.filter((k) => k !== s.typeKind));
+        persistCollapsed();
+        refresh();
+      };
+    }
     section.appendChild(head);
     const sgrid = document.createElement("div");
     sgrid.className = "section-grid";
     if (s.items.length) {
       for (const a of s.items) {
         const card = buildCard(a, idxOf.get(a));
-        card.dataset.srcCat = s.uncat ? "" : s.cat.name;   // where the drag began
+        // srcCat: only category sections carry a drag-from-category origin.
+        card.dataset.srcCat = (s.uncat || s.typeKind) ? "" : s.cat.name;
         sgrid.appendChild(card);
       }
     } else {
@@ -572,42 +597,46 @@ function renderGroupedGrid(assets, kind, total) {
     }
     section.appendChild(sgrid);
 
-    // The whole section (header + grid) is a drop target, so dragging a tile
-    // anywhere onto another category MOVES it there: it's added to the target
-    // and removed from the category it came from. Dropping onto Uncategorized
-    // just removes it from its current category.
-    const targetCat = s.uncat ? "" : s.cat.name;
-    section.title = s.uncat
-      ? "Drop a tile here to remove it from its category"
-      : `Drop a tile here to move it into ${s.cat.name}`;
-    section.addEventListener("dragover", (e) => {
-      e.preventDefault(); e.dataTransfer.dropEffect = "move";
-      section.classList.add("drop-over");
-    });
-    section.addEventListener("dragleave", (e) => {
-      if (!section.contains(e.relatedTarget)) section.classList.remove("drop-over");
-    });
-    section.addEventListener("drop", async (e) => {
-      e.preventDefault(); section.classList.remove("drop-over");
-      const id = e.dataTransfer.getData("text/x-hangar-asset-id");
-      const srcCat = e.dataTransfer.getData("text/x-hangar-src-cat") || "";
-      if (!id || srcCat === targetCat) return;     // dropped back where it was
-      if (targetCat) await post(`assets/${id}/category`, { category: targetCat, add: true });
-      if (srcCat) await post(`assets/${id}/category`, { category: srcCat, add: false });
-      toast(targetCat
-        ? `Moved to ${s.cat.icon || ""} ${s.cat.name}`.trim()
-        : "Removed from category", "success");
-      refresh(); loadState();
-    });
+    // Category sections are drop targets — dragging a tile onto another category
+    // MOVES it (added to target, removed from origin). Type sections in the
+    // All-assets view are just groupings, not drop targets.
+    if (!s.typeKind) {
+      const targetCat = s.uncat ? "" : s.cat.name;
+      section.title = s.uncat
+        ? "Drop a tile here to remove it from its category"
+        : `Drop a tile here to move it into ${s.cat.name}`;
+      section.addEventListener("dragover", (e) => {
+        e.preventDefault(); e.dataTransfer.dropEffect = "move";
+        section.classList.add("drop-over");
+      });
+      section.addEventListener("dragleave", (e) => {
+        if (!section.contains(e.relatedTarget)) section.classList.remove("drop-over");
+      });
+      section.addEventListener("drop", async (e) => {
+        e.preventDefault(); section.classList.remove("drop-over");
+        const id = e.dataTransfer.getData("text/x-hangar-asset-id");
+        const srcCat = e.dataTransfer.getData("text/x-hangar-src-cat") || "";
+        if (!id || srcCat === targetCat) return;     // dropped back where it was
+        if (targetCat) await post(`assets/${id}/category`, { category: targetCat, add: true });
+        if (srcCat) await post(`assets/${id}/category`, { category: srcCat, add: false });
+        toast(targetCat
+          ? `Moved to ${s.cat.icon || ""} ${s.cat.name}`.trim()
+          : "Removed from category", "success");
+        refresh(); loadState();
+      });
+    }
     frag.appendChild(section);
   }
 
-  // Inline affordance to spin up another category for this very type.
-  const adder = document.createElement("button");
-  adder.className = "section-add";
-  adder.innerHTML = `<span class="sa-plus">＋</span> New ${kind ? (KIND_LABELS[kind] || kind) + " " : ""}category`;
-  adder.onclick = async () => { if (await promptNewCategory(kind)) refresh(); };
-  frag.appendChild(adder);
+  // Inline "new category" affordance — only in a per-type view (categories are
+  // type-scoped; the All-assets view groups by type, not category).
+  if (!isAll) {
+    const adder = document.createElement("button");
+    adder.className = "section-add";
+    adder.innerHTML = `<span class="sa-plus">＋</span> New ${KIND_LABELS[kind] || kind} category`;
+    adder.onclick = async () => { if (await promptNewCategory(kind)) refresh(); };
+    frag.appendChild(adder);
+  }
 
   grid.replaceChildren(frag);
   grid.scrollTop = 0;

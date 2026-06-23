@@ -298,6 +298,14 @@ button, input, select { font-family: inherit; color: inherit; }
   background: rgba(91,141,239,.20);
   outline: 1px dashed var(--select); outline-offset: -2px;
 }
+/* All-assets view: type sections (Models/Textures/HDRIs/Materials). */
+.section-head.type-head { cursor: pointer; }
+.section-head.type-head:hover .section-name { color: var(--ink); }
+.section-head .kind-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 0%, transparent);
+}
+
 /* Empty category section — a labelled drop zone with no tiles yet. */
 .grid-section.is-empty .section-head { opacity: .7; }
 .section-empty {
