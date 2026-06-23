@@ -818,6 +818,8 @@ async function openDrawer(id, idx) {
         <div><div class="spec-k">Size</div><div class="spec-v">${fmtSize(a.size)}</div></div>
         <div><div class="spec-k">Vertices</div><div class="spec-v">${fmtNum(a.vertices)}</div></div>
         <div><div class="spec-k">Faces</div><div class="spec-v">${fmtNum(a.faces)}</div></div>
+        ${a.ext === ".blend" && a.blend_assets != null ? `
+        <div><div class="spec-k">Marked assets</div><div class="spec-v">${fmtNum(a.blend_assets)}</div></div>` : ""}
       </div>
       <div id="dMaps"></div>
       <div class="d-section-label">Tags</div>

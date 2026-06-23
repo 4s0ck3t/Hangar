@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.24"
+__version__ = "0.13.25"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -247,6 +247,12 @@ def asset_detail(asset_id):
         asset["vertices"], asset["faces"], asset["stats_done"] = v, f, 1
     # Whether the file is reachable right now, so the drawer can flag it.
     asset["exists"] = os.path.exists(asset["path"])
+    # Count "Mark as Asset" datablocks in .blend files (parsed once, cached).
+    if (asset["ext"] == ".blend" and asset["blend_assets"] is None
+            and asset["exists"]):
+        n = thumbs.count_blend_marked_assets(asset["path"])
+        store.save_blend_asset_count(asset_id, n)
+        asset["blend_assets"] = n
     return jsonify(asset)
 
 

@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS assets (
     set_key     TEXT NOT NULL DEFAULT '',
     map_role    TEXT NOT NULL DEFAULT '',
     map_order   INTEGER NOT NULL DEFAULT 50,
+    blend_assets INTEGER,
     added_at    REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tags (
@@ -186,6 +187,7 @@ def init_db():
             ("set_key",   "ALTER TABLE assets ADD COLUMN set_key TEXT NOT NULL DEFAULT ''"),
             ("map_role",  "ALTER TABLE assets ADD COLUMN map_role TEXT NOT NULL DEFAULT ''"),
             ("map_order", "ALTER TABLE assets ADD COLUMN map_order INTEGER NOT NULL DEFAULT 50"),
+            ("blend_assets", "ALTER TABLE assets ADD COLUMN blend_assets INTEGER"),
         ):
             if col not in asset_cols:
                 conn.execute(ddl)
@@ -367,6 +369,20 @@ def save_stats(asset_id, vertices, faces):
         conn.execute(
             "UPDATE assets SET vertices=?, faces=?, stats_done=1 WHERE id=?",
             (vertices, faces, asset_id),
+        )
+
+
+def save_blend_asset_count(asset_id, count):
+    """Persist the number of datablocks marked as assets inside a .blend.
+
+    ``count`` may be None when the file could not be parsed; we only store
+    real integers so a failed parse can be retried later."""
+    if count is None:
+        return
+    with connect() as conn:
+        conn.execute(
+            "UPDATE assets SET blend_assets=? WHERE id=?",
+            (int(count), asset_id),
         )
 
 

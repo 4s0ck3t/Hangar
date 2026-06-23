@@ -22,7 +22,7 @@ jobs:
       - name: Install build deps
         run: |
           python -m pip install --upgrade pip
-          pip install Flask>=3.0 Pillow>=10.0 pyinstaller>=6.0
+          pip install Flask>=3.0 Pillow>=10.0 "zstandard>=0.21" pyinstaller>=6.0
           pip install trimesh>=4.0 numpy>=1.24 imageio>=2.30
           pip install opencv-python-headless>=4.8
 

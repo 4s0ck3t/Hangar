@@ -12,6 +12,7 @@ format badge instead, so the grid never shows broken images.
 import hashlib
 import logging
 import os
+import re
 from pathlib import Path
 
 from store import THUMB_DIR
@@ -304,8 +305,16 @@ def extract_blend_thumbnail(path):
             f.close()
             f = gzip.open(path, "rb")
             head = f.read(12)
+        elif head[:4] == b"\x28\xb5\x2f\xfd":    # zstd (Blender 3.0+ default)
+            import io
+            f.close()
+            raw = _zstd_decompress(path)
+            if raw is None:
+                return None
+            f = io.BytesIO(raw)
+            head = f.read(12)
         if head[:7] != b"BLENDER":
-            return None                          # not a .blend (or zstd-packed)
+            return None                          # not a .blend (unknown packing)
         is_64 = head[7:8] == b"-"                # '_' = 4-byte ptr, '-' = 8-byte
         endian = "<" if head[8:9] == b"v" else ">"
         bhead_size = 24 if is_64 else 20
@@ -341,6 +350,185 @@ def extract_blend_thumbnail(path):
                 f.close()
         except Exception:
             pass
+
+
+def _blend_field_ident(name):
+    """The bare C identifier from a DNA field name (`*mat[4]` -> `mat`)."""
+    m = re.search(r"[A-Za-z_]\w*", name)
+    return m.group(0) if m else ""
+
+
+def _blend_field_size(name, type_index, type_lengths, ptr_size):
+    """Byte size of a DNA struct field, honouring pointers and array dims.
+
+    Blender's makesdna emits naturally-aligned structs with no implicit
+    padding, so summing field sizes in declaration order yields correct member
+    offsets."""
+    mult = 1
+    for n in re.findall(r"\[(\d+)\]", name):
+        mult *= int(n)
+    if name.startswith("*") or "(*" in name:        # pointer / fn-pointer
+        base = ptr_size
+    else:
+        base = type_lengths[type_index]
+    return base * mult
+
+
+def _parse_blend_sdna(dna, endian, ptr_size):
+    """Parse a DNA1 block body into (structs, types, type_lengths).
+
+    structs[i] = (type_index, [(field_type_index, field_name), ...]) in the
+    same order as the file's STRC table (a block's sdna_index indexes this)."""
+    p = 4                                            # skip 'SDNA'
+    def u32():
+        nonlocal p
+        v = struct.unpack(endian + "i", dna[p:p + 4])[0]; p += 4; return v
+    def align4():
+        nonlocal p
+        p = (p + 3) & ~3
+
+    assert dna[p:p + 4] == b"NAME"; p += 4
+    n = u32()
+    names = []
+    for _ in range(n):
+        end = dna.index(b"\x00", p)
+        names.append(dna[p:end].decode("ascii", "replace")); p = end + 1
+    align4()
+
+    assert dna[p:p + 4] == b"TYPE"; p += 4
+    n = u32()
+    types = []
+    for _ in range(n):
+        end = dna.index(b"\x00", p)
+        types.append(dna[p:end].decode("ascii", "replace")); p = end + 1
+    align4()
+
+    assert dna[p:p + 4] == b"TLEN"; p += 4
+    type_lengths = list(struct.unpack(endian + "%dh" % len(types),
+                                      dna[p:p + 2 * len(types)]))
+    p += 2 * len(types); align4()
+
+    assert dna[p:p + 4] == b"STRC"; p += 4
+    n = u32()
+    structs = []
+    for _ in range(n):
+        stype, nfields = struct.unpack(endian + "2h", dna[p:p + 4]); p += 4
+        fields = []
+        for _ in range(nfields):
+            ftype, fname = struct.unpack(endian + "2h", dna[p:p + 4]); p += 4
+            fields.append((ftype, names[fname]))
+        structs.append((stype, fields))
+    return structs, types, type_lengths
+
+
+def _zstd_decompress(path):
+    """Fully decompress a zstd .blend (Blender 3.0+ default compression).
+
+    Blender writes a sequence of standard zstd frames, so a streaming decoder
+    reads it end-to-end. Prefers the `zstandard` package; falls back to the
+    `zstd` CLI. Returns the raw bytes, or None when no decoder is available."""
+    try:
+        import zstandard
+        with open(path, "rb") as fh:
+            return zstandard.ZstdDecompressor().stream_reader(fh).read()
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    zstd_cli = shutil.which("zstd")
+    if zstd_cli:
+        try:
+            out = subprocess.run([zstd_cli, "-dc", path], capture_output=True)
+            if out.returncode == 0 and out.stdout[:7] == b"BLENDER":
+                return out.stdout
+        except Exception:
+            pass
+    return None
+
+
+def count_blend_marked_assets(path):
+    """Count datablocks flagged "Mark as Asset" inside a .blend file.
+
+    Pure-Python: parses the .blend's DNA, finds the `asset_data` pointer offset
+    within the embedded `ID` of every datablock, and tallies the non-null ones.
+    No Blender process required. Returns an int, or None if the file can't be
+    parsed (e.g. zstd-compressed, truncated, or pre-2.90 layout we can't read).
+    """
+    try:
+        with open(path, "rb") as fh:
+            magic = fh.read(4)
+        if magic[:2] == b"\x1f\x8b":                 # gzip-compressed .blend
+            import gzip
+            with gzip.open(path, "rb") as g:
+                data = g.read()
+        elif magic == b"\x28\xb5\x2f\xfd":           # zstd (Blender 3.0+ default)
+            data = _zstd_decompress(path)
+            if data is None:
+                return None
+        else:
+            with open(path, "rb") as fh:
+                data = fh.read()
+
+        if data[:7] != b"BLENDER":                   # unknown packing / not a blend
+            return None
+        ptr_size = 8 if data[7:8] == b"-" else 4
+        endian = "<" if data[8:9] == b"v" else ">"
+        bhead = 16 + ptr_size
+
+        # Pass 1: index every file-block; capture the DNA1 body.
+        blocks, dna = [], None
+        pos = 12
+        n = len(data)
+        while pos + bhead <= n:
+            code = data[pos:pos + 4]
+            length = struct.unpack(endian + "i", data[pos + 4:pos + 8])[0]
+            sdna_index = struct.unpack(
+                endian + "i", data[pos + 8 + ptr_size:pos + 12 + ptr_size])[0]
+            body = pos + bhead
+            if code[:4] == b"DNA1":
+                dna = data[body:body + length]
+            if code[:4] == b"ENDB":
+                break
+            blocks.append((sdna_index, body, length))
+            pos = body + length
+        if dna is None:
+            return None
+
+        structs, types, type_lengths = _parse_blend_sdna(dna, endian, ptr_size)
+
+        # Offset of `asset_data` inside the `ID` struct (absent pre-2.90).
+        id_idx = next((i for i, s in enumerate(structs)
+                       if types[s[0]] == "ID"), None)
+        if id_idx is None:
+            return None
+        asset_off = None
+        off = 0
+        for ftype, fname in structs[id_idx][1]:
+            if _blend_field_ident(fname) == "asset_data":
+                asset_off = off
+                break
+            off += _blend_field_size(fname, ftype, type_lengths, ptr_size)
+        if asset_off is None:
+            return 0                                 # file predates asset system
+
+        # Datablocks embed `ID id;` as their first member (offset 0), so the
+        # asset_data pointer sits at `asset_off` from the block start.
+        ptr_fmt = endian + ("Q" if ptr_size == 8 else "I")
+        count = 0
+        for sdna_index, body, length in blocks:
+            if sdna_index <= 0 or sdna_index >= len(structs):
+                continue
+            stype, fields = structs[sdna_index]
+            if not fields or types[fields[0][0]] != "ID":
+                continue                             # not a top-level datablock
+            if asset_off + ptr_size > length:
+                continue
+            if struct.unpack(ptr_fmt, data[body + asset_off:
+                                           body + asset_off + ptr_size])[0]:
+                count += 1
+        return count
+    except Exception:
+        return None
 
 
 def find_blender():

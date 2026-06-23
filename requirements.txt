@@ -2,6 +2,10 @@
 Flask>=3.0
 Pillow>=10.0
 
+# Decompress zstd-packed .blend files (Blender 3.0+ default) so Hangar can read
+# their embedded thumbnail and count "Mark as Asset" datablocks.
+zstandard>=0.21
+
 # Desktop window (standalone app). pywebview gives a real native window — on
 # Windows via the Edge WebView2 runtime (+ pythonnet), on macOS via WebKit. If
 # it can't start (e.g. a frozen build where the .NET bridge won't load),
