@@ -88,6 +88,8 @@ function toast(msg, type) {
 async function loadState() {
   const s = await api("state");
   allCategories = s.categories || [];
+  appCaps.blenderReady = !!s.blender_render;
+  appCaps.renderExts = s.blender_render_exts || [];
   renderKindFilters(s.counts, allCategories);
   renderTagFilters(s.tags);
   renderCollectionFilters(s.collections);
@@ -507,6 +509,7 @@ async function refresh() {
   if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
   await loadState();
+  enqueueMissingThumbs(data.assets);   // fill in USD/Alembic tiles in the background
   updateActiveLabel(data.total);
   updateClearBtn();
 }
@@ -535,9 +538,11 @@ function renderGroupedGrid(assets, kind, total) {
   const idxOf = new Map(assets.map((a, i) => [a, i]));
   const frag = document.createDocumentFragment();
   for (const s of sections) {
-    if (!s.items.length) continue;
+    // Empty named categories still render — as a labelled drop zone — so a tile
+    // can be dragged into a category that has no assets yet. (Uncategorized is
+    // only ever added when it has items, so it's never shown empty.)
     const section = document.createElement("div");
-    section.className = "grid-section";
+    section.className = "grid-section" + (s.items.length ? "" : " is-empty");
     const head = document.createElement("div");
     head.className = "section-head" + (s.uncat ? " uncat" : "");
     head.innerHTML =
@@ -547,10 +552,17 @@ function renderGroupedGrid(assets, kind, total) {
     section.appendChild(head);
     const sgrid = document.createElement("div");
     sgrid.className = "section-grid";
-    for (const a of s.items) {
-      const card = buildCard(a, idxOf.get(a));
-      card.dataset.srcCat = s.uncat ? "" : s.cat.name;   // where the drag began
-      sgrid.appendChild(card);
+    if (s.items.length) {
+      for (const a of s.items) {
+        const card = buildCard(a, idxOf.get(a));
+        card.dataset.srcCat = s.uncat ? "" : s.cat.name;   // where the drag began
+        sgrid.appendChild(card);
+      }
+    } else {
+      const hint = document.createElement("div");
+      hint.className = "section-empty";
+      hint.textContent = "Drag or right-click a tile here to add it";
+      sgrid.appendChild(hint);
     }
     section.appendChild(sgrid);
 
@@ -645,6 +657,9 @@ function buildCard(a, i) {
   img.onerror = () => { /* keep placeholder tile */ };
   img.src = thumbUrl(a.id);
   img.alt = a.name;
+  // Without this the browser drags the thumbnail picture itself instead of the
+  // card, so the card's dragstart payload never reaches a category drop target.
+  img.draggable = false;
   // Ctrl/Cmd-click toggles selection; once a selection is active a plain
   // click keeps building it. Otherwise a click opens the detail drawer.
   card.onclick = (e) => {
@@ -667,7 +682,119 @@ function buildCard(a, i) {
     card.classList.add("dragging");
   });
   card.addEventListener("dragend", () => card.classList.remove("dragging"));
+
+  // Right-click → move this asset into a category (a reliable alternative to
+  // dragging, and the only way to file into a category that has no tiles yet).
+  card.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    showCategoryMenu(e.clientX, e.clientY, a);
+  });
   return card;
+}
+
+// ---- right-click "move to category" menu ----------------------------------
+let _ctxMenuEl = null;
+function _onCtxOutside(e) { if (_ctxMenuEl && !_ctxMenuEl.contains(e.target)) closeCtxMenu(); }
+function _onCtxKey(e) { if (e.key === "Escape") closeCtxMenu(); }
+function closeCtxMenu() {
+  if (!_ctxMenuEl) return;
+  _ctxMenuEl.remove(); _ctxMenuEl = null;
+  document.removeEventListener("mousedown", _onCtxOutside, true);
+  document.removeEventListener("keydown", _onCtxKey, true);
+}
+
+function showCategoryMenu(x, y, a) {
+  closeCtxMenu();
+  // Categories that apply to this asset: its own type, plus shared ones (kind "").
+  const cats = allCategories.filter((c) => !c.kind || c.kind === a.kind);
+  const current = new Set(a.categories || []);
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+
+  const title = document.createElement("div");
+  title.className = "ctx-title";
+  title.textContent = "Move to category";
+  menu.appendChild(title);
+
+  if (!cats.length) {
+    const none = document.createElement("div");
+    none.className = "ctx-empty";
+    none.textContent = "No categories for this type yet";
+    menu.appendChild(none);
+  }
+  for (const c of cats) {
+    const item = document.createElement("button");
+    item.className = "ctx-item" + (current.has(c.name) ? " on" : "");
+    item.innerHTML =
+      `<span class="ctx-ico">${c.icon || ""}</span>` +
+      `<span class="ctx-name">${c.name}</span>` +
+      (current.has(c.name) ? `<span class="ctx-check">✓</span>` : "");
+    item.onclick = async (e) => {
+      e.stopPropagation(); closeCtxMenu();
+      await moveAssetToCategory(a, c.name);
+    };
+    menu.appendChild(item);
+  }
+
+  const sep = document.createElement("div"); sep.className = "ctx-sep";
+  menu.appendChild(sep);
+  if (current.size) {
+    const rm = document.createElement("button");
+    rm.className = "ctx-item ctx-danger";
+    rm.innerHTML = `<span class="ctx-ico">📂</span><span class="ctx-name">Remove from category</span>`;
+    rm.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await uncategorizeAsset(a); };
+    menu.appendChild(rm);
+  }
+  const mk = document.createElement("button");
+  mk.className = "ctx-item";
+  mk.innerHTML = `<span class="ctx-ico">＋</span><span class="ctx-name">New category…</span>`;
+  mk.onclick = async (e) => {
+    e.stopPropagation(); closeCtxMenu();
+    const name = (prompt("New category name:") || "").trim();
+    if (!name) return;
+    const icon = prompt("Icon (emoji, optional — press Cancel to skip):") || "";
+    await post("categories", { name, icon, kind: a.kind });
+    await moveAssetToCategory(a, name);
+  };
+  menu.appendChild(mk);
+
+  // Place it, then nudge back on-screen if it would overflow the viewport.
+  menu.style.visibility = "hidden";
+  document.body.appendChild(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+  menu.style.visibility = "visible";
+  _ctxMenuEl = menu;
+  setTimeout(() => {
+    document.addEventListener("mousedown", _onCtxOutside, true);
+    document.addEventListener("keydown", _onCtxKey, true);
+  }, 0);
+}
+
+// Move semantics: the asset ends up in exactly `name` among the categories that
+// apply to its type — added to the target, removed from any sibling categories.
+async function moveAssetToCategory(a, name) {
+  const applicable = new Set(
+    allCategories.filter((c) => !c.kind || c.kind === a.kind).map((c) => c.name));
+  await post(`assets/${a.id}/category`, { category: name, add: true });
+  for (const other of (a.categories || [])) {
+    if (other !== name && applicable.has(other))
+      await post(`assets/${a.id}/category`, { category: other, add: false });
+  }
+  a.categories = [name];
+  toast(`Moved to ${name}`, "success");
+  if (drawerAssetId === a.id) renderDrawerCategoryEditor(a);
+  refresh(); loadState();
+}
+
+async function uncategorizeAsset(a) {
+  for (const name of (a.categories || []))
+    await post(`assets/${a.id}/category`, { category: name, add: false });
+  a.categories = [];
+  toast("Removed from category", "success");
+  if (drawerAssetId === a.id) renderDrawerCategoryEditor(a);
+  refresh(); loadState();
 }
 
 // ---- virtual scrolling ----------------------------------------------------
@@ -780,6 +907,9 @@ window.onViewerThumbCached = (id) => {
 
 // ---- detail drawer --------------------------------------------------------
 let allTags = [];
+// Blender capabilities, refreshed by loadState — used by the right-click menu
+// and the background preview renderer without re-fetching /state each time.
+const appCaps = { blenderReady: false, renderExts: [] };
 
 // Load the cached thumbnail into the drawer preview area (in place).
 function loadPreview(a) {
@@ -821,6 +951,57 @@ async function autoRenderModelPreview(a) {
   } catch (_) {
     if (ph && drawerAssetId === a.id)
       ph.innerHTML = `<div class="d-rendering muted">Preview unavailable — use “Render preview”.</div>`;
+  }
+}
+
+// ---- background previews for Blender-only model formats (USD, Alembic…) ----
+// These formats have no in-browser loader and trimesh can't decode them, so they
+// land in the grid with just a format badge. We render their thumbnails in the
+// background — but strictly ONE Blender process at a time (a queue, not a swarm),
+// which is what made the old passive-on-scroll approach unusable. A sequence
+// token cancels in-flight work the moment the view changes.
+const _thumbQueue = [];
+let _thumbWorking = false;
+let _thumbSeq = 0;
+
+function enqueueMissingThumbs(assets) {
+  const seq = ++_thumbSeq;       // invalidate anything queued for the old view
+  _thumbQueue.length = 0;
+  if (!appCaps.blenderReady) return;
+  const exts = new Set(appCaps.renderExts);
+  for (const a of assets) {
+    if (a.has_thumb || a.kind !== "model") continue;
+    if (VIEWER_EXTS.has(a.ext) || !exts.has(a.ext)) continue;  // GLB/GLTF/FBX use the viewer
+    _thumbQueue.push({ id: a.id, seq });
+  }
+  if (_thumbQueue.length && !_thumbWorking) _drainThumbQueue();
+}
+
+async function _drainThumbQueue() {
+  _thumbWorking = true;
+  try {
+    while (_thumbQueue.length) {
+      const job = _thumbQueue.shift();
+      if (job.seq !== _thumbSeq) continue;          // view moved on — drop it
+      let r;
+      try { r = await post(`assets/${job.id}/render`); }
+      catch (_) { continue; }
+      if (job.seq !== _thumbSeq || !r || !r.ok) continue;
+      thumbBust[job.id] = Date.now();
+      const ca = currentAssets.find((x) => x.id === job.id);
+      if (ca) ca.has_thumb = true;
+      // Swap the freshly rendered image into the live tile, if it's on screen.
+      const card = $(`#grid .card[data-id="${job.id}"]`);
+      const tile = card && card.querySelector(".badge-tile");
+      if (tile) {
+        const img = new Image();
+        img.draggable = false; img.alt = "";
+        img.onload = () => { if (tile.isConnected) tile.replaceWith(img); };
+        img.src = thumbUrl(job.id);
+      }
+    }
+  } finally {
+    _thumbWorking = false;
   }
 }
 
