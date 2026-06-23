@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.26"
+__version__ = "0.13.27"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -247,6 +247,9 @@ def asset_detail(asset_id):
         asset["vertices"], asset["faces"], asset["stats_done"] = v, f, 1
     # Whether the file is reachable right now, so the drawer can flag it.
     asset["exists"] = os.path.exists(asset["path"])
+    # Whether a thumbnail is already cached, so the drawer can show it instantly
+    # instead of re-running the 3D viewer on every open.
+    asset["has_thumb"] = thumbs.has_cached_thumb(asset)
     # Count "Mark as Asset" datablocks in .blend files (parsed once, cached).
     if (asset["ext"] == ".blend" and asset["blend_assets"] is None
             and asset["exists"]):

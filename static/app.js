@@ -543,26 +543,53 @@ function renderGroupedGrid(assets, kind, total) {
       `<span class="section-ico">${s.cat.icon || ""}</span>` +
       `<span class="section-name">${s.cat.name}</span>` +
       `<span class="section-count">${s.items.length}</span>`;
-    if (!s.uncat) {
-      head.title = `Drop a card here to add it to ${s.cat.name}`;
-      head.addEventListener("dragover", (e) => { e.preventDefault(); head.classList.add("drop-over"); });
-      head.addEventListener("dragleave", () => head.classList.remove("drop-over"));
-      head.addEventListener("drop", async (e) => {
-        e.preventDefault(); head.classList.remove("drop-over");
-        const id = e.dataTransfer.getData("text/x-hangar-asset-id");
-        if (!id) return;
-        await post(`assets/${id}/category`, { category: s.cat.name, add: true });
-        toast(`Added to ${s.cat.icon || ""} ${s.cat.name}`.trim(), "success");
-        refresh(); loadState();
-      });
-    }
     section.appendChild(head);
     const sgrid = document.createElement("div");
     sgrid.className = "section-grid";
-    for (const a of s.items) sgrid.appendChild(buildCard(a, idxOf.get(a)));
+    for (const a of s.items) {
+      const card = buildCard(a, idxOf.get(a));
+      card.dataset.srcCat = s.uncat ? "" : s.cat.name;   // where the drag began
+      sgrid.appendChild(card);
+    }
     section.appendChild(sgrid);
+
+    // The whole section (header + grid) is a drop target, so dragging a tile
+    // anywhere onto another category MOVES it there: it's added to the target
+    // and removed from the category it came from. Dropping onto Uncategorized
+    // just removes it from its current category.
+    const targetCat = s.uncat ? "" : s.cat.name;
+    section.title = s.uncat
+      ? "Drop a tile here to remove it from its category"
+      : `Drop a tile here to move it into ${s.cat.name}`;
+    section.addEventListener("dragover", (e) => {
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      section.classList.add("drop-over");
+    });
+    section.addEventListener("dragleave", (e) => {
+      if (!section.contains(e.relatedTarget)) section.classList.remove("drop-over");
+    });
+    section.addEventListener("drop", async (e) => {
+      e.preventDefault(); section.classList.remove("drop-over");
+      const id = e.dataTransfer.getData("text/x-hangar-asset-id");
+      const srcCat = e.dataTransfer.getData("text/x-hangar-src-cat") || "";
+      if (!id || srcCat === targetCat) return;     // dropped back where it was
+      if (targetCat) await post(`assets/${id}/category`, { category: targetCat, add: true });
+      if (srcCat) await post(`assets/${id}/category`, { category: srcCat, add: false });
+      toast(targetCat
+        ? `Moved to ${s.cat.icon || ""} ${s.cat.name}`.trim()
+        : "Removed from category", "success");
+      refresh(); loadState();
+    });
     frag.appendChild(section);
   }
+
+  // Inline affordance to spin up another category for this very type.
+  const adder = document.createElement("button");
+  adder.className = "section-add";
+  adder.innerHTML = `<span class="sa-plus">＋</span> New ${KIND_LABELS[kind] || kind} category`;
+  adder.onclick = async () => { if (await promptNewCategory(kind)) refresh(); };
+  frag.appendChild(adder);
+
   grid.replaceChildren(frag);
   grid.scrollTop = 0;
 }
@@ -633,7 +660,9 @@ function buildCard(a, i) {
   card.draggable = true;
   card.addEventListener("dragstart", (e) => {
     e.dataTransfer.setData("text/x-hangar-asset-id", String(a.id));
-    e.dataTransfer.effectAllowed = "copy";
+    // srcCat is set by renderGroupedGrid; empty in the flat/sidebar views.
+    e.dataTransfer.setData("text/x-hangar-src-cat", card.dataset.srcCat || "");
+    e.dataTransfer.effectAllowed = "copyMove";
     card.classList.add("dragging");
   });
   card.addEventListener("dragend", () => card.classList.remove("dragging"));
@@ -847,11 +876,25 @@ async function openDrawer(id, idx) {
     </div>`;
 
   // Load preview: 3D viewer for GLB/GLTF/FBX, thumbnail for everything else.
+  // Once a thumbnail is cached we show it instantly and make the (heavier) 3D
+  // viewer opt-in, so reopening an asset no longer re-generates the model every
+  // time. The first open (no thumb yet) loads the viewer, which caches a poster.
   if (VIEWER_EXTS.has(a.ext)) {
     const pv = $("#dPreview");
-    // Show any cached thumbnail instantly as a poster while the 3D loads.
-    if (pv) pv.style.backgroundImage = `url("${thumbUrl(a.id)}")`;
-    getViewerMod().then(mod => mod.startViewer(pv, a.id, a.ext));
+    const start3D = () => {
+      pv.classList.remove("has-poster");
+      pv.style.backgroundImage = "";
+      pv.innerHTML = "";
+      getViewerMod().then(mod => mod.startViewer(pv, a.id, a.ext));
+    };
+    if (a.has_thumb) {
+      pv.classList.add("has-poster");
+      pv.style.backgroundImage = `url("${thumbUrl(a.id)}")`;
+      pv.innerHTML = `<button class="view-3d" id="view3dBtn" title="Load the interactive 3D model">▸ View in 3D</button>`;
+      $("#view3dBtn").onclick = start3D;
+    } else {
+      start3D();
+    }
   } else {
     loadPreview(a);
   }
@@ -1282,14 +1325,20 @@ $("#addCollectionBtn").onclick = async () => {
   const name = prompt("New collection name:"); if (!name) return;
   await post("collections", { name }); loadState();
 };
-$("#addCategoryBtn").onclick = async () => {
-  const name = prompt("New category name (e.g. Robots):"); if (!name) return;
+// Create a category. When `prefKind` is one of the asset types we skip the
+// "which type?" prompt and file it straight under that type (used by the inline
+// "+ New category" button inside a grouped type view).
+async function promptNewCategory(prefKind) {
+  const name = prompt("New category name (e.g. Robots):"); if (!name) return false;
   const icon = prompt("Icon emoji (optional — press Cancel to skip):") || "";
-  const kindRaw = (prompt(
-    "Which asset type is this category for?\n" +
-    "model / hdri / texture / material — or leave blank for shared (any type)."
-  ) || "").trim().toLowerCase();
-  const kind = ["model", "hdri", "texture", "material"].includes(kindRaw) ? kindRaw : "";
+  let kind = ["model", "hdri", "texture", "material"].includes(prefKind) ? prefKind : "";
+  if (!kind) {
+    const kindRaw = (prompt(
+      "Which asset type is this category for?\n" +
+      "model / hdri / texture / material — or leave blank for shared (any type)."
+    ) || "").trim().toLowerCase();
+    kind = ["model", "hdri", "texture", "material"].includes(kindRaw) ? kindRaw : "";
+  }
   const keywords = prompt(
     "Auto-match keywords (comma-separated, optional).\n" +
     "Any asset whose folder/file name contains one of these is auto-filed here.\n" +
@@ -1298,7 +1347,10 @@ $("#addCategoryBtn").onclick = async () => {
   await post("categories", { name, icon, kind, keywords });
   if (keywords.trim()) await post("categories/auto", {});
   loadState();
-};
+  return true;
+}
+
+$("#addCategoryBtn").onclick = () => promptNewCategory();
 
 $("#autoClassifyBtn").onclick = async () => {
   toast("Auto-classifying…");

@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 
 from store import THUMB_DIR
@@ -31,12 +32,24 @@ SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 # stale cached previews are automatically replaced on next access.
 _THUMB_VERSIONS = {"hdri": "2"}
 
+# Caps how many Blender thumbnail renders run at once, so scrolling a folder
+# full of USD/FBX assets doesn't fork a swarm of Blender processes.
+_BLENDER_THUMB_SEM = threading.Semaphore(2)
+
 
 def _thumb_path(asset):
     ver = _THUMB_VERSIONS.get(asset["kind"], "1")
     key = f"v{ver}:{asset['path']}:{asset['mtime']}".encode("utf-8")
     digest = hashlib.sha1(key).hexdigest()[:16]
     return THUMB_DIR / f"{digest}.jpg"
+
+
+def has_cached_thumb(asset):
+    """True when a thumbnail JPEG is already on disk for this asset."""
+    try:
+        return _thumb_path(asset).exists()
+    except Exception:
+        return False
 
 
 def get_or_make(asset):
@@ -263,12 +276,35 @@ def _render_model(asset, out):
         import trimesh
         scene = trimesh.load(asset["path"], force="scene")
         png = scene.save_image(resolution=THUMB_SIZE, visible=False)
-        if not png:
-            return False
-        with Image.open(io.BytesIO(png)) as img:
-            return _save_downscaled(img, out)
+        if png:
+            with Image.open(io.BytesIO(png)) as img:
+                if _save_downscaled(img, out):
+                    return True
     except Exception:
-        return False
+        pass
+
+    # Fallback for formats trimesh can't read (USD/USDA/USDC, FBX, Alembic…):
+    # render once in Blender if it's installed. Cached afterwards, so a given
+    # tile only pays this cost on first view. A small semaphore stops a grid
+    # scroll from spawning a stampede of Blender processes.
+    ext = asset["ext"]
+    if ext in BLENDER_RENDER_EXTS and ext != ".blend" and blender_available():
+        with _BLENDER_THUMB_SEM:
+            try:
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                tmp.close()
+                try:
+                    if render_model(asset["path"], tmp.name) and os.path.exists(tmp.name):
+                        with Image.open(tmp.name) as img:
+                            return _save_downscaled(img, out)
+                finally:
+                    try:
+                        os.unlink(tmp.name)
+                    except OSError:
+                        pass
+            except Exception:
+                return False
+    return False
 
 
 # ---------------------------------------------------------------------------
