@@ -39,6 +39,49 @@ MAP_ROLES = {
 }
 _RES_TOKEN = re.compile(r"^\d+k$")  # resolution suffix like 2k / 4k / 8k
 
+# Subtype tokens — textures that are decals or atlases are still "texture" kind
+# (so the four top-level buckets stay Models/Textures/HDRIs/Materials) but get a
+# subtype facet so they can be filtered on their own.
+_SUBTYPE_TOKENS = {
+    "decal": "decal", "decals": "decal",
+    "atlas": "atlas", "atlases": "atlas", "atlasses": "atlas",
+    "trimsheet": "atlas", "trim": "atlas",
+}
+# Bare pixel dimensions seen in texture names → a tidy resolution label.
+_PIXELS_TO_RES = {
+    "256": "256", "512": "512", "1024": "1k", "2048": "2k",
+    "4096": "4k", "8192": "8k", "16384": "16k",
+}
+
+
+def texture_facets(folder, name_noext):
+    """(subtype, resolution) for a texture/HDRI file, derived from its name and
+    immediate parent folder. Both default to "" when nothing is recognised.
+
+    - subtype: 'decal' or 'atlas' when a matching token appears in the file name
+      or the containing folder name.
+    - resolution: a tidy label ('2k', '4k', '512', …) lifted from a `<n>k` token
+      or a bare power-of-two pixel dimension (2048 → '2k').
+    """
+    name_tokens = [t for t in re.split(r"[^a-z0-9]+", name_noext.lower()) if t]
+    folder_tokens = [t for t in re.split(r"[^a-z0-9]+", os.path.basename(folder).lower()) if t]
+    subtype = ""
+    for t in name_tokens + folder_tokens:
+        if t in _SUBTYPE_TOKENS:
+            subtype = _SUBTYPE_TOKENS[t]
+            break
+    resolution = ""
+    for t in name_tokens:  # prefer an explicit Nk token
+        if _RES_TOKEN.match(t):
+            resolution = t
+            break
+    if not resolution:
+        for t in name_tokens:
+            if t in _PIXELS_TO_RES:
+                resolution = _PIXELS_TO_RES[t]
+                break
+    return subtype, resolution
+
 
 def texture_set_info(folder, name_noext):
     """(set_key, map_role, map_order) for a texture file.
@@ -144,6 +187,10 @@ def scan_library(library_path, on_file=None):
             if kind == "texture":
                 sk, role, order = texture_set_info(root, name_noext)
                 meta["set_key"], meta["map_role"], meta["map_order"] = sk, role, order
+            # Decal/atlas subtype + resolution facets for images (textures + HDRIs).
+            if kind in ("texture", "hdri"):
+                subtype, resolution = texture_facets(root, name_noext)
+                meta["subtype"], meta["resolution"] = subtype, resolution
             asset_id = store.upsert_asset(meta)
             seen.add(asset_id)
             found += 1

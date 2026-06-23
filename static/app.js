@@ -375,16 +375,65 @@ function renderLibraries(libs) {
   }
 }
 
+let _facetKindCache = {};  // kind → { subtypes, resolutions }, invalidated on filter reset
+
 function resetFilter() {
-  state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "", favorite: false };
+  state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
+                   favorite: false, subtype: "", resolution: "" };
+  _facetKindCache = {};
 }
 
 // ---- clear-filter button visibility ---------------------------------------
 function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
     || state.filter.collection || state.filter.category || state.filter.folder
-    || state.filter.favorite || state.search;
+    || state.filter.favorite || state.filter.subtype || state.filter.resolution
+    || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
+}
+
+// ---- faceted filter strip -------------------------------------------------
+// Shows subtype (decal / atlas) and resolution (2k / 4k …) chips when the
+// active kind has matching assets. Chips toggle — click again to clear.
+// Fetched per kind and cached so navigation doesn't re-request on every sort.
+async function updateFacetStrip() {
+  const strip = $("#facetStrip");
+  const kind = state.filter.kind || "";
+  // Only texture and hdri kinds carry subtype/resolution facets currently.
+  if (kind !== "texture" && kind !== "hdri") { strip.classList.add("hidden"); return; }
+  if (!_facetKindCache[kind]) {
+    _facetKindCache[kind] = await api(`facets?kind=${kind}`);
+  }
+  const { subtypes = [], resolutions = [] } = _facetKindCache[kind] || {};
+  if (!subtypes.length && !resolutions.length) { strip.classList.add("hidden"); return; }
+
+  const f = state.filter;
+  const chip = (facet, val, count) =>
+    `<button class="facet-chip${f[facet] === val ? " is-on" : ""}"
+       data-facet="${facet}" data-val="${val}">${val}<span class="facet-c">${count}</span></button>`;
+
+  let html = "";
+  if (subtypes.length) {
+    html += `<span class="facet-label">Type</span>`;
+    html += subtypes.map(s => chip("subtype", s.value, s.count)).join("");
+  }
+  if (resolutions.length) {
+    if (subtypes.length) html += `<span class="facet-div"></span>`;
+    html += `<span class="facet-label">Resolution</span>`;
+    html += resolutions.map(r => chip("resolution", r.value, r.count)).join("");
+  }
+  strip.innerHTML = html;
+  strip.classList.remove("hidden");
+
+  strip.querySelectorAll(".facet-chip").forEach(btn => {
+    btn.onclick = () => {
+      const facet = btn.dataset.facet;
+      const val = btn.dataset.val;
+      // Toggle off when tapping the already-active chip.
+      state.filter[facet] = state.filter[facet] === val ? "" : val;
+      refresh();
+    };
+  });
 }
 
 // ---- multi-select ---------------------------------------------------------
@@ -573,7 +622,8 @@ async function refresh() {
   // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
   // with no other filter splits the grid into category sections.
   const grouped = (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
-    && !f.collection && !f.category && !f.folder && !f.favorite && !state.search;
+    && !f.collection && !f.category && !f.folder && !f.favorite && !state.search
+    && !f.subtype && !f.resolution;
 
   const p = new URLSearchParams();
   if (f.kind) p.set("kind", f.kind);
@@ -583,6 +633,8 @@ async function refresh() {
   if (f.category) p.set("category", f.category);
   if (f.folder) p.set("folder", f.folder);
   if (f.favorite) p.set("favorite", "1");
+  if (f.subtype) p.set("subtype", f.subtype);
+  if (f.resolution) p.set("resolution", f.resolution);
   if (state.search) p.set("search", state.search);
   p.set("sort", state.sort);
   // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each.
@@ -598,6 +650,7 @@ async function refresh() {
   enqueueMissingThumbs(data.assets);   // fill in USD/Alembic tiles in the background
   updateActiveLabel(data.total);
   updateClearBtn();
+  updateFacetStrip();
 }
 
 // Grid split into category sections (for a plain type view). Each category of

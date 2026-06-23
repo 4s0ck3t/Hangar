@@ -257,6 +257,37 @@ button, input, select { font-family: inherit; color: inherit; }
   padding: 8px 10px; font-size: 12px; cursor: pointer; outline: none;
 }
 
+/* ---- faceted filter strip ---- */
+.facet-strip {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  padding: 6px 22px 8px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.facet-strip.hidden { display: none; }
+.facet-label {
+  font-size: 10.5px; font-weight: 600; color: var(--faint); text-transform: uppercase;
+  letter-spacing: .06em; margin-right: 2px; white-space: nowrap;
+}
+.facet-div {
+  width: 1px; height: 16px; background: var(--line); margin: 0 4px; align-self: center;
+}
+.facet-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; padding: 4px 9px; border-radius: 999px; cursor: pointer;
+  background: var(--raised); border: 1px solid var(--line); color: var(--ink);
+  transition: background .12s, border-color .12s, color .12s;
+}
+.facet-chip:hover { background: var(--raised-hi); border-color: var(--mute); }
+.facet-chip.is-on {
+  background: color-mix(in srgb, var(--select) 18%, transparent);
+  border-color: var(--select); color: var(--select); font-weight: 600;
+}
+.facet-c {
+  font-size: 10px; color: var(--faint); font-weight: 400;
+}
+.facet-chip.is-on .facet-c { color: color-mix(in srgb, var(--select) 70%, white); }
+
 /* ---- grid ---- */
 .grid {
   flex: 1; overflow-y: auto; min-height: 0;

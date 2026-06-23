@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS assets (
     map_role    TEXT NOT NULL DEFAULT '',
     map_order   INTEGER NOT NULL DEFAULT 50,
     blend_assets INTEGER,
+    subtype     TEXT NOT NULL DEFAULT '',
+    resolution  TEXT NOT NULL DEFAULT '',
     added_at    REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tags (
@@ -188,6 +190,8 @@ def init_db():
             ("map_role",  "ALTER TABLE assets ADD COLUMN map_role TEXT NOT NULL DEFAULT ''"),
             ("map_order", "ALTER TABLE assets ADD COLUMN map_order INTEGER NOT NULL DEFAULT 50"),
             ("blend_assets", "ALTER TABLE assets ADD COLUMN blend_assets INTEGER"),
+            ("subtype",    "ALTER TABLE assets ADD COLUMN subtype TEXT NOT NULL DEFAULT ''"),
+            ("resolution", "ALTER TABLE assets ADD COLUMN resolution TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in asset_cols:
                 conn.execute(ddl)
@@ -217,6 +221,25 @@ def init_db():
                 pass  # path-based set_key already prevents the collapse
             conn.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES('set_key_backfilled','1')")
+        # One-time backfill: derive subtype (decal/atlas) + resolution facets for
+        # images already indexed before those columns existed.
+        if not conn.execute(
+                "SELECT 1 FROM settings WHERE key='facets_backfilled'").fetchone():
+            try:
+                import scanner  # lazy: avoids an import cycle at module load
+                for r in conn.execute(
+                        "SELECT id, path FROM assets "
+                        "WHERE kind IN ('texture','hdri')").fetchall():
+                    folder = os.path.dirname(r["path"])
+                    name_noext = os.path.splitext(os.path.basename(r["path"]))[0]
+                    subtype, resolution = scanner.texture_facets(folder, name_noext)
+                    conn.execute(
+                        "UPDATE assets SET subtype=?, resolution=? WHERE id=?",
+                        (subtype, resolution, r["id"]))
+            except Exception:
+                pass
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('facets_backfilled','1')")
         # Sensible default tag palette so new users aren't staring at a blank wall.
         defaults = [
             ("hero", "#E8B04B"), ("wip", "#E87D3E"), ("approved", "#3DBE8B"),
@@ -324,6 +347,8 @@ def upsert_asset(meta):
     set_key = meta.get("set_key") or meta["path"]
     map_role = meta.get("map_role", "")
     map_order = meta.get("map_order", 50)
+    subtype = meta.get("subtype", "")
+    resolution = meta.get("resolution", "")
     with connect() as conn:
         existing = conn.execute(
             "SELECT id, mtime FROM assets WHERE path=?", (meta["path"],)
@@ -333,19 +358,21 @@ def upsert_asset(meta):
             stats_reset = meta["mtime"] != existing["mtime"]
             conn.execute(
                 "UPDATE assets SET name=?, ext=?, kind=?, size=?, mtime=?, "
-                "set_key=?, map_role=?, map_order=?, missing=0"
+                "set_key=?, map_role=?, map_order=?, subtype=?, resolution=?, missing=0"
                 + (", stats_done=0, vertices=NULL, faces=NULL" if stats_reset else "")
                 + " WHERE id=?",
                 (meta["name"], meta["ext"], meta["kind"], meta["size"],
-                 meta["mtime"], set_key, map_role, map_order, existing["id"]),
+                 meta["mtime"], set_key, map_role, map_order, subtype, resolution,
+                 existing["id"]),
             )
             return existing["id"]
         cur = conn.execute(
             "INSERT INTO assets(path, name, ext, kind, size, mtime, "
-            "set_key, map_role, map_order, added_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "set_key, map_role, map_order, subtype, resolution, added_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (meta["path"], meta["name"], meta["ext"], meta["kind"],
-             meta["size"], meta["mtime"], set_key, map_role, map_order, time.time()),
+             meta["size"], meta["mtime"], set_key, map_role, map_order,
+             subtype, resolution, time.time()),
         )
         # Auto-suggest categories for any new asset from its folder/file name.
         _auto_categorize(conn, cur.lastrowid, meta["path"], meta["kind"])
@@ -433,7 +460,8 @@ def model_ext_counts():
 
 def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
-                 group="", set_key="", with_categories=False):
+                 group="", set_key="", with_categories=False,
+                 subtype="", resolution=""):
     clauses = ["a.missing=0"]
     joins = ""
     # Placeholders in the final SQL appear JOINs-first (text precedes WHERE), so
@@ -453,6 +481,12 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
     if kind:
         clauses.append("a.kind=?")
         where_params.append(kind)
+    if subtype:
+        clauses.append("a.subtype=?")
+        where_params.append(subtype)
+    if resolution:
+        clauses.append("a.resolution=?")
+        where_params.append(resolution)
     if ext:
         # ext may be comma-separated for grouped formats (e.g. ".glb,.gltf")
         exts = [e.strip() for e in ext.split(",") if e.strip()]
@@ -544,6 +578,33 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                 d["categories"] = by_asset.get(d["id"], [])
         total = conn.execute(count_sql, params).fetchone()["c"]
     return out, total
+
+
+_RES_ORDER = {"256": 0, "512": 1, "1k": 2, "2k": 3, "4k": 4, "8k": 5, "16k": 6}
+
+
+def facet_counts(kind=""):
+    """Available subtype + resolution facets (with counts) across live assets,
+    optionally scoped to one kind. Drives the faceted-filter strip so it only
+    ever offers values that actually match something."""
+    clauses = ["missing=0"]
+    params = []
+    if kind:
+        clauses.append("kind=?")
+        params.append(kind)
+    where = " AND ".join(clauses)
+    with connect() as conn:
+        sub = conn.execute(
+            f"SELECT subtype AS v, COUNT(*) c FROM assets "
+            f"WHERE {where} AND subtype!='' GROUP BY subtype", params).fetchall()
+        res = conn.execute(
+            f"SELECT resolution AS v, COUNT(*) c FROM assets "
+            f"WHERE {where} AND resolution!='' GROUP BY resolution", params).fetchall()
+    subtypes = [{"value": r["v"], "count": r["c"]} for r in sub]
+    resolutions = sorted(
+        ({"value": r["v"], "count": r["c"]} for r in res),
+        key=lambda d: _RES_ORDER.get(d["value"], 99))
+    return {"subtypes": subtypes, "resolutions": resolutions}
 
 
 def set_members(asset_id):

@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.34"
+__version__ = "0.13.35"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -226,10 +226,19 @@ def list_assets():
         group=q.get("group", "").strip(),
         set_key=q.get("set_key", "").strip(),
         with_categories=q.get("with_categories") == "1",
+        subtype=q.get("subtype", "").strip(),
+        resolution=q.get("resolution", "").strip(),
     )
     for a in assets:
         a["has_thumb"] = thumbs.has_cached_thumb(a)
     return jsonify({"assets": assets, "total": total})
+
+
+@app.get("/api/facets")
+def facets():
+    """Subtype + resolution facets available for the faceted filter strip,
+    optionally scoped to a kind (?kind=texture)."""
+    return jsonify(store.facet_counts(request.args.get("kind", "").strip()))
 
 
 @app.get("/api/assets/<int:asset_id>/set")
