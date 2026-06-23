@@ -44,8 +44,10 @@ button, input, select { font-family: inherit; color: inherit; }
 
 /* ---- sidebar ---- */
 .sidebar {
-  background: var(--panel);
-  border-right: 1px solid var(--line);
+  /* Gentle left-to-right fade into the canvas instead of a hard 1px seam, so
+     the rail blends into the workspace rather than looking bolted on. */
+  background: linear-gradient(to right, var(--panel) 88%, var(--void));
+  box-shadow: 1px 0 0 rgba(255,255,255,.02);
   display: flex; flex-direction: column;
   min-height: 0;
 }
@@ -77,7 +79,25 @@ button, input, select { font-family: inherit; color: inherit; }
 .add-folder:hover { background: var(--raised-hi); border-color: #3a3e49; }
 .af-ico { color: var(--signal); font-size: 15px; }
 
-.nav { flex: 1; overflow-y: auto; padding: 6px 10px 10px; min-height: 0; }
+/* Sidebar scrolls when it has to, but the scrollbar stays out of sight so the
+   rail reads as one seamless surface — a faint thumb only fades in on hover. */
+.nav {
+  flex: 1; overflow-y: auto; padding: 6px 10px 10px; min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+.nav:hover { scrollbar-color: var(--line) transparent; }
+.nav::-webkit-scrollbar { width: 8px; }
+.nav::-webkit-scrollbar-track { background: transparent; }
+.nav::-webkit-scrollbar-thumb {
+  background: transparent; border-radius: 8px;
+  border: 2px solid transparent; background-clip: content-box;
+  transition: background .2s;
+}
+.nav:hover::-webkit-scrollbar-thumb { background: var(--line); background-clip: content-box; }
+.nav::-webkit-scrollbar-thumb:hover { background: var(--raised-hi); background-clip: content-box; }
 .nav-group { margin-top: 14px; }
 .nav-label {
   display: flex; align-items: center;
