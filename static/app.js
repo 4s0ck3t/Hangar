@@ -524,6 +524,7 @@ function renderGroupedGrid(assets, kind, total) {
   if (!assets.length) { renderGrid(assets, total); return; }
   empty.classList.add("hidden");
   grid.classList.add("grouped");
+  bindGridDragScroll();   // scroll to off-screen categories while dragging a tile
 
   const cats = allCategories.filter((c) => (c.kind || "") === kind);
   const catNames = new Set(cats.map((c) => c.name));
@@ -795,6 +796,58 @@ async function uncategorizeAsset(a) {
   toast("Removed from category", "success");
   if (drawerAssetId === a.id) renderDrawerCategoryEditor(a);
   refresh(); loadState();
+}
+
+// ---- drag auto-scroll -----------------------------------------------------
+// While dragging a tile, scroll the grid when the cursor nears its top/bottom
+// edge, so a category section that's off-screen can still be reached as a drop
+// target. Speed ramps up the closer the cursor gets to the edge.
+const DRAG_SCROLL_ZONE = 80;   // px from an edge where auto-scroll kicks in
+const DRAG_SCROLL_MAX = 22;    // px/frame at the very edge
+let _dragScrollDir = 0;        // <0 up, >0 down, 0 idle
+let _dragScrollRaf = 0;
+let _dragScrollBound = false;
+
+function _dragScrollStep() {
+  const grid = $("#grid");
+  if (_dragScrollDir && grid) {
+    grid.scrollTop += _dragScrollDir;
+    _dragScrollRaf = requestAnimationFrame(_dragScrollStep);
+  } else {
+    _dragScrollRaf = 0;
+  }
+}
+
+function handleDragAutoScroll(clientY) {
+  const grid = $("#grid");
+  if (!grid) return;
+  const r = grid.getBoundingClientRect();
+  let speed = 0;
+  if (clientY < r.top + DRAG_SCROLL_ZONE) {
+    const f = Math.min(1, (r.top + DRAG_SCROLL_ZONE - clientY) / DRAG_SCROLL_ZONE);
+    speed = -Math.ceil(f * DRAG_SCROLL_MAX);
+  } else if (clientY > r.bottom - DRAG_SCROLL_ZONE) {
+    const f = Math.min(1, (clientY - (r.bottom - DRAG_SCROLL_ZONE)) / DRAG_SCROLL_ZONE);
+    speed = Math.ceil(f * DRAG_SCROLL_MAX);
+  }
+  _dragScrollDir = speed;
+  if (speed && !_dragScrollRaf) _dragScrollRaf = requestAnimationFrame(_dragScrollStep);
+}
+
+function stopDragAutoScroll() {
+  _dragScrollDir = 0;
+  if (_dragScrollRaf) { cancelAnimationFrame(_dragScrollRaf); _dragScrollRaf = 0; }
+}
+
+// Bind once — #grid is a stable container (its children are replaced, not it).
+function bindGridDragScroll() {
+  if (_dragScrollBound) return;
+  const grid = $("#grid");
+  if (!grid) return;
+  _dragScrollBound = true;
+  grid.addEventListener("dragover", (e) => handleDragAutoScroll(e.clientY));
+  document.addEventListener("dragend", stopDragAutoScroll, true);
+  document.addEventListener("drop", stopDragAutoScroll, true);
 }
 
 // ---- virtual scrolling ----------------------------------------------------
