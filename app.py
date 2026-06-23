@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.32"
+__version__ = "0.13.33"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -468,6 +468,13 @@ def reveal(asset_id):
     return jsonify({"ok": True})
 
 
+def _queue_blender(entry):
+    """Append one instruction to the Blender bridge queue file."""
+    entry.setdefault("ts", time.time())
+    with open(BLENDER_QUEUE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
 @app.post("/api/assets/<int:asset_id>/send-blender")
 def send_blender(asset_id):
     asset = store.get_asset(asset_id)
@@ -475,11 +482,53 @@ def send_blender(asset_id):
         return jsonify({"error": "Asset not found."}), 404
     if asset["kind"] != "model":
         return jsonify({"error": "Only model files can be sent to Blender."}), 400
-    entry = {"action": "import", "path": asset["path"],
-             "ext": asset["ext"], "ts": time.time()}
-    with open(BLENDER_QUEUE, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry) + "\n")
+    data = request.get_json(silent=True) or {}
+    _queue_blender({"action": "import", "path": asset["path"], "ext": asset["ext"],
+                    "place_at_cursor": bool(data.get("place_at_cursor", False))})
     return jsonify({"ok": True, "queued": asset["name"]})
+
+
+@app.post("/api/assets/<int:asset_id>/send-material")
+def send_material(asset_id):
+    """Send a texture set to Blender as a ready-built Principled-BSDF material.
+
+    Gathers every map in the asset's texture set (diffuse/roughness/normal/…)
+    and hands the role→path mapping to the bridge addon, which wires the node
+    graph and (by default) applies it to the current selection.
+    """
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["kind"] not in ("texture", "material"):
+        return jsonify({"error": "Only textures or materials can be sent as a material."}), 400
+    members = store.set_members(asset_id) or [asset]
+    maps = {}
+    for m in members:
+        role = (m.get("map_role") or "").strip()
+        if role and role != "other" and role not in maps:
+            maps[role] = m["path"]
+    if not maps:  # lone texture with no recognised role — use it as base colour
+        maps["diffuse"] = asset["path"]
+    data = request.get_json(silent=True) or {}
+    # set_key is "folder|basename"; the basename is the nicer material name.
+    name = (asset.get("set_key") or asset["name"]).split("|")[-1]
+    _queue_blender({"action": "apply_material", "name": name, "maps": maps,
+                    "to_selection": bool(data.get("to_selection", True))})
+    return jsonify({"ok": True, "maps": sorted(maps.keys())})
+
+
+@app.post("/api/assets/<int:asset_id>/send-hdri")
+def send_hdri(asset_id):
+    """Set an HDRI as the Blender scene's world/environment lighting."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["kind"] != "hdri":
+        return jsonify({"error": "Only HDRIs can be set as world lighting."}), 400
+    data = request.get_json(silent=True) or {}
+    _queue_blender({"action": "set_world_hdri", "path": asset["path"],
+                    "strength": float(data.get("strength", 1.0))})
+    return jsonify({"ok": True})
 
 
 @app.post("/api/assets/<int:asset_id>/render-blend")

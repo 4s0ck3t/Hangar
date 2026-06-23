@@ -1118,6 +1118,8 @@ async function openDrawer(id, idx) {
   const color = KIND_COLORS[a.kind] || "var(--mute)";
   const ext = a.ext.replace(".", "").toUpperCase();
   const canBlender = a.kind === "model";
+  const canMaterial = a.kind === "texture" || a.kind === "material";
+  const canWorld = a.kind === "hdri";
   // Any model format Blender can open/import gets an on-demand render button.
   const canRender = canBlender && (st.blender_render_exts || []).includes(a.ext);
 
@@ -1167,6 +1169,12 @@ async function openDrawer(id, idx) {
           <span class="act-label">${a.favorite ? "Remove from favorites" : "Add to favorites"}</span></button>
         ${canBlender ? `<button class="act primary" id="blenderAct">
           <span class="act-ico">⤴</span> <span class="act-label">Send to Blender</span></button>` : ""}
+        ${canBlender ? `<button class="act" id="blenderCursorAct">
+          <span class="act-ico">✛</span> <span class="act-label">Send at 3D cursor</span></button>` : ""}
+        ${canMaterial ? `<button class="act primary" id="materialAct">
+          <span class="act-ico">⬢</span> <span class="act-label">Build material in Blender</span></button>` : ""}
+        ${canWorld ? `<button class="act primary" id="worldAct">
+          <span class="act-ico">☀</span> <span class="act-label">Set as world HDRI</span></button>` : ""}
         ${canRender ? `<button class="act" id="renderAct">
           <span class="act-ico">◳</span> <span class="act-label">Render preview${blenderReady ? "" : " (Blender not found)"}</span></button>` : ""}
         ${canRender && !blenderReady ? `<button class="act" id="setBlenderAct">
@@ -1223,16 +1231,33 @@ async function openDrawer(id, idx) {
     toast(a.favorite ? "Added to favorites ★" : "Removed from favorites", "success");
   };
 
-  if (canBlender) {
-    $("#blenderAct").onclick = async () => {
-      const btn = $("#blenderAct");
-      const lbl = btn.querySelector(".act-label");
-      btn.disabled = true; lbl.textContent = "Sending…";
-      const r = await post(`assets/${a.id}/send-blender`);
-      btn.disabled = false; lbl.textContent = "Send to Blender";
-      if (r.ok) toast("Queued — the Blender bridge will import it.", "success");
-      else toast(r.error || "Couldn't queue for Blender.", "error");
+  // Run a "send to Blender" action button: disable it, POST, toast the result.
+  const wireSend = (id, path, body, sending, idle, okMsg) => {
+    const btn = $("#" + id); if (!btn) return;
+    const lbl = btn.querySelector(".act-label");
+    btn.onclick = async () => {
+      btn.disabled = true; lbl.textContent = sending;
+      let r; try { r = await post(`assets/${a.id}/${path}`, body); } catch (_) { r = null; }
+      btn.disabled = false; lbl.textContent = idle;
+      if (r && r.ok) toast(typeof okMsg === "function" ? okMsg(r) : okMsg, "success");
+      else toast((r && r.error) || "Couldn't queue for Blender. Is the bridge connected?", "error");
     };
+  };
+
+  if (canBlender) {
+    wireSend("blenderAct", "send-blender", {}, "Sending…", "Send to Blender",
+      "Queued — the Blender bridge will import it.");
+    wireSend("blenderCursorAct", "send-blender", { place_at_cursor: true },
+      "Sending…", "Send at 3D cursor", "Queued — imports at the 3D cursor.");
+  }
+  if (canMaterial) {
+    wireSend("materialAct", "send-material", { to_selection: true },
+      "Building…", "Build material in Blender",
+      (r) => `Material queued (${(r.maps || []).join(", ") || "base colour"}) — applies to your selection.`);
+  }
+  if (canWorld) {
+    wireSend("worldAct", "send-hdri", {}, "Sending…", "Set as world HDRI",
+      "Queued — sets the scene's world lighting.");
   }
 
   if (canRender) {

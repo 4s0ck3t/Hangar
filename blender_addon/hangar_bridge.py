@@ -11,10 +11,10 @@ network setup or ports are needed — just two local apps sharing one file.
 bl_info = {
     "name": "Hangar Bridge",
     "author": "Hangar",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar (N) > Hangar",
-    "description": "Receive assets sent from the Hangar asset manager.",
+    "description": "Receive assets, materials and HDRIs sent from the Hangar asset manager.",
     "category": "Import-Export",
 }
 
@@ -29,8 +29,137 @@ POLL_SECONDS = 1.0
 _state = {"offset": 0, "running": False}
 
 
-def _import_file(path, ext):
+def _selected_meshes(context):
+    return [o for o in context.selected_objects if o.type == "MESH"]
+
+
+def _place_new_at_cursor(context, before):
+    """Move objects added since `before` (a set of names) to the 3D cursor."""
+    cur = context.scene.cursor.location
+    for obj in context.scene.objects:
+        if obj.name not in before and obj.parent is None:
+            obj.location = obj.location + cur
+
+
+def _load_image(path, non_color=False):
+    img = bpy.data.images.load(path, check_existing=True)
+    if non_color:
+        try:
+            img.colorspace_settings.name = "Non-Color"
+        except Exception:
+            pass
+    return img
+
+
+def _apply_material(maps, name, to_selection):
+    """Build a Principled-BSDF material from a Hangar texture set and either
+    assign it to the selected meshes or leave it as a ready-to-use datablock.
+
+    `maps` is a dict of role -> file path, roles matching Hangar's scanner:
+    diffuse, roughness, metallic, normal, ao, displacement, specular.
+    """
+    mat = bpy.data.materials.new(name=name or "Hangar Material")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nodes, links = nt.nodes, nt.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputMaterial"); out.location = (700, 0)
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled"); bsdf.location = (300, 0)
+    links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+
+    def tex(path, non_color, y):
+        n = nodes.new("ShaderNodeTexImage")
+        n.location = (-700, y)
+        try:
+            n.image = _load_image(path, non_color)
+        except Exception as e:
+            print(f"[Hangar] couldn't load {path}: {e}")
+            nodes.remove(n)
+            return None
+        return n
+
+    y = 500
+    wired = []
+    # Base Color — multiplied by AO when both are present (Quixel-style).
+    diff = tex(maps["diffuse"], False, y) if maps.get("diffuse") else None
+    if diff:
+        wired.append("diffuse"); y -= 280
+        ao = tex(maps["ao"], True, y) if maps.get("ao") else None
+        if ao:
+            wired.append("ao"); y -= 280
+            mix = nodes.new("ShaderNodeMixRGB"); mix.blend_type = "MULTIPLY"
+            mix.inputs["Fac"].default_value = 1.0; mix.location = (-150, 450)
+            links.new(diff.outputs["Color"], mix.inputs["Color1"])
+            links.new(ao.outputs["Color"], mix.inputs["Color2"])
+            links.new(mix.outputs["Color"], bsdf.inputs["Base Color"])
+        else:
+            links.new(diff.outputs["Color"], bsdf.inputs["Base Color"])
+    if maps.get("metallic"):
+        n = tex(maps["metallic"], True, y)
+        if n: wired.append("metallic"); y -= 280; links.new(n.outputs["Color"], bsdf.inputs["Metallic"])
+    if maps.get("roughness"):
+        n = tex(maps["roughness"], True, y)
+        if n: wired.append("roughness"); y -= 280; links.new(n.outputs["Color"], bsdf.inputs["Roughness"])
+    if maps.get("specular") and "Specular" in bsdf.inputs:  # renamed in Blender 4.x
+        n = tex(maps["specular"], True, y)
+        if n: wired.append("specular"); y -= 280; links.new(n.outputs["Color"], bsdf.inputs["Specular"])
+    if maps.get("normal"):
+        n = tex(maps["normal"], True, y)
+        if n:
+            wired.append("normal"); y -= 280
+            nm = nodes.new("ShaderNodeNormalMap"); nm.location = (-150, n.location[1])
+            links.new(n.outputs["Color"], nm.inputs["Color"])
+            links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
+    if maps.get("displacement"):
+        n = tex(maps["displacement"], True, y)
+        if n:
+            wired.append("displacement")
+            dsp = nodes.new("ShaderNodeDisplacement"); dsp.location = (300, -400)
+            dsp.inputs["Scale"].default_value = 0.05
+            links.new(n.outputs["Color"], dsp.inputs["Height"])
+            links.new(dsp.outputs["Displacement"], out.inputs["Displacement"])
+            try:
+                mat.cycles.displacement_method = "BOTH"
+            except Exception:
+                pass
+
+    targets = _selected_meshes(bpy.context) if to_selection else []
+    for obj in targets:
+        obj.data.materials.clear()
+        obj.data.materials.append(mat)
+    where = (f"applied to {len(targets)} object(s)" if targets
+             else "added to the material list")
+    print(f"[Hangar] Material '{mat.name}' built ({', '.join(wired) or 'no maps'}) — {where}")
+    return mat
+
+
+def _set_world_hdri(path, strength=1.0):
+    """Use an HDRI as the scene's environment lighting."""
+    scene = bpy.context.scene
+    world = scene.world
+    if world is None:
+        world = bpy.data.worlds.new("World"); scene.world = world
+    world.use_nodes = True
+    nt = world.node_tree
+    nodes, links = nt.nodes, nt.links
+    nodes.clear()
+    out = nodes.new("ShaderNodeOutputWorld"); out.location = (400, 0)
+    bg = nodes.new("ShaderNodeBackground"); bg.location = (150, 0)
+    env = nodes.new("ShaderNodeTexEnvironment"); env.location = (-250, 0)
+    try:
+        env.image = _load_image(path)
+    except Exception as e:
+        print(f"[Hangar] couldn't load HDRI {path}: {e}")
+        return
+    bg.inputs["Strength"].default_value = strength
+    links.new(env.outputs["Color"], bg.inputs["Color"])
+    links.new(bg.outputs["Background"], out.inputs["Surface"])
+    print(f"[Hangar] World HDRI set to {os.path.basename(path)}")
+
+
+def _import_file(path, ext, place_at_cursor=False):
     ext = ext.lower()
+    before = {o.name for o in bpy.context.scene.objects}
     try:
         if ext == ".obj":
             # Blender 4.x uses wm.obj_import; older uses import_scene.obj.
@@ -68,9 +197,26 @@ def _import_file(path, ext):
         else:
             print(f"[Hangar] Unsupported format: {ext}")
             return
+        if place_at_cursor:
+            _place_new_at_cursor(bpy.context, before)
         print(f"[Hangar] Imported {os.path.basename(path)}")
     except Exception as e:
         print(f"[Hangar] Failed to import {path}: {e}")
+
+
+def _dispatch(entry):
+    """Route one queue entry to the right handler based on its action."""
+    action = entry.get("action", "import")
+    if action == "import":
+        _import_file(entry["path"], entry.get("ext", ""),
+                     place_at_cursor=entry.get("place_at_cursor", False))
+    elif action == "apply_material":
+        _apply_material(entry.get("maps", {}), entry.get("name", ""),
+                        entry.get("to_selection", True))
+    elif action == "set_world_hdri":
+        _set_world_hdri(entry["path"], entry.get("strength", 1.0))
+    else:
+        print(f"[Hangar] Unknown action: {action}")
 
 
 def _poll():
@@ -85,8 +231,7 @@ def _poll():
                     if line:
                         try:
                             entry = json.loads(line)
-                            if entry.get("action") == "import":
-                                _import_file(entry["path"], entry.get("ext", ""))
+                            _dispatch(entry)
                         except Exception as e:
                             print(f"[Hangar] Bad queue entry: {e}")
                 _state["offset"] = fh.tell()
