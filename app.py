@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.22"
+__version__ = "0.13.23"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -689,7 +689,28 @@ def update_launch():
         subprocess.Popen([exe], cwd=os.path.dirname(exe))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 200
+    # Hand over: close this (old) instance + its window once the response is sent,
+    # so the freshly launched version takes over without two windows lingering.
+    _schedule_self_shutdown()
     return jsonify({"ok": True})
+
+
+# Set by desktop.py to the Edge/Chrome --app window subprocess (if that path is
+# used), so we can close the window on handover. None for the in-process
+# pywebview window (os._exit closes it) or a plain browser tab.
+WINDOW_PROC = None
+
+
+def _schedule_self_shutdown(delay=0.8):
+    def _bye():
+        time.sleep(delay)
+        try:
+            if WINDOW_PROC is not None:
+                WINDOW_PROC.terminate()
+        except Exception:
+            pass
+        os._exit(0)
+    threading.Thread(target=_bye, daemon=True).start()
 
 
 def _open_browser():

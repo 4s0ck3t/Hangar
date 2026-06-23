@@ -356,12 +356,15 @@ function renderLibraries(libs) {
     li.innerHTML =
       `<span class="dot" style="background:${dotColor}"></span>` +
       `<span class="lib-name">${lib.name}</span>` + warn +
-      `<button class="lib-remove" title="Remove">&times;</button>`;
+      `<button class="lib-remove" title="Stop indexing this folder (files kept on disk)">&times;</button>`;
     // Click the folder to filter the grid to everything under it.
     li.onclick = () => { resetFilter(); state.filter.folder = lib.path; refresh(); };
     li.querySelector(".lib-remove").onclick = async (e) => {
       e.stopPropagation();
-      if (!confirm(`Remove "${lib.name}" from Hangar? Files stay on disk.`)) return;
+      if (!confirm(
+        `Stop indexing the folder "${lib.name}"?\n\n` +
+        `This only removes it from Hangar's library — your files on disk are NOT ` +
+        `moved or deleted. You can add the folder again any time.`)) return;
       await api(`libraries/${lib.id}`, { method: "DELETE" });
       if (state.filter.folder === lib.path) resetFilter();
       await loadState(); refresh();
@@ -1180,9 +1183,12 @@ async function manualCheckUpdate() {
 $("#checkUpdateBtn").onclick = manualCheckUpdate;
 
 $("#updateLaunchBtn").onclick = async () => {
+  const btn = $("#updateLaunchBtn");
+  btn.disabled = true; btn.textContent = "Restarting…";
   const r = await post("update/launch");
-  if (r.ok) toast("Launched the new version — you can close this window.", "success");
-  else toast(r.error || "Couldn't launch — run Hangar.exe from the opened folder.", "error");
+  if (r.ok) toast("Restarting into the new version…", "success");  // this window closes itself
+  else { btn.disabled = false; btn.textContent = "Restart into new version";
+         toast(r.error || "Couldn't launch — run Hangar from the opened folder.", "error"); }
 };
 
 $("#diagBtn").onclick = openDiagnostics;
