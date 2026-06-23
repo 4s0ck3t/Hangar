@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.23"
+__version__ = "0.13.24"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -225,6 +225,7 @@ def list_assets():
         offset=int(q.get("offset", 0)),
         group=q.get("group", "").strip(),
         set_key=q.get("set_key", "").strip(),
+        with_categories=q.get("with_categories") == "1",
     )
     return jsonify({"assets": assets, "total": total})
 

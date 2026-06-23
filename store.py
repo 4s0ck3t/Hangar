@@ -417,7 +417,7 @@ def model_ext_counts():
 
 def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
-                 group="", set_key=""):
+                 group="", set_key="", with_categories=False):
     clauses = ["a.missing=0"]
     joins = ""
     # Placeholders in the final SQL appear JOINs-first (text precedes WHERE), so
@@ -513,6 +513,19 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
             d.setdefault("set_count", 1)
             d["tags"] = _tags_for(conn, r["id"])
             out.append(d)
+        # Batch-attach each asset's categories (for the grouped grid view).
+        if with_categories and out:
+            ids = [d["id"] for d in out]
+            ph = ",".join("?" * len(ids))
+            cat_rows = conn.execute(
+                f"SELECT ac.asset_id, cat.name FROM asset_categories ac "
+                f"JOIN categories cat ON cat.id=ac.category_id "
+                f"WHERE ac.asset_id IN ({ph})", ids).fetchall()
+            by_asset = {}
+            for cr in cat_rows:
+                by_asset.setdefault(cr["asset_id"], []).append(cr["name"])
+            for d in out:
+                d["categories"] = by_asset.get(d["id"], [])
         total = conn.execute(count_sql, params).fetchone()["c"]
     return out, total
 

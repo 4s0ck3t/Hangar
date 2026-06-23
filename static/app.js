@@ -480,26 +480,91 @@ let currentAssets = [];  // last fetched asset list for drawer prev/next
 let drawerIdx = -1;      // position of the open drawer asset in currentAssets
 
 async function refresh() {
+  const f = state.filter;
+  // Grouped view: a plain type selection (Models/Textures/…) with no other
+  // filter shows all of that type split into category sections.
+  const grouped = TYPE_KINDS.includes(f.kind) && !f.ext && !f.tag
+    && !f.collection && !f.category && !f.folder && !f.favorite && !state.search;
+
   const p = new URLSearchParams();
-  if (state.filter.kind) p.set("kind", state.filter.kind);
-  if (state.filter.ext)  p.set("ext", state.filter.ext);
-  if (state.filter.tag) p.set("tag", state.filter.tag);
-  if (state.filter.collection) p.set("collection", state.filter.collection);
-  if (state.filter.category) p.set("category", state.filter.category);
-  if (state.filter.folder) p.set("folder", state.filter.folder);
-  if (state.filter.favorite) p.set("favorite", "1");
+  if (f.kind) p.set("kind", f.kind);
+  if (f.ext)  p.set("ext", f.ext);
+  if (f.tag) p.set("tag", f.tag);
+  if (f.collection) p.set("collection", f.collection);
+  if (f.category) p.set("category", f.category);
+  if (f.folder) p.set("folder", f.folder);
+  if (f.favorite) p.set("favorite", "1");
   if (state.search) p.set("search", state.search);
   p.set("sort", state.sort);
   // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each.
   // Non-texture kinds have a unique set_key, so they pass through untouched.
   p.set("group", "set");
+  if (grouped) { p.set("with_categories", "1"); p.set("limit", "2000"); }
 
   const data = await api("assets?" + p.toString());
   currentAssets = data.assets;
-  renderGrid(data.assets, data.total);
+  if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
+  else renderGrid(data.assets, data.total);
   await loadState();
   updateActiveLabel(data.total);
   updateClearBtn();
+}
+
+// Grid split into category sections (for a plain type view). Each category of
+// the active kind becomes a labelled section; assets with no category land in
+// "Uncategorized". Section headers are drop targets so you can drag cards in.
+function renderGroupedGrid(assets, kind, total) {
+  const grid = $("#grid"); const empty = $("#emptyState");
+  _vAssets = []; _vRange = { start: -1, end: -1 };  // disable the virtual scroller
+  grid.classList.remove("grouped");
+  if (!assets.length) { renderGrid(assets, total); return; }
+  empty.classList.add("hidden");
+  grid.classList.add("grouped");
+
+  const cats = allCategories.filter((c) => (c.kind || "") === kind);
+  const catNames = new Set(cats.map((c) => c.name));
+  const sections = cats.map((c) => ({
+    cat: c, items: assets.filter((a) => (a.categories || []).includes(c.name)),
+  }));
+  const uncategorized = assets.filter(
+    (a) => !(a.categories || []).some((n) => catNames.has(n)));
+  if (uncategorized.length)
+    sections.push({ cat: { name: "Uncategorized", icon: "📂" }, items: uncategorized, uncat: true });
+
+  const idxOf = new Map(assets.map((a, i) => [a, i]));
+  const frag = document.createDocumentFragment();
+  for (const s of sections) {
+    if (!s.items.length) continue;
+    const section = document.createElement("div");
+    section.className = "grid-section";
+    const head = document.createElement("div");
+    head.className = "section-head" + (s.uncat ? " uncat" : "");
+    head.innerHTML =
+      `<span class="section-ico">${s.cat.icon || ""}</span>` +
+      `<span class="section-name">${s.cat.name}</span>` +
+      `<span class="section-count">${s.items.length}</span>`;
+    if (!s.uncat) {
+      head.title = `Drop a card here to add it to ${s.cat.name}`;
+      head.addEventListener("dragover", (e) => { e.preventDefault(); head.classList.add("drop-over"); });
+      head.addEventListener("dragleave", () => head.classList.remove("drop-over"));
+      head.addEventListener("drop", async (e) => {
+        e.preventDefault(); head.classList.remove("drop-over");
+        const id = e.dataTransfer.getData("text/x-hangar-asset-id");
+        if (!id) return;
+        await post(`assets/${id}/category`, { category: s.cat.name, add: true });
+        toast(`Added to ${s.cat.icon || ""} ${s.cat.name}`.trim(), "success");
+        refresh(); loadState();
+      });
+    }
+    section.appendChild(head);
+    const sgrid = document.createElement("div");
+    sgrid.className = "section-grid";
+    for (const a of s.items) sgrid.appendChild(buildCard(a, idxOf.get(a)));
+    section.appendChild(sgrid);
+    frag.appendChild(section);
+  }
+  grid.replaceChildren(frag);
+  grid.scrollTop = 0;
 }
 
 function updateActiveLabel(total) {
@@ -644,6 +709,7 @@ function bindVirtual() {
 
 function renderGrid(assets, total) {
   const grid = $("#grid"); const empty = $("#emptyState");
+  grid.classList.remove("grouped");  // leave grouped-section layout
   if (!assets.length) {
     _vAssets = []; _vRange = { start: -1, end: -1 };
     grid.replaceChildren();
