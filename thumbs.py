@@ -13,7 +13,6 @@ import hashlib
 import logging
 import os
 import re
-import threading
 from pathlib import Path
 
 from store import THUMB_DIR
@@ -31,10 +30,6 @@ SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 # Bump this version when the thumbnail algorithm for a kind changes so that
 # stale cached previews are automatically replaced on next access.
 _THUMB_VERSIONS = {"hdri": "2"}
-
-# Caps how many Blender thumbnail renders run at once, so scrolling a folder
-# full of USD/FBX assets doesn't fork a swarm of Blender processes.
-_BLENDER_THUMB_SEM = threading.Semaphore(2)
 
 
 def _thumb_path(asset):
@@ -272,6 +267,10 @@ def _render_model(asset, out):
             return _save_downscaled(tex, out)
 
     # Generic offscreen render via trimesh (requires working GL context).
+    # NB: Blender is deliberately NOT used here — passively rendering during a
+    # grid scroll spawned a swarm of slow Blender processes. Formats trimesh
+    # can't read (USD/USDA/USDC, FBX, Alembic…) are rendered on demand instead,
+    # once, when the asset's detail drawer is opened (see app.render_preview).
     try:
         import trimesh
         scene = trimesh.load(asset["path"], force="scene")
@@ -282,28 +281,6 @@ def _render_model(asset, out):
                     return True
     except Exception:
         pass
-
-    # Fallback for formats trimesh can't read (USD/USDA/USDC, FBX, Alembic…):
-    # render once in Blender if it's installed. Cached afterwards, so a given
-    # tile only pays this cost on first view. A small semaphore stops a grid
-    # scroll from spawning a stampede of Blender processes.
-    ext = asset["ext"]
-    if ext in BLENDER_RENDER_EXTS and ext != ".blend" and blender_available():
-        with _BLENDER_THUMB_SEM:
-            try:
-                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-                tmp.close()
-                try:
-                    if render_model(asset["path"], tmp.name) and os.path.exists(tmp.name):
-                        with Image.open(tmp.name) as img:
-                            return _save_downscaled(img, out)
-                finally:
-                    try:
-                        os.unlink(tmp.name)
-                    except OSError:
-                        pass
-            except Exception:
-                return False
     return False
 
 

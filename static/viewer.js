@@ -32,7 +32,7 @@ export function startViewer(container, assetId, ext) {
   renderer.toneMappingExposure = 1.2;
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xf3f4f6);  // light neutral — reads as white
+  scene.background = new THREE.Color(0x131418);  // dark studio — models read clearer against it
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 2.0));
   const sun = new THREE.DirectionalLight(0xfff5e0, 2.5);

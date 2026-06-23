@@ -478,6 +478,7 @@ function destroyViewerIfActive() {
 // ---- grid -----------------------------------------------------------------
 let currentAssets = [];  // last fetched asset list for drawer prev/next
 let drawerIdx = -1;      // position of the open drawer asset in currentAssets
+let drawerAssetId = null; // id of the asset currently shown in the drawer
 
 async function refresh() {
   const f = state.filter;
@@ -792,6 +793,37 @@ function loadPreview(a) {
   pv.src = thumbUrl(a.id);
 }
 
+// Render a one-off Blender preview for a model that has no thumbnail yet (USD,
+// Alembic, …), the first time its drawer is opened. Shows an inline spinner and
+// swaps in the image + grid tile when done. Stays a no-op on failure (the manual
+// "Render preview" button remains available with full error feedback).
+async function autoRenderModelPreview(a) {
+  const ph = $("#dPreview");
+  if (ph) {
+    ph.innerHTML =
+      `<div class="d-rendering"><span class="d-render-spin"></span>` +
+      `<span>Rendering preview…</span></div>`;
+  }
+  try {
+    const r = await post(`assets/${a.id}/render`);
+    // Drawer may have moved on to another asset while Blender worked.
+    if (drawerAssetId !== a.id) return;
+    if (r && r.ok) {
+      a.has_thumb = true;
+      thumbBust[a.id] = Date.now();
+      loadPreview(a);
+      const cardImg = $(`#grid .card[data-id="${a.id}"] img`);
+      if (cardImg) cardImg.src = thumbUrl(a.id);
+    } else if (ph) {
+      // Leave the format placeholder; the manual Render button can retry.
+      ph.innerHTML = `<div class="d-rendering muted">Preview unavailable — use “Render preview”.</div>`;
+    }
+  } catch (_) {
+    if (ph && drawerAssetId === a.id)
+      ph.innerHTML = `<div class="d-rendering muted">Preview unavailable — use “Render preview”.</div>`;
+  }
+}
+
 // Reflect a favourite toggle in the grid + cached list without rebuilding the
 // drawer. Keeps the sidebar count fresh; drops the card if the Favourites
 // filter is active and the asset was just unfavourited.
@@ -809,6 +841,7 @@ async function openDrawer(id, idx) {
   // idx is the position in currentAssets — used for prev/next navigation.
   if (idx === undefined) idx = currentAssets.findIndex(a => a.id === id);
   drawerIdx = idx;
+  drawerAssetId = id;
   const a = await api(`assets/${id}`);
   const st = await api("state");
   allTags = st.tags;
@@ -897,6 +930,13 @@ async function openDrawer(id, idx) {
     }
   } else {
     loadPreview(a);
+    // Non-viewer models (USD/USDA/USDC, Alembic…) have no in-browser 3D loader
+    // and trimesh can't decode them, so they arrive with no thumbnail. Render
+    // one in Blender on demand — ONCE, here on open (never during a grid scroll)
+    // — so a preview appears without the background-render lag.
+    if (!a.has_thumb && a.kind === "model" && canRender && blenderReady) {
+      autoRenderModelPreview(a);
+    }
   }
 
   renderTagEditor(a);
@@ -1106,6 +1146,7 @@ function closeDrawer() {
   $("#drawer").classList.remove("open");
   $("#scrim").classList.add("hidden");
   drawerIdx = -1;
+  drawerAssetId = null;
 }
 
 function isDrawerOpen() { return $("#drawer").classList.contains("open"); }
