@@ -60,8 +60,12 @@ python app.py
 
 Click **Add asset folder** and pick a folder in the native OS dialog — no
 path typing. Hangar scans it in the background; watch progress in the
-**status bar along the bottom**. Add as many folders as you like; remove one
-with the × next to it (files stay on disk). Hover a folder to see its full
+**status bar along the bottom**. Once indexing finishes it **pre-bakes every
+thumbnail in the background** ("Generating previews — N/M"), so the first time
+you browse a library the grid reads cached images off disk instead of
+rendering as you scroll. Each tile also shows the **folder it lives in** under
+the name (hover it for the full path). Add as many folders as you like; remove
+one with the × next to it (files stay on disk). Hover a folder to see its full
 path.
 
 Indexed types:

@@ -808,6 +808,12 @@ function buildCard(a, i) {
   const setBadge = (a.set_count > 1)
     ? `<span class="set-badge" title="${a.set_count} texture maps in this set">⛃ ${a.set_count} maps</span>`
     : "";
+  // Immediate parent folder name, so a tile shows where on disk it lives.
+  const parts = (a.path || "").replace(/[\\/]+$/, "").split(/[\\/]/);
+  const folder = parts.length > 1 ? parts[parts.length - 2] : "";
+  const folderLine = folder
+    ? `<div class="card-folder" title="${a.path || ""}">🗀 ${folder}</div>`
+    : "";
   card.innerHTML = `
     <div class="card-thumb">
       <span class="kind-stripe" style="background:${color}"></span>
@@ -819,6 +825,7 @@ function buildCard(a, i) {
     </div>
     <div class="card-meta">
       <div class="card-name" title="${a.name}">${a.name}</div>
+      ${folderLine}
       <div class="card-line">
         <span class="card-ext" style="color:${color}">${ext}</span>
         <span>·</span><span>${fmtSize(a.size)}</span>
@@ -1627,9 +1634,11 @@ async function chooseFolder() {
   return prompt("Paste the full path to an asset folder:") || null;
 }
 
-function startScanPolling() {
+function startScanPolling(warmOnly = false) {
   if (state.scanTimer) return;
-  state.wasScanning = true;
+  // warmOnly = boot-time pre-baking with no fresh index, so skip the
+  // "indexed N assets" toast but still show the progress bar.
+  state.wasScanning = !warmOnly;
   $("#statusSummary").classList.add("hidden");
   $("#scanProgress").classList.remove("hidden");
   $("#rescanBtn").disabled = true;
@@ -1639,12 +1648,27 @@ function startScanPolling() {
 
 async function pollScan() {
   const s = await api("scan/status");
+  const warm = s.warm || {};
   if (s.running) {
     $("#scanText").textContent =
       `${s.library || "library"} — ${s.scanned.toLocaleString()}/${s.total.toLocaleString()} files`;
     $("#scanFill").style.width = s.pct + "%";
     $("#scanPct").textContent = s.pct + "%";
     await loadState();
+  } else if (warm.running) {
+    // Indexing is done; previews are now pre-baking in the background. Keep the
+    // bar up so the user sees thumbnails filling in rather than a frozen grid.
+    if (state.wasScanning) {
+      state.wasScanning = false;
+      toast(`Indexed ${s.indexed.toLocaleString()} assets — generating previews…`, "success");
+      refresh();
+    }
+    $("#scanText").textContent =
+      `Generating previews — ${warm.done.toLocaleString()}/${warm.total.toLocaleString()}`;
+    $("#scanFill").style.width = warm.pct + "%";
+    $("#scanPct").textContent = warm.pct + "%";
+    // Periodically repaint so freshly-baked thumbnails replace badge tiles.
+    if (warm.done % 40 === 0) refresh();
   } else {
     clearInterval(state.scanTimer); state.scanTimer = null;
     $("#scanProgress").classList.add("hidden");
@@ -1653,8 +1677,8 @@ async function pollScan() {
     if (state.wasScanning) {
       state.wasScanning = false;
       toast(`Done — ${s.indexed.toLocaleString()} assets indexed`, "success");
-      refresh();
     }
+    refresh();  // final repaint to pick up the last baked previews
   }
 }
 
@@ -1885,6 +1909,7 @@ document.addEventListener("keydown", (e) => {
   await refresh();
   const s = await api("scan/status");
   if (s.running) startScanPolling();
+  else if (s.warm && s.warm.running) startScanPolling(true);
   // Warn once if HDRIs are indexed but no backend can decode them.
   if (st && st.counts.by_kind.hdri &&
       st.hdri_backends && st.hdri_backends[0] === "none") {

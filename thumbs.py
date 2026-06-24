@@ -305,8 +305,8 @@ def extract_blend_thumbnail(path):
     Blender writes a thumbnail into a 'TEST' file-block when it saves a file
     (this is the same image its own File Browser shows). We parse the .blend
     header, skip 'REND' blocks, and read width/height + RGBA pixels from the
-    'TEST' block. No Blender process required. Handles gzip-compressed files;
-    zstd-compressed files (Blender 3.0+ "Compress") are skipped gracefully.
+    'TEST' block. No Blender process required. Handles uncompressed, gzip, and
+    zstd-compressed files (Blender 3.0+ "Compress", via _zstd_decompress).
     """
     from PIL import Image
     f = None

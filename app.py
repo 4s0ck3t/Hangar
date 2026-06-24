@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.35"
+__version__ = "0.13.36"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -77,6 +77,9 @@ def _run_scan(libs):
     with SCAN_LOCK:
         SCAN.update(running=False, indexed=indexed, current="",
                     unavailable=unavailable, finished_at=time.time())
+    # Pre-bake thumbnails in the background so the first browse is instant
+    # (the Connecter trick — generate once up front, not lazily on scroll).
+    _start_warm()
 
 
 def _start_scan(libs):
@@ -85,6 +88,66 @@ def _start_scan(libs):
             return False
     threading.Thread(target=_run_scan, args=(libs,), daemon=True).start()
     return True
+
+
+# ---- background thumbnail warming -----------------------------------------
+# After a scan, walk every asset and generate its thumbnail ahead of time so
+# the grid reads cached JPEGs off disk instead of rendering during a scroll.
+# Cheap previews (images, embedded .blend/glTF thumbnails) run first; the slow
+# Blender renders for formats with no embedded preview run last, one at a time,
+# yielding between each so they never starve the UI or swarm like a passive
+# scroll-render would.
+WARM = {"running": False, "done": 0, "total": 0, "rendered": 0,
+        "current": "", "finished_at": 0}
+WARM_LOCK = threading.Lock()
+WARM_GEN = 0  # bumped on each new scan so an in-flight warm pass bows out
+
+
+def _run_warm(generation):
+    try:
+        targets = store.iter_thumb_targets()
+    except Exception as e:
+        print(f"[Hangar] warm: could not list assets: {e}")
+        with WARM_LOCK:
+            WARM.update(running=False, finished_at=time.time())
+        return
+    with WARM_LOCK:
+        WARM.update(running=True, done=0, total=len(targets), rendered=0,
+                    current="", finished_at=0)
+    blender_ok = thumbs.blender_available()
+    done = rendered = 0
+    for asset in targets:
+        if generation != WARM_GEN:        # a newer scan started — let it take over
+            break
+        done += 1
+        try:
+            if thumbs.has_cached_thumb(asset):
+                pass
+            elif thumbs.get_or_make(asset) is not None:
+                pass
+            elif (blender_ok and asset["kind"] == "model"
+                  and asset["ext"] in thumbs.BLENDER_RENDER_EXTS):
+                # No embedded/sibling/trimesh preview — fall back to a real
+                # Blender render, but only here in the background, throttled.
+                if thumbs.render_model_preview(asset):
+                    rendered += 1
+                time.sleep(0.15)          # keep the render pass low-priority
+        except Exception:
+            pass                          # one bad file never stops the sweep
+        with WARM_LOCK:
+            WARM.update(done=done, rendered=rendered, current=asset["path"])
+    with WARM_LOCK:
+        WARM.update(running=False, current="", finished_at=time.time())
+
+
+def _start_warm():
+    global WARM_GEN
+    WARM_GEN += 1
+    # Flip running on synchronously so a status poll fired right after a scan
+    # finishes can't slip through the gap before the thread sets it.
+    with WARM_LOCK:
+        WARM["running"] = True
+    threading.Thread(target=_run_warm, args=(WARM_GEN,), daemon=True).start()
 
 
 # ---- pages ----------------------------------------------------------------
@@ -148,6 +211,10 @@ def scan_status():
     with SCAN_LOCK:
         data = dict(SCAN)
     data["pct"] = round(100 * data["scanned"] / data["total"], 1) if data["total"] else 0
+    with WARM_LOCK:
+        warm = dict(WARM)
+    warm["pct"] = round(100 * warm["done"] / warm["total"], 1) if warm["total"] else 0
+    data["warm"] = warm
     return jsonify(data)
 
 
@@ -841,6 +908,10 @@ def _open_browser():
 def run_server(open_browser=False):
     if open_browser:
         threading.Thread(target=_open_browser, daemon=True).start()
+    # Warm any thumbnails missing from a previous run (e.g. a library indexed
+    # before pre-baking existed, or new files added while Hangar was closed).
+    # has_cached_thumb makes this a cheap no-op once everything is baked.
+    _start_warm()
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
 
 

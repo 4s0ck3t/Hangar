@@ -458,6 +458,19 @@ def model_ext_counts():
     return {r["ext"]: r["c"] for r in rows}
 
 
+def iter_thumb_targets():
+    """Minimal rows for background thumbnail warming: id, path, ext, kind, mtime
+    for every present (non-missing) asset. Non-model kinds (textures, HDRIs —
+    cheap image downscales) sort first so the grid fills before the slower model
+    renders run; models are warmed last."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path, ext, kind, mtime FROM assets WHERE missing=0 "
+            "ORDER BY CASE kind WHEN 'model' THEN 1 ELSE 0 END, id"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
                  group="", set_key="", with_categories=False,
