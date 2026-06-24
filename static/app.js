@@ -221,6 +221,18 @@ function renderKindFilters(counts, cats) {
     `<span>Favorites</span><span class="count">${counts.favorites}</span>`;
   fav.onclick = () => { resetFilter(); state.filter.favorite = true; refresh(); };
   ul.appendChild(fav);
+
+  // Always-visible "add category" row — the small + in the header is easy to
+  // miss, and several people couldn't find how to create a category.
+  const addCat = document.createElement("li");
+  addCat.className = "kind-item add-cat-row";
+  addCat.title = "Create a category to organise assets";
+  addCat.innerHTML =
+    `<span class="twisty-spacer"></span>` +
+    `<span class="dot" style="background:transparent">＋</span>` +
+    `<span style="color:var(--signal)">New category…</span>`;
+  addCat.onclick = async () => { if (await promptNewCategory()) refresh(); };
+  ul.appendChild(addCat);
 }
 
 // Categories live nested under their asset type in the Library list (Poly
@@ -1645,8 +1657,13 @@ async function pollScan() {
       toast(`Indexed ${s.indexed.toLocaleString()} assets — generating previews…`, "success");
       refresh();
     }
-    $("#scanText").textContent =
+    const scanText = $("#scanText");
+    scanText.textContent =
       `Generating previews — ${warm.done.toLocaleString()}/${warm.total.toLocaleString()}`;
+    // Hover to see exactly which file is being generated right now.
+    scanText.title = warm.current
+      ? `Now generating:\n${warm.current}`
+      : "Pre-baking thumbnails…";
     $("#scanFill").style.width = warm.pct + "%";
     $("#scanPct").textContent = warm.pct + "%";
     // Periodically repaint so freshly-baked thumbnails replace badge tiles.

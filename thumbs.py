@@ -29,7 +29,7 @@ SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 # Bump this version when the thumbnail algorithm for a kind changes so that
 # stale cached previews are automatically replaced on next access.
-_THUMB_VERSIONS = {"hdri": "2", "model": "4"}
+_THUMB_VERSIONS = {"hdri": "2", "model": "5"}
 
 
 def _thumb_path(asset):
@@ -653,8 +653,10 @@ BLENDER_RENDER_EXTS = {
 
 
 # Script handed to `blender -b -P <script> -- <input> <out.png>`.
-# Opens (.blend) or imports (everything else) the model, frames it with a
-# fresh camera and does a fast, lighting-free Workbench render. Import operator
+# Opens (.blend) or imports (everything else) the model, frames it with a fresh
+# camera, then renders with EEVEE (so materials/textures show — Workbench would
+# render flat and material-less) under a neutral world + key sun. Imported files
+# get our camera/world/sun; an authored .blend keeps its own. Import operator
 # names changed across Blender versions, so each format tries new→old in turn.
 _MODEL_RENDER_SCRIPT = r'''
 import bpy, sys, os
@@ -738,6 +740,46 @@ def _scene_points(scene):
     return pts
 
 
+def _set_engine(scene):
+    """Pick EEVEE so materials/textures show (Workbench renders flat, no
+    materials). The engine id changed across versions — EEVEE Next is
+    'BLENDER_EEVEE_NEXT' in 4.2 and 'BLENDER_EEVEE' in 3.x and 5.x — so try the
+    known ids until one sticks; fall back to Workbench only if none exist."""
+    for eng in ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE', 'BLENDER_WORKBENCH'):
+        try:
+            scene.render.engine = eng
+            return eng
+        except Exception:
+            continue
+    return None
+
+
+def _ensure_world(scene):
+    """A neutral, mildly bright world so imported models (which arrive with no
+    lighting) still read their base colours in EEVEE. Skipped when the file
+    already ships a world (e.g. an authored .blend)."""
+    if scene.world is not None:
+        return
+    world = bpy.data.worlds.new("HangarWorld")
+    world.use_nodes = True
+    bg = world.node_tree.nodes.get("Background")
+    if bg:
+        bg.inputs[0].default_value = (0.6, 0.6, 0.65, 1.0)
+        bg.inputs[1].default_value = 1.2
+    scene.world = world
+
+
+def _ensure_lights(scene):
+    """Add a key sun for shape/shading if the scene has none of its own."""
+    if any(o.type == 'LIGHT' for o in scene.objects):
+        return
+    sun_data = bpy.data.lights.new("HangarSun", 'SUN')
+    sun_data.energy = 3.5
+    sun = bpy.data.objects.new("HangarSun", sun_data)
+    sun.rotation_euler = (0.9, 0.15, 0.8)
+    scene.collection.objects.link(sun)
+
+
 def frame_and_render(out):
     scene = bpy.context.scene
 
@@ -758,16 +800,24 @@ def frame_and_render(out):
             look = center - cam.location
             cam.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
 
+    _set_engine(scene)
+    _ensure_world(scene)
+    _ensure_lights(scene)
+    # Keep EEVEE fast for a thumbnail; transparent film so the object composites
+    # cleanly onto Hangar's dark tile background.
     try:
-        scene.render.engine = 'BLENDER_WORKBENCH'
+        scene.eevee.taa_render_samples = 16
     except Exception:
         pass
     r = scene.render
+    r.engine = scene.render.engine
+    r.film_transparent = True
     r.resolution_x = 512
     r.resolution_y = 512
     r.resolution_percentage = 100
     r.use_file_extension = False
     r.image_settings.file_format = 'PNG'
+    r.image_settings.color_mode = 'RGBA'
     r.filepath = out
     bpy.ops.render.render(write_still=True)
 
