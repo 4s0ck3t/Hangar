@@ -797,8 +797,20 @@ def set_category_membership(category_name, asset_id, add=True):
         return
     with connect() as conn:
         conn.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (name,))
-        cat = conn.execute("SELECT id FROM categories WHERE name=?", (name,)).fetchone()
+        cat = conn.execute(
+            "SELECT id, kind FROM categories WHERE name=?", (name,)
+        ).fetchone()
         if add:
+            # Categories are exclusive within a kind: assigning an asset to a
+            # category removes it from every other category of the same kind
+            # scope first, so the same asset can't appear in two HDRI sections
+            # (or two model sections, etc.) at once.
+            cat_kind = cat["kind"] if cat else ""
+            conn.execute(
+                "DELETE FROM asset_categories WHERE asset_id=? AND category_id IN "
+                "(SELECT id FROM categories WHERE kind=?)",
+                (asset_id, cat_kind),
+            )
             conn.execute(
                 "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) "
                 "VALUES (?, ?)", (cat["id"], asset_id),
@@ -852,12 +864,15 @@ def _matchers(conn):
 
 
 def _match_category_ids(path, asset_kind, matchers):
-    """Category ids whose keyword rules match the asset path AND whose kind scope
-    covers this asset's kind.
+    """Best-match category id per kind scope for the given asset path.
 
     Splits the lower-cased path into word tokens and matches each keyword as a
     whole token (with simple singular/plural tolerance), so "car_sedan" hits
     Vehicles and a "vehicles" folder hits the "vehicle" keyword.
+
+    Returns at most one category id per (kind) scope — the one with the most
+    keyword hits — so auto-classification never places an asset in two sections
+    of the same type view.
     """
     tokens = set(re.split(r"[^a-z0-9]+", path.lower()))
     tokens.discard("")
@@ -867,8 +882,18 @@ def _match_category_ids(path, asset_kind, matchers):
                 or (kw + "s") in tokens
                 or (kw.endswith("s") and kw[:-1] in tokens))
 
-    return [cid for cid, (_name, ckind, kws) in matchers.items()
-            if (not ckind or ckind == asset_kind) and any(hit(kw) for kw in kws)]
+    scored = []
+    for cid, (_name, ckind, kws) in matchers.items():
+        if not ckind or ckind == asset_kind:
+            n = sum(1 for kw in kws if hit(kw))
+            if n:
+                scored.append((ckind, n, cid))
+    # Keep only the best match per kind scope so one asset = one category.
+    best: dict = {}
+    for ckind, n, cid in scored:
+        if ckind not in best or n > best[ckind][0]:
+            best[ckind] = (n, cid)
+    return [cid for _n, cid in best.values()]
 
 
 def _auto_categorize(conn, asset_id, path, kind):
