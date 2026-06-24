@@ -29,7 +29,7 @@ SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 # Bump this version when the thumbnail algorithm for a kind changes so that
 # stale cached previews are automatically replaced on next access.
-_THUMB_VERSIONS = {"hdri": "2", "model": "5"}
+_THUMB_VERSIONS = {"hdri": "2", "model": "6"}
 
 
 def _thumb_path(asset):
@@ -189,13 +189,9 @@ def _from_model(asset, out):
         with Image.open(sibling) as img:
             return _save_downscaled(img, out)
     if asset["ext"] == ".blend":
-        # Most .blend files embed a preview image Blender wrote on save. It's
-        # only 128px, so upscale it toward the tile size to cut the blur.
-        img = extract_blend_thumbnail(asset["path"])
-        if img is not None:
-            return _save_downscaled(img, out, min_side=THUMB_SIZE[0])
-        # No embedded preview — a real render is offered on demand from the
-        # detail drawer (render_blend_preview), not run passively here.
+        # The embedded TEST-block thumbnail Blender saves is a screenshot of the
+        # full Blender window (UI, panels and all) — not just the 3-D scene.
+        # Let the warm pass render it properly via Blender background instead.
         return False
     return _render_model(asset, out)
 
@@ -780,6 +776,27 @@ def _ensure_lights(scene):
     scene.collection.objects.link(sun)
 
 
+def _apply_default_material():
+    """Assign a neutral PBR material to every mesh that has no material slots.
+
+    USD/FBX/ABC files sometimes import geometry without any material assignment,
+    which makes EEVEE render them as pure black silhouettes. Walking
+    bpy.data.objects (not just scene.objects) catches USD prototype meshes that
+    are instanced via empties and therefore not directly in the collection."""
+    default = None
+    for ob in bpy.data.objects:
+        if ob.type != 'MESH' or ob.data is None or ob.material_slots:
+            continue
+        if default is None:
+            default = bpy.data.materials.new("HangarDefault")
+            default.use_nodes = True
+            pbsdf = default.node_tree.nodes.get("Principled BSDF")
+            if pbsdf:
+                pbsdf.inputs["Base Color"].default_value = (0.65, 0.65, 0.65, 1.0)
+                pbsdf.inputs["Roughness"].default_value = 0.5
+        ob.data.materials.append(default)
+
+
 def frame_and_render(out):
     scene = bpy.context.scene
 
@@ -803,6 +820,7 @@ def frame_and_render(out):
     _set_engine(scene)
     _ensure_world(scene)
     _ensure_lights(scene)
+    _apply_default_material()
     # Keep EEVEE fast for a thumbnail; transparent film so the object composites
     # cleanly onto Hangar's dark tile background.
     try:
@@ -912,6 +930,7 @@ def render_model(model_path, out_jpg):
                     ok = _save_downscaled(img, out_jpg)
                 if ok:
                     LAST_RENDER_ERROR = None
+                    _record_render_log(blender, model_path, proc)
                     return True
             except Exception as e:
                 _record_render_log(blender, model_path, proc, exc=e)
