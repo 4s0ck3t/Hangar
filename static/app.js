@@ -1266,6 +1266,27 @@ async function autoRenderModelPreview(a) {
   }
 }
 
+// Silently upgrade a .blend embedded thumbnail (128 px source, always blurry)
+// to a full EEVEE render the first time the drawer opens. Keeps the existing
+// blurry thumb visible while Blender works, then swaps in the sharp one.
+// One upgrade per asset per session — subsequent drawer opens use the cached
+// full render without touching Blender again.
+const _blendUpgraded = new Set();
+async function _upgradeBlendPreview(a) {
+  if (_blendUpgraded.has(a.id)) return;
+  _blendUpgraded.add(a.id);
+  try {
+    const r = await post(`assets/${a.id}/render`);
+    if (drawerAssetId !== a.id) return;
+    if (r && r.ok) {
+      thumbBust[a.id] = Date.now();
+      loadPreview(a);
+      const cardImg = $(`#grid .card[data-id="${a.id}"] img`);
+      if (cardImg) cardImg.src = thumbUrl(a.id);
+    }
+  } catch (_) {}
+}
+
 // ---- background previews for Blender-only model formats (USD, Alembic…) ----
 // These formats have no in-browser loader and trimesh can't decode them, so they
 // land in the grid with just a format badge. We render their thumbnails in the
@@ -1438,6 +1459,11 @@ async function openDrawer(id, idx) {
     // — so a preview appears without the background-render lag.
     if (!a.has_thumb && a.kind === "model" && canRender && blenderReady) {
       autoRenderModelPreview(a);
+    }
+    // .blend embedded thumbnails are 128 px — always blurry at drawer size.
+    // Silently upgrade to a full EEVEE render in the background (once per session).
+    if (a.ext === ".blend" && canRender && blenderReady) {
+      _upgradeBlendPreview(a);
     }
   }
 
