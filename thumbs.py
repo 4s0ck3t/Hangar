@@ -189,9 +189,12 @@ def _from_model(asset, out):
         with Image.open(sibling) as img:
             return _save_downscaled(img, out)
     if asset["ext"] == ".blend":
-        # The embedded TEST-block thumbnail Blender saves is a screenshot of the
-        # full Blender window (UI, panels and all) — not just the 3-D scene.
-        # Let the warm pass render it properly via Blender background instead.
+        # Most .blend files embed a viewport preview in the TEST block (what
+        # Blender's file browser shows). Prefer that for speed; only fall
+        # through to a full Blender background render when none is present.
+        img = extract_blend_thumbnail(asset["path"])
+        if img is not None:
+            return _save_downscaled(img, out, min_side=THUMB_SIZE[0])
         return False
     return _render_model(asset, out)
 
