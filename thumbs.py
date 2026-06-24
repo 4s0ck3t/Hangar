@@ -29,7 +29,7 @@ SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 # Bump this version when the thumbnail algorithm for a kind changes so that
 # stale cached previews are automatically replaced on next access.
-_THUMB_VERSIONS = {"hdri": "2", "model": "2"}
+_THUMB_VERSIONS = {"hdri": "2", "model": "3"}
 
 
 def _thumb_path(asset):
@@ -259,12 +259,21 @@ def _extract_gltf_texture(path):
         return None
 
 
+# Formats trimesh reads reliably. Everything else in BLENDER_RENDER_EXTS
+# (USD/USDA/USDC/USDZ, FBX, Alembic, DAE, 3DS, X3D) must go to Blender — for
+# those, trimesh.load(..., force="scene") returns an EMPTY scene instead of
+# raising, and save_image then writes a blank thumbnail that silently masks the
+# real render. So we never hand those extensions to trimesh.
+_TRIMESH_EXTS = {".obj", ".stl", ".ply", ".gltf", ".glb"}
+
+
 def _render_model(asset, out):
     """Thumbnail for a 3-D model.
 
     1. For GLTF/GLB: try to extract the embedded base-colour texture (no GL needed).
-    2. Offscreen render via trimesh (needs GL — works on Windows with pyopengl).
-    Falls back silently so the grid always shows at least a format badge.
+    2. For other trimesh-readable formats: offscreen render via trimesh (needs GL).
+    Formats only Blender can read return False here so the caller falls back to a
+    Blender render — never a blank trimesh image.
     """
     from PIL import Image
     import io
@@ -275,14 +284,16 @@ def _render_model(asset, out):
         if tex is not None:
             return _save_downscaled(tex, out)
 
-    # Generic offscreen render via trimesh (requires working GL context).
-    # NB: Blender is deliberately NOT used here — passively rendering during a
-    # grid scroll spawned a swarm of slow Blender processes. Formats trimesh
-    # can't read (USD/USDA/USDC, FBX, Alembic…) are rendered on demand instead,
-    # once, when the asset's detail drawer is opened (see app.render_preview).
+    if asset["ext"] not in _TRIMESH_EXTS:
+        return False        # USD/FBX/Alembic/… — let the caller use Blender
+
+    # Generic offscreen render via trimesh (requires working GL context). An
+    # empty result is treated as failure so a blank image never gets cached.
     try:
         import trimesh
         scene = trimesh.load(asset["path"], force="scene")
+        if scene is None or (hasattr(scene, "is_empty") and scene.is_empty):
+            return False
         png = scene.save_image(resolution=THUMB_SIZE, visible=False)
         if png:
             with Image.open(io.BytesIO(png)) as img:
