@@ -30,6 +30,18 @@ import webbrowser
 os.environ["HANGAR_DESKTOP"] = "1"
 
 
+def _no_window():
+    """subprocess kwargs that stop a child from flashing a console window on
+    Windows (tasklist/taskkill would otherwise pop a cmd window that steals
+    focus). No-op everywhere else."""
+    if sys.platform != "win32":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 0                              # SW_HIDE
+    return {"startupinfo": si, "creationflags": 0x08000000}  # CREATE_NO_WINDOW
+
+
 def _hint_pythonnet_pydll():
     """When frozen, point pythonnet at the bundled Python DLL before any `clr`
     import. A frozen app has no python3XX.dll on PATH the way pythonnet's loader
@@ -350,7 +362,7 @@ def _kill_stale_instances():
             import io
             out = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq Hangar.exe", "/FO", "CSV", "/NH"],
-                capture_output=True, text=True, timeout=10).stdout
+                capture_output=True, text=True, timeout=10, **_no_window()).stdout
             for row in csv.reader(io.StringIO(out)):
                 if len(row) >= 2 and row[0].strip().lower() == "hangar.exe":
                     try:
@@ -359,7 +371,7 @@ def _kill_stale_instances():
                         continue
                     if pid != me:
                         subprocess.run(["taskkill", "/F", "/PID", str(pid)],
-                                       capture_output=True, timeout=10)
+                                       capture_output=True, timeout=10, **_no_window())
                         _log(f"terminated stale Hangar.exe pid {pid}")
         else:
             out = subprocess.run(["pgrep", "-x", "Hangar"],

@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.38"
+__version__ = "0.13.39"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -98,7 +98,8 @@ def _start_scan(libs):
 # yielding between each so they never starve the UI or swarm like a passive
 # scroll-render would.
 WARM = {"running": False, "done": 0, "total": 0, "rendered": 0, "failed": 0,
-        "current": "", "blender": False, "last_error": "", "finished_at": 0}
+        "current": "", "blender": False, "last_error": "", "by_ext": {},
+        "finished_at": 0}
 WARM_LOCK = threading.Lock()
 WARM_GEN = 0  # bumped on each new scan so an in-flight warm pass bows out
 
@@ -115,45 +116,59 @@ def _run_warm(generation):
     with WARM_LOCK:
         WARM.update(running=True, done=0, total=len(targets), rendered=0,
                     failed=0, current="", blender=blender_ok, last_error="",
-                    finished_at=0)
+                    by_ext={}, finished_at=0)
     done = rendered = failed = 0
     last_error = ""
+    # Per-extension outcome tally so diagnostics can show exactly what happened
+    # to e.g. every .usd: how many ended up with a preview vs none, and how.
+    by_ext = {}
+
+    def tally(ext, key):
+        s = by_ext.setdefault(ext, {"n": 0, "thumb": 0, "render": 0, "fail": 0})
+        s["n"] += 1
+        if key:
+            s[key] += 1
+
     for asset in targets:
         if generation != WARM_GEN:        # a newer scan started — let it take over
             break
         done += 1
+        ext = asset["ext"]
         try:
             if thumbs.has_cached_thumb(asset):
-                pass
+                tally(ext, "thumb")
             elif thumbs.get_or_make(asset) is not None:
-                pass
+                tally(ext, "thumb")
             elif asset["kind"] == "model" and asset["ext"] in thumbs.BLENDER_RENDER_EXTS:
                 # No embedded/sibling/trimesh preview (USD, FBX, Alembic…) — fall
                 # back to a real Blender render, but only here in the background,
                 # throttled, so the slow path never swarms.
                 if not blender_ok:
-                    failed += 1
+                    failed += 1; tally(ext, "fail")
                     last_error = ("Blender not found — install it or set its path "
                                   "in Hangar to preview USD/FBX/Alembic models.")
                 elif thumbs.render_model_preview(asset):
-                    rendered += 1
+                    rendered += 1; tally(ext, "render")
                 else:
-                    failed += 1
+                    failed += 1; tally(ext, "fail")
                     last_error = (thumbs.LAST_RENDER_ERROR
                                   or "Render produced no image") + f"  [{asset['path']}]"
                     print(f"[Hangar] warm render failed: {asset['path']} — "
                           f"{thumbs.LAST_RENDER_ERROR}")
                 time.sleep(0.15)          # keep the render pass low-priority
+            else:
+                tally(ext, "fail")        # no preview path for this kind/ext
         except Exception as e:
-            failed += 1
+            failed += 1; tally(ext, "fail")
             last_error = f"{e}  [{asset.get('path', '?')}]"
             print(f"[Hangar] warm error on {asset.get('path', '?')}: {e}")
         with WARM_LOCK:
             WARM.update(done=done, rendered=rendered, failed=failed,
-                        current=asset["path"], last_error=last_error)
+                        current=asset["path"], last_error=last_error,
+                        by_ext=dict(by_ext))
     with WARM_LOCK:
         WARM.update(running=False, current="", last_error=last_error,
-                    finished_at=time.time())
+                    by_ext=dict(by_ext), finished_at=time.time())
 
 
 def _start_warm():
@@ -213,6 +228,12 @@ def diagnostics():
         f"preview warm: {'running' if w['running'] else 'idle'} "
         f"{w['done']}/{w['total']} baked, {w['rendered']} rendered, "
         f"{w['failed']} failed (blender={w['blender']})")
+    # Per-extension outcome — shows e.g. whether .usd got previews or not.
+    for ext in sorted(w.get("by_ext", {})):
+        s = w["by_ext"][ext]
+        info.append(
+            f"  {ext}: {s['n']} files — {s['thumb']} preview, "
+            f"{s['render']} rendered, {s['fail']} none")
     if w["last_error"]:
         info.append(f"last preview error: {w['last_error']}")
     try:
@@ -856,7 +877,9 @@ def _do_update_download(url, name, version):
         with UPDATE_LOCK:
             UPDATE.update(running=False, done=True, pct=100,
                           path=dest, folder=folder, exe=exe)
-        _reveal_path(exe or folder)
+        # Don't pop an Explorer window here — the "Restart" button launches the
+        # new exe directly (update_launch). Explorer is only used as a fallback
+        # there if the exe can't be found.
     except Exception as e:
         with UPDATE_LOCK:
             UPDATE.update(running=False, done=False, error=str(e))

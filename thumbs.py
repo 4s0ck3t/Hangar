@@ -319,6 +319,19 @@ import store
 _BLENDER_CACHE = {"path": None, "checked": False}
 
 
+def _no_window():
+    """subprocess kwargs that suppress the console window a child process would
+    otherwise pop on Windows — without it, every background Blender render flashes
+    a cmd window that steals keyboard focus from whatever the user is typing in."""
+    if platform.system() != "Windows":
+        return {}
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW   # honour wShowWindow
+    si.wShowWindow = 0                              # SW_HIDE
+    # CREATE_NO_WINDOW (0x08000000): the child gets no console at all.
+    return {"startupinfo": si, "creationflags": 0x08000000}
+
+
 def extract_blend_thumbnail(path):
     """Return the preview image embedded in a .blend file, or None.
 
@@ -471,7 +484,8 @@ def _zstd_decompress(path):
     zstd_cli = shutil.which("zstd")
     if zstd_cli:
         try:
-            out = subprocess.run([zstd_cli, "-dc", path], capture_output=True)
+            out = subprocess.run([zstd_cli, "-dc", path], capture_output=True,
+                                 **_no_window())
             if out.returncode == 0 and out.stdout[:7] == b"BLENDER":
                 return out.stdout
         except Exception:
@@ -807,7 +821,7 @@ def render_model(model_path, out_jpg):
         try:
             proc = subprocess.run(
                 [blender, "-b", "-P", script, "--", model_path, png],
-                timeout=180, capture_output=True, text=True,
+                timeout=180, capture_output=True, text=True, **_no_window(),
             )
         except Exception as e:
             _record_render_log(blender, model_path, None, exc=e)
@@ -815,6 +829,17 @@ def render_model(model_path, out_jpg):
         if os.path.exists(png):
             try:
                 with Image.open(png) as img:
+                    img.load()
+                    # A perfectly flat image means Blender imported the file but
+                    # nothing landed in the camera view — common when a USD's up
+                    # axis/scale leaves the geometry off-frame, or the import was
+                    # empty. Report it instead of caching a blank gray tile.
+                    if _is_blank(img):
+                        LAST_RENDER_ERROR = (
+                            "Imported but the render was empty (nothing in frame "
+                            "— check the model's scale / up-axis).")
+                        _record_render_log(blender, model_path, proc)
+                        return False
                     ok = _save_downscaled(img, out_jpg)
                 if ok:
                     LAST_RENDER_ERROR = None
@@ -824,6 +849,15 @@ def render_model(model_path, out_jpg):
                 return False
         # No PNG (or save failed) — surface why.
         _record_render_log(blender, model_path, proc)
+        return False
+
+
+def _is_blank(img):
+    """True when every pixel is the same colour (a featureless render)."""
+    try:
+        ex = img.convert("RGB").getextrema()   # ((rmin,rmax),(gmin,gmax),(bmin,bmax))
+        return all(lo == hi for lo, hi in ex)
+    except Exception:
         return False
 
 
