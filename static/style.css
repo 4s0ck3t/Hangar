@@ -222,6 +222,7 @@ button, input, select { font-family: inherit; color: inherit; }
   transition: width .25s ease;
 }
 .scan-pct { color: var(--signal); min-width: 4ch; text-align: right; }
+.scan-file { color: var(--mute); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
 .scan-spinner {
   width: 11px; height: 11px; border-radius: 50%; flex: none;
   border: 2px solid var(--raised-hi); border-top-color: var(--signal);

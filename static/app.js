@@ -1684,10 +1684,14 @@ async function pollScan() {
     const scanText = $("#scanText");
     scanText.textContent =
       `Generating previews — ${warm.done.toLocaleString()}/${warm.total.toLocaleString()}`;
-    // Hover to see exactly which file is being generated right now.
-    scanText.title = warm.current
-      ? `Now generating:\n${warm.current}`
-      : "Pre-baking thumbnails…";
+    if (warm.current) {
+      const fname = warm.current.replace(/.*[\\/]/, "");
+      $("#scanFile").textContent = fname;
+      $("#scanFile").title = warm.current;
+    } else {
+      $("#scanFile").textContent = "";
+      $("#scanFile").title = "";
+    }
     $("#scanFill").style.width = warm.pct + "%";
     $("#scanPct").textContent = warm.pct + "%";
     // Periodically repaint so freshly-baked thumbnails replace badge tiles.
