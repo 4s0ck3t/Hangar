@@ -432,6 +432,8 @@ async function updateFacetStrip() {
 
 // ---- multi-select ---------------------------------------------------------
 const selection = new Set(); // Set of asset IDs currently selected
+let _lastSelectedIdx = -1;  // index into _currentAssets; anchor for shift-range
+let _currentAssets = [];    // flat ordered asset list of the current render
 
 function updateBatchBar() {
   let bar = $("#batchBar");
@@ -518,17 +520,32 @@ function updateBatchBar() {
 
 function clearSelection() {
   selection.clear();
+  _lastSelectedIdx = -1;
   document.querySelectorAll(".card.is-selected").forEach(c => c.classList.remove("is-selected"));
   updateBatchBar();
 }
 
-function toggleSelect(id, card) {
+function toggleSelect(id, card, idx) {
   if (selection.has(id)) {
     selection.delete(id);
     card.classList.remove("is-selected");
   } else {
     selection.add(id);
     card.classList.add("is-selected");
+  }
+  if (idx !== undefined) _lastSelectedIdx = idx;
+  updateBatchBar();
+}
+
+function rangeSelect(toIdx) {
+  const lo = Math.min(_lastSelectedIdx, toIdx);
+  const hi = Math.max(_lastSelectedIdx, toIdx);
+  for (let j = lo; j <= hi; j++) {
+    const a = _currentAssets[j];
+    if (!a) continue;
+    selection.add(a.id);
+    const c = document.querySelector(`#grid .card[data-id="${a.id}"]`);
+    if (c) c.classList.add("is-selected");
   }
   updateBatchBar();
 }
@@ -653,6 +670,7 @@ async function refresh() {
 function renderGroupedGrid(assets, kind, total) {
   const grid = $("#grid"); const empty = $("#emptyState");
   _vAssets = []; _vRange = { start: -1, end: -1 };  // disable the virtual scroller
+  _currentAssets = assets;
   grid.classList.remove("grouped");
   if (!assets.length) { renderGrid(assets, total); return; }
   empty.classList.add("hidden");
@@ -835,12 +853,17 @@ function buildCard(a, i) {
   // Without this the browser drags the thumbnail picture itself instead of the
   // card, so the card's dragstart payload never reaches a category drop target.
   img.draggable = false;
-  // Ctrl/Cmd-click toggles selection; once a selection is active a plain
-  // click keeps building it. Otherwise a click opens the detail drawer.
+  // Ctrl/Cmd-click toggles selection; Shift-click extends to a range;
+  // once a selection is active a plain click keeps building it.
+  // Otherwise a click opens the detail drawer.
   card.onclick = (e) => {
-    if (e.ctrlKey || e.metaKey || selection.size > 0) {
+    if (e.shiftKey && _lastSelectedIdx >= 0) {
       e.preventDefault();
-      toggleSelect(a.id, card);
+      rangeSelect(i);
+      _lastSelectedIdx = i;
+    } else if (e.ctrlKey || e.metaKey || selection.size > 0) {
+      e.preventDefault();
+      toggleSelect(a.id, card, i);
     } else {
       openDrawer(a.id, i);
     }
@@ -1112,6 +1135,7 @@ function renderGrid(assets, total) {
   }
   empty.classList.add("hidden");
   _vAssets = assets;
+  _currentAssets = assets;
   _vRange = { start: -1, end: -1 };
   grid.scrollTop = 0;
   bindVirtual();
