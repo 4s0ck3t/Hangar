@@ -635,6 +635,10 @@ async function refresh() {
   const grouped = (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
     && !f.collection && !f.category && !f.folder && !f.favorite && !state.search
     && !f.subtype && !f.resolution;
+  // Folder-grouped view: a library folder with no sub-filters groups by subfolder.
+  const folderGrouped = !!f.folder && !f.kind && !f.ext && !f.tag
+    && !f.collection && !f.category && !f.favorite && !state.search
+    && !f.subtype && !f.resolution;
 
   const p = new URLSearchParams();
   if (f.kind) p.set("kind", f.kind);
@@ -652,10 +656,12 @@ async function refresh() {
   // Non-texture kinds have a unique set_key, so they pass through untouched.
   p.set("group", "set");
   if (grouped) { p.set("with_categories", "1"); p.set("limit", "2000"); }
+  if (folderGrouped) { p.set("limit", "2000"); }
 
   const data = await api("assets?" + p.toString());
   currentAssets = data.assets;
-  if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
+  if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
+  else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
   await loadState();
   enqueueMissingThumbs(data.assets);   // fill in USD/Alembic tiles in the background
@@ -787,6 +793,57 @@ function renderGroupedGrid(assets, kind, total) {
     adder.innerHTML = `<span class="sa-plus">＋</span> New ${KIND_LABELS[kind] || kind} category`;
     adder.onclick = async () => { if (await promptNewCategory(kind)) refresh(); };
     frag.appendChild(adder);
+  }
+
+  grid.replaceChildren(frag);
+  grid.scrollTop = 0;
+}
+
+// Grouped view for a library folder: one section per immediate parent directory.
+function renderGroupedByFolder(assets, libraryPath) {
+  const grid = $("#grid"); const empty = $("#emptyState");
+  _vAssets = []; _vRange = { start: -1, end: -1 };
+  _currentAssets = assets;
+  grid.classList.remove("grouped");
+  if (!assets.length) { renderGrid(assets, 0); return; }
+  empty.classList.add("hidden");
+  grid.classList.add("grouped");
+  bindGridDragScroll();
+
+  const libRoot = (libraryPath || "").replace(/[\\/]+$/, "");
+
+  // Group by full parent directory path; compute display label relative to root.
+  const groups = new Map();  // fullParentPath → {label, items[]}
+  for (const a of assets) {
+    const parentDir = (a.path || "").replace(/[\\/][^\\/]+$/, "");
+    let label = parentDir;
+    if (libRoot && parentDir.toLowerCase().startsWith(libRoot.toLowerCase())) {
+      label = parentDir.slice(libRoot.length).replace(/^[\\/]+/, "") || "(root)";
+    }
+    if (!groups.has(parentDir)) groups.set(parentDir, { label, items: [] });
+    groups.get(parentDir).items.push(a);
+  }
+
+  const sections = [...groups.values()]
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+
+  const idxOf = new Map(assets.map((a, i) => [a, i]));
+  const frag = document.createDocumentFragment();
+  for (const s of sections) {
+    const section = document.createElement("div");
+    section.className = "grid-section";
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.innerHTML =
+      `<span class="section-ico">📁</span>` +
+      `<span class="section-name">${s.label}</span>` +
+      `<span class="section-count">${s.items.length}</span>`;
+    section.appendChild(head);
+    const sgrid = document.createElement("div");
+    sgrid.className = "section-grid";
+    for (const a of s.items) sgrid.appendChild(buildCard(a, idxOf.get(a)));
+    section.appendChild(sgrid);
+    frag.appendChild(section);
   }
 
   grid.replaceChildren(frag);
