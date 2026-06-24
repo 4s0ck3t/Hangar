@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.36"
+__version__ = "0.13.37"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -97,8 +97,8 @@ def _start_scan(libs):
 # Blender renders for formats with no embedded preview run last, one at a time,
 # yielding between each so they never starve the UI or swarm like a passive
 # scroll-render would.
-WARM = {"running": False, "done": 0, "total": 0, "rendered": 0,
-        "current": "", "finished_at": 0}
+WARM = {"running": False, "done": 0, "total": 0, "rendered": 0, "failed": 0,
+        "current": "", "blender": False, "last_error": "", "finished_at": 0}
 WARM_LOCK = threading.Lock()
 WARM_GEN = 0  # bumped on each new scan so an in-flight warm pass bows out
 
@@ -111,11 +111,13 @@ def _run_warm(generation):
         with WARM_LOCK:
             WARM.update(running=False, finished_at=time.time())
         return
+    blender_ok = thumbs.blender_available()
     with WARM_LOCK:
         WARM.update(running=True, done=0, total=len(targets), rendered=0,
-                    current="", finished_at=0)
-    blender_ok = thumbs.blender_available()
-    done = rendered = 0
+                    failed=0, current="", blender=blender_ok, last_error="",
+                    finished_at=0)
+    done = rendered = failed = 0
+    last_error = ""
     for asset in targets:
         if generation != WARM_GEN:        # a newer scan started — let it take over
             break
@@ -125,19 +127,33 @@ def _run_warm(generation):
                 pass
             elif thumbs.get_or_make(asset) is not None:
                 pass
-            elif (blender_ok and asset["kind"] == "model"
-                  and asset["ext"] in thumbs.BLENDER_RENDER_EXTS):
-                # No embedded/sibling/trimesh preview — fall back to a real
-                # Blender render, but only here in the background, throttled.
-                if thumbs.render_model_preview(asset):
+            elif asset["kind"] == "model" and asset["ext"] in thumbs.BLENDER_RENDER_EXTS:
+                # No embedded/sibling/trimesh preview (USD, FBX, Alembic…) — fall
+                # back to a real Blender render, but only here in the background,
+                # throttled, so the slow path never swarms.
+                if not blender_ok:
+                    failed += 1
+                    last_error = ("Blender not found — install it or set its path "
+                                  "in Hangar to preview USD/FBX/Alembic models.")
+                elif thumbs.render_model_preview(asset):
                     rendered += 1
+                else:
+                    failed += 1
+                    last_error = (thumbs.LAST_RENDER_ERROR
+                                  or "Render produced no image") + f"  [{asset['path']}]"
+                    print(f"[Hangar] warm render failed: {asset['path']} — "
+                          f"{thumbs.LAST_RENDER_ERROR}")
                 time.sleep(0.15)          # keep the render pass low-priority
-        except Exception:
-            pass                          # one bad file never stops the sweep
+        except Exception as e:
+            failed += 1
+            last_error = f"{e}  [{asset.get('path', '?')}]"
+            print(f"[Hangar] warm error on {asset.get('path', '?')}: {e}")
         with WARM_LOCK:
-            WARM.update(done=done, rendered=rendered, current=asset["path"])
+            WARM.update(done=done, rendered=rendered, failed=failed,
+                        current=asset["path"], last_error=last_error)
     with WARM_LOCK:
-        WARM.update(running=False, current="", finished_at=time.time())
+        WARM.update(running=False, current="", last_error=last_error,
+                    finished_at=time.time())
 
 
 def _start_warm():
@@ -191,6 +207,14 @@ def diagnostics():
         f"blender: {thumbs.find_blender() or '<not found>'}",
         f"hdri backends: {thumbs._hdri_backends()}",
     ]
+    with WARM_LOCK:
+        w = dict(WARM)
+    info.append(
+        f"preview warm: {'running' if w['running'] else 'idle'} "
+        f"{w['done']}/{w['total']} baked, {w['rendered']} rendered, "
+        f"{w['failed']} failed (blender={w['blender']})")
+    if w["last_error"]:
+        info.append(f"last preview error: {w['last_error']}")
     try:
         import webview  # noqa: F401
         info.append(f"pywebview: {getattr(webview, '__version__', '?')}")

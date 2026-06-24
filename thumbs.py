@@ -29,7 +29,7 @@ SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 # Bump this version when the thumbnail algorithm for a kind changes so that
 # stale cached previews are automatically replaced on next access.
-_THUMB_VERSIONS = {"hdri": "2"}
+_THUMB_VERSIONS = {"hdri": "2", "model": "2"}
 
 
 def _thumb_path(asset):
@@ -85,7 +85,7 @@ def save_thumbnail_bytes(asset, data):
         return False
 
 
-def _save_downscaled(img, out):
+def _save_downscaled(img, out, min_side=0):
     from PIL import Image
     # Composite transparent images onto a dark background so JPEG is clean.
     if img.mode in ("RGBA", "LA"):
@@ -95,8 +95,16 @@ def _save_downscaled(img, out):
         img = bg
     elif img.mode != "RGB":
         img = img.convert("RGB")
+    # Tiny embedded previews (e.g. a .blend's 128px thumbnail) look blocky when
+    # the browser stretches them across a HiDPI tile. Upscale once with LANCZOS
+    # to min_side so the stored JPEG carries the tile at ~1:1 instead — softer
+    # than a true render, but far cleaner than nearest-ish browser upscaling.
+    if min_side and max(img.size) < min_side:
+        scale = min_side / max(img.size)
+        img = img.resize((round(img.width * scale), round(img.height * scale)),
+                         Image.LANCZOS)
     img.thumbnail(THUMB_SIZE, Image.LANCZOS)
-    img.save(out, "JPEG", quality=86)
+    img.save(out, "JPEG", quality=90)
     return True
 
 
@@ -181,10 +189,11 @@ def _from_model(asset, out):
         with Image.open(sibling) as img:
             return _save_downscaled(img, out)
     if asset["ext"] == ".blend":
-        # Most .blend files embed a preview image Blender wrote on save.
+        # Most .blend files embed a preview image Blender wrote on save. It's
+        # only 128px, so upscale it toward the tile size to cut the blur.
         img = extract_blend_thumbnail(asset["path"])
         if img is not None:
-            return _save_downscaled(img, out)
+            return _save_downscaled(img, out, min_side=THUMB_SIZE[0])
         # No embedded preview — a real render is offered on demand from the
         # detail drawer (render_blend_preview), not run passively here.
         return False

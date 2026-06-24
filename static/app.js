@@ -1036,8 +1036,8 @@ function bindGridDragScroll() {
 // Only the cards near the viewport live in the DOM. Spacer divs span whole
 // grid rows above and below the window so the scrollbar height (and thus the
 // scroll position of every card) stays exact, while big libraries render and
-// scroll in constant time. Mirrors .grid's CSS: 250px rows, 14px gap, etc.
-const VROW = 250, VGAP = 14, VPAD_TOP = 20, VPAD_X = 22, VMIN_COL = 192, VBUFFER = 4;
+// scroll in constant time. Mirrors .grid's CSS: 272px rows, 14px gap, etc.
+const VROW = 272, VGAP = 14, VPAD_TOP = 20, VPAD_X = 22, VMIN_COL = 192, VBUFFER = 4;
 let _vAssets = [];
 let _vRange = { start: -1, end: -1 };
 let _vRaf = 0;
@@ -1677,6 +1677,12 @@ async function pollScan() {
     if (state.wasScanning) {
       state.wasScanning = false;
       toast(`Done — ${s.indexed.toLocaleString()} assets indexed`, "success");
+    }
+    // USD/FBX/Alembic need Blender to preview — if the warm pass couldn't find
+    // it, say so once instead of leaving the user with silent blank tiles.
+    if (warm.failed && !warm.blender) {
+      toast(`${warm.failed} model${warm.failed === 1 ? "" : "s"} need Blender to ` +
+            `preview (USD/FBX/Alembic). Set its path in ⚙ to enable them.`, "error");
     }
     refresh();  // final repaint to pick up the last baked previews
   }
