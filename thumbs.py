@@ -29,7 +29,7 @@ SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 # Bump this version when the thumbnail algorithm for a kind changes so that
 # stale cached previews are automatically replaced on next access.
-_THUMB_VERSIONS = {"hdri": "2", "model": "3"}
+_THUMB_VERSIONS = {"hdri": "2", "model": "4"}
 
 
 def _thumb_path(asset):
@@ -714,21 +714,40 @@ def load_model(path):
         raise RuntimeError("unsupported extension: " + ext)
 
 
+def _scene_points(scene):
+    """World-space bounding-box corners of every visible piece of geometry.
+
+    Walks the evaluated dependency graph rather than scene.objects directly, so
+    instanced geometry — how USD (and Alembic) commonly import, as empties that
+    instance prototype meshes — is included. Without this the camera frames an
+    empty scene and the render comes out blank."""
+    try:
+        bpy.context.view_layer.update()      # make sure instances are evaluated
+    except Exception:
+        pass
+    deps = bpy.context.evaluated_depsgraph_get()
+    geom = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}
+    pts = []
+    for inst in deps.object_instances:
+        ob = inst.object
+        if ob is None or ob.type not in geom:
+            continue
+        mw = inst.matrix_world
+        for c in ob.bound_box:
+            pts.append(mw @ Vector(c[:]))
+    return pts
+
+
 def frame_and_render(out):
     scene = bpy.context.scene
-    objs = [o for o in scene.objects
-            if o.type in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}]
 
     if scene.camera is None:
         cam_data = bpy.data.cameras.new("HangarCam")
         cam = bpy.data.objects.new("HangarCam", cam_data)
         scene.collection.objects.link(cam)
         scene.camera = cam
-        if objs:
-            pts = []
-            for o in objs:
-                for c in o.bound_box:
-                    pts.append(o.matrix_world @ Vector(c))
+        pts = _scene_points(scene)
+        if pts:
             mn = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)))
             mx = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
             center = (mn + mx) / 2.0

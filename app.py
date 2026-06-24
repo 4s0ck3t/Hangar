@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.39"
+__version__ = "0.13.40"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -587,6 +587,24 @@ def reveal(asset_id):
     except Exception as e:
         return jsonify({"error": f"Couldn't open the file manager: {e}"}), 500
     return jsonify({"ok": True})
+
+
+@app.post("/api/open-data-dir")
+def open_data_dir():
+    """Open Hangar's data folder (~/.hangar: SQLite index, thumbnail cache,
+    Blender queue) in the OS file manager so the user can inspect it."""
+    folder = str(store.DATA_DIR)
+    sysname = platform.system()
+    try:
+        if sysname == "Darwin":
+            subprocess.run(["open", folder], check=False)
+        elif sysname == "Windows":
+            subprocess.run(["explorer", os.path.normpath(folder)], check=False)
+        else:
+            subprocess.run(["xdg-open", folder], check=False)
+    except Exception as e:
+        return jsonify({"error": f"Couldn't open the folder: {e}"}), 500
+    return jsonify({"ok": True, "path": folder})
 
 
 def _queue_blender(entry):

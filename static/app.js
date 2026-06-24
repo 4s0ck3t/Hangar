@@ -91,7 +91,6 @@ async function loadState() {
   appCaps.blenderReady = !!s.blender_render;
   appCaps.renderExts = s.blender_render_exts || [];
   renderKindFilters(s.counts, allCategories);
-  renderTagFilters(s.tags);
   renderCollectionFilters(s.collections);
   renderLibraries(s.libraries);
   renderOfflineBanner(s.libraries);
@@ -222,23 +221,6 @@ function renderKindFilters(counts, cats) {
     `<span>Favorites</span><span class="count">${counts.favorites}</span>`;
   fav.onclick = () => { resetFilter(); state.filter.favorite = true; refresh(); };
   ul.appendChild(fav);
-}
-
-function renderTagFilters(tags) {
-  const ul = $("#tagFilters"); ul.innerHTML = "";
-  if (!tags.length) {
-    ul.innerHTML = `<li style="color:var(--faint);cursor:default">No tags yet</li>`;
-    return;
-  }
-  for (const t of tags) {
-    const li = document.createElement("li");
-    if (state.filter.tag === t.name) li.classList.add("active");
-    li.innerHTML =
-      `<span class="dot" style="background:${t.color}"></span>` +
-      `<span>${t.name}</span><span class="count">${t.c}</span>`;
-    li.onclick = () => { resetFilter(); state.filter.tag = t.name; refresh(); };
-    ul.appendChild(li);
-  }
 }
 
 // Categories live nested under their asset type in the Library list (Poly
@@ -1723,6 +1705,7 @@ async function openDiagnostics() {
 // ---- in-app updater -------------------------------------------------------
 let _updateInfo = null;
 let _updatePoll = null;
+let _updateReady = false;   // download finished, exe ready to launch
 async function checkForUpdate() {
   try {
     const u = await api("update/check");
@@ -1741,39 +1724,83 @@ function openUpdateModal() {
     `You're on v${_updateInfo.current}. This downloads and unpacks v${_updateInfo.latest} ` +
     `into a new folder (your current install is left untouched), then you can launch it.`;
   $("#updateNotes").value = (_updateInfo.notes || "Release notes unavailable.").trim();
-  $("#updateProgress").classList.add("hidden");
-  $("#updateLaunchBtn").classList.add("hidden");
   const btn = $("#updateDownloadBtn");
-  btn.disabled = false; btn.textContent = "Download & install";
+  if (_updateReady) {
+    // Already downloaded — show the Restart button, not a fresh download prompt.
+    $("#updateProgress").classList.add("hidden");
+    $("#updateLaunchBtn").classList.remove("hidden");
+    btn.disabled = true; btn.textContent = "Downloaded ✓";
+  } else if (_updatePoll) {
+    // A download is running in the background — show its progress.
+    $("#updateProgress").classList.remove("hidden");
+    $("#updateLaunchBtn").classList.add("hidden");
+    btn.disabled = true; btn.textContent = "Downloading…";
+  } else {
+    $("#updateProgress").classList.add("hidden");
+    $("#updateLaunchBtn").classList.add("hidden");
+    btn.disabled = false; btn.textContent = "Download & install";
+  }
   $("#updateModal").classList.remove("hidden");
 }
-$("#updateClose").onclick = () => { $("#updateModal").classList.add("hidden"); if (_updatePoll) clearInterval(_updatePoll); };
+// Closing the modal must NOT stop the download — it keeps running in the
+// background and the status-bar pill tracks it, turning into a Restart button
+// when it's ready. So we leave _updatePoll alone here.
+$("#updateClose").onclick = () => { $("#updateModal").classList.add("hidden"); };
 $("#updateModal").onclick = (e) => { if (e.target.id === "updateModal") $("#updateClose").onclick(); };
-$("#updateDownloadBtn").onclick = async () => {
+
+function _setPill(text, handler) {
+  const pill = $("#updatePill");
+  pill.textContent = text;
+  pill.classList.remove("hidden");
+  pill.onclick = handler;
+}
+
+function startUpdatePolling() {
+  if (_updatePoll) clearInterval(_updatePoll);
+  _updatePoll = setInterval(async () => {
+    let s; try { s = await api("update/status"); } catch (_) { return; }
+    const pct = s.pct || 0;
+    $("#updateFill").style.width = pct + "%";       // modal bar (if open)
+    $("#updatePct").textContent = pct + "%";
+    if (s.done) {
+      clearInterval(_updatePoll); _updatePoll = null;
+      _updateReady = true;
+      const btn = $("#updateDownloadBtn");
+      btn.textContent = "Downloaded ✓"; btn.disabled = true;
+      if (s.exe) $("#updateLaunchBtn").classList.remove("hidden");
+      _setPill(`⟳ Restart to finish v${_updateInfo.latest}`, launchUpdate);
+      toast(`v${_updateInfo.latest} is ready — click Restart when you're ready.`, "success");
+    } else if (s.error) {
+      clearInterval(_updatePoll); _updatePoll = null;
+      const btn = $("#updateDownloadBtn");
+      btn.disabled = false; btn.textContent = "Retry download";
+      $("#updateProgress").classList.add("hidden");
+      _setPill(`⬆ Update to v${_updateInfo.latest}`, openUpdateModal);
+      toast("Update failed: " + s.error, "error");
+    } else {
+      // Still downloading — reflect progress on the always-visible pill so the
+      // user can close the modal and keep working.
+      _setPill(`⬇ Downloading v${_updateInfo.latest}… ${pct}%`, openUpdateModal);
+    }
+  }, 500);
+}
+
+async function startUpdateDownload() {
   if (!_updateInfo) return;
   if (!_updateInfo.asset_url) { window.open(_updateInfo.html_url || "https://github.com/4s0ck3t/Hangar/releases", "_blank"); return; }
   const btn = $("#updateDownloadBtn");
   btn.disabled = true; btn.textContent = "Downloading…";
   $("#updateProgress").classList.remove("hidden");
   await post("update/download", { url: _updateInfo.asset_url, name: _updateInfo.asset_name, version: _updateInfo.latest });
-  if (_updatePoll) clearInterval(_updatePoll);
-  _updatePoll = setInterval(async () => {
-    let s; try { s = await api("update/status"); } catch (_) { return; }
-    $("#updateFill").style.width = (s.pct || 0) + "%";
-    $("#updatePct").textContent = (s.pct || 0) + "%";
-    if (s.done) {
-      clearInterval(_updatePoll); _updatePoll = null;
-      btn.textContent = "Downloaded ✓";
-      toast("Downloaded & unpacked — opening the new folder.", "success");
-      if (s.exe) $("#updateLaunchBtn").classList.remove("hidden");
-    } else if (s.error) {
-      clearInterval(_updatePoll); _updatePoll = null;
-      btn.disabled = false; btn.textContent = "Retry download";
-      $("#updateProgress").classList.add("hidden");
-      toast("Update failed: " + s.error, "error");
-    }
-  }, 500);
-};
+  startUpdatePolling();
+}
+$("#updateDownloadBtn").onclick = startUpdateDownload;
+
+async function launchUpdate() {
+  const r = await post("update/launch");
+  if (r.ok) toast("Restarting into the new version…", "success");  // this window closes itself
+  else toast((r && r.error) || "Couldn't launch — open “Hangar files” and run it.", "error");
+}
 // Manual "Check for updates" — explicit feedback for every outcome so it's
 // never a mystery whether a check ran (unlike the silent boot-time check).
 async function manualCheckUpdate() {
@@ -1804,13 +1831,15 @@ $("#checkUpdateBtn").onclick = manualCheckUpdate;
 $("#updateLaunchBtn").onclick = async () => {
   const btn = $("#updateLaunchBtn");
   btn.disabled = true; btn.textContent = "Restarting…";
-  const r = await post("update/launch");
-  if (r.ok) toast("Restarting into the new version…", "success");  // this window closes itself
-  else { btn.disabled = false; btn.textContent = "Restart into new version";
-         toast(r.error || "Couldn't launch — run Hangar from the opened folder.", "error"); }
+  await launchUpdate();
+  btn.disabled = false; btn.textContent = "Restart into new version";
 };
 
 $("#diagBtn").onclick = openDiagnostics;
+$("#dataDirBtn").onclick = async () => {
+  const r = await post("open-data-dir");
+  if (r && r.error) toast(r.error, "error");
+};
 $("#diagClose").onclick = () => $("#diagModal").classList.add("hidden");
 $("#diagModal").onclick = (e) => { if (e.target.id === "diagModal") $("#diagModal").classList.add("hidden"); };
 $("#diagCopy").onclick = async () => {
@@ -1825,10 +1854,6 @@ $("#diagCopy").onclick = async () => {
   }
 };
 
-$("#addTagBtn").onclick = async () => {
-  const name = prompt("New tag name:"); if (!name) return;
-  await post("tags", { name }); loadState();
-};
 $("#addCollectionBtn").onclick = async () => {
   const name = prompt("New collection name:"); if (!name) return;
   await post("collections", { name }); loadState();
