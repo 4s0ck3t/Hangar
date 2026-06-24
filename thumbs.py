@@ -29,7 +29,7 @@ SIBLING_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 # Bump this version when the thumbnail algorithm for a kind changes so that
 # stale cached previews are automatically replaced on next access.
-_THUMB_VERSIONS = {"hdri": "2", "model": "6"}
+_THUMB_VERSIONS = {"hdri": "2", "model": "7"}
 
 
 def _thumb_path(asset):
@@ -194,6 +194,7 @@ def _from_model(asset, out):
         # through to a full Blender background render when none is present.
         img = extract_blend_thumbnail(asset["path"])
         if img is not None:
+            img = _strip_light_bg(img)
             return _save_downscaled(img, out, min_side=THUMB_SIZE[0])
         return False
     return _render_model(asset, out)
@@ -329,6 +330,38 @@ def _no_window():
     si.wShowWindow = 0                              # SW_HIDE
     # CREATE_NO_WINDOW (0x08000000): the child gets no console at all.
     return {"startupinfo": si, "creationflags": 0x08000000}
+
+
+def _strip_light_bg(img, lum_thresh=190, tol=40):
+    """BFS flood-fill from the 4 corners; makes connected near-white/light-grey
+    pixels transparent so they composite onto Hangar's dark tile background.
+    Returns the image unchanged if the corners are already dark."""
+    import numpy as np
+    from PIL import Image
+    from collections import deque
+    arr = np.array(img.convert("RGBA"), dtype=np.int16)
+    h, w = arr.shape[:2]
+    corners = arr[[0, 0, h - 1, h - 1], [0, w - 1, 0, w - 1], :3]
+    bg = corners.mean(axis=0)                    # estimated background RGB
+    if float(bg.mean()) < lum_thresh:
+        return img                               # already dark — leave it alone
+    visited = np.zeros((h, w), dtype=bool)
+    mask = np.zeros((h, w), dtype=bool)
+    q = deque([(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)])
+    while q:
+        y, x = q.popleft()
+        if visited[y, x]:
+            continue
+        visited[y, x] = True
+        diff = float(np.abs(arr[y, x, :3] - bg).mean())
+        if diff > tol:
+            continue
+        mask[y, x] = True
+        for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+            if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx]:
+                q.append((ny, nx))
+    arr[mask, 3] = 0
+    return Image.fromarray(arr.astype(np.uint8), "RGBA")
 
 
 def extract_blend_thumbnail(path):
