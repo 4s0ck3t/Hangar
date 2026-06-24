@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.47"
+__version__ = "0.13.48"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -766,6 +766,9 @@ UPDATE = {"running": False, "pct": 0, "done": False, "path": None,
           "folder": None, "exe": None, "error": None}
 UPDATE_LOCK = threading.Lock()
 
+_RELEASE_CACHE: dict = {}          # {"data": ..., "ts": float}
+_RELEASE_CACHE_TTL = 3600          # re-fetch at most once per hour
+
 
 def _version_tuple(s):
     import re
@@ -775,13 +778,20 @@ def _version_tuple(s):
 
 def _fetch_latest_release():
     import urllib.request
+    now = time.time()
+    cached = _RELEASE_CACHE.get("data")
+    if cached and now - _RELEASE_CACHE.get("ts", 0) < _RELEASE_CACHE_TTL:
+        return cached
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(url, headers={
         "User-Agent": "Hangar-updater",
         "Accept": "application/vnd.github+json",
     })
     with urllib.request.urlopen(req, timeout=8) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        data = json.loads(resp.read().decode("utf-8"))
+    _RELEASE_CACHE["data"] = data
+    _RELEASE_CACHE["ts"] = now
+    return data
 
 
 def _downloads_dir():
