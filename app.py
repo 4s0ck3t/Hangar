@@ -20,11 +20,20 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.57"
+__version__ = "0.13.58"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
 BLENDER_QUEUE = store.DATA_DIR / "blender_queue.jsonl"
+
+# How many Blender renders to run at once for the Regenerate-previews pass. Each
+# render is its own Blender process (CPU/RAM bound), so default to a few, capped,
+# and overridable via HANGAR_RENDER_WORKERS for beefier or leaner machines.
+RENDER_WORKERS = max(1, min(4, (os.cpu_count() or 2) - 1))
+try:
+    RENDER_WORKERS = max(1, int(os.environ.get("HANGAR_RENDER_WORKERS", RENDER_WORKERS)))
+except ValueError:
+    pass
 
 # When frozen by PyInstaller the static files live under sys._MEIPASS.
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -221,6 +230,7 @@ def diagnostics():
         f"data dir: {store.DATA_DIR}",
         f"blender: {thumbs.find_blender() or '<not found>'}",
         f"hdri backends: {thumbs._hdri_backends()}",
+        f"render workers: {RENDER_WORKERS}",
     ]
     with WARM_LOCK:
         w = dict(WARM)
@@ -745,22 +755,30 @@ def render_model_preview(asset_id):
 
 
 # ---- batch preview regeneration -------------------------------------------
-# Right-click → "Regenerate previews" on a multi-selection. A single background
-# worker drains a queue ONE Blender render at a time (like the warm pass) and
-# reports progress through /status so the status bar shows live feedback. Firing
-# another selection while one is running APPENDS to the queue (total grows) — it
-# doesn't get rejected.
+# Right-click → "Regenerate previews" on a multi-selection. A POOL of up to
+# RENDER_WORKERS background threads drains the queue, each running its own Blender
+# render concurrently, and reports progress through /status so the status bar
+# shows live feedback. Firing another selection while one is running APPENDS to
+# the queue (total grows, pool tops up) — it doesn't get rejected.
 REGEN = {"running": False, "done": 0, "total": 0, "ok": 0, "failed": 0,
          "current": "", "last_error": "", "finished_at": 0}
 REGEN_LOCK = threading.Lock()
-REGEN_QUEUE = []          # pending asset ids, drained in order by the worker
+REGEN_QUEUE = []          # pending asset ids, drained concurrently by the pool
+REGEN_ACTIVE = 0          # live worker threads
 
 
 def _regen_worker():
+    global REGEN_ACTIVE
     while True:
         with REGEN_LOCK:
-            if not REGEN_QUEUE:                       # queue drained — we're done
-                REGEN.update(running=False, current="", finished_at=time.time())
+            if not REGEN_QUEUE:
+                # Decrement and the queue-empty check happen under the SAME lock
+                # as batch_render's top-up, so a late append can never strand
+                # work: either we still see it here, or batch_render sees
+                # running=False and starts a fresh pool.
+                REGEN_ACTIVE -= 1
+                if REGEN_ACTIVE == 0:
+                    REGEN.update(running=False, current="", finished_at=time.time())
                 return
             aid = REGEN_QUEUE.pop(0)
         asset = store.get_asset(aid)
@@ -790,11 +808,12 @@ def _regen_worker():
             else:
                 REGEN["failed"] += 1
                 REGEN["last_error"] = err
-        time.sleep(0.05)              # keep the render pass low-priority
+        time.sleep(0.02)              # tiny yield so the UI stays responsive
 
 
 @app.post("/api/assets/batch/render")
 def batch_render():
+    global REGEN_ACTIVE
     data = request.get_json(force=True)
     ids = data.get("ids") or []
     if not ids:
@@ -813,9 +832,16 @@ def batch_render():
         REGEN_QUEUE.extend(ids)
         REGEN["total"] += len(ids)
         total = REGEN["total"]
-    if fresh:                                         # ride the existing worker otherwise
+        # Top the pool up to RENDER_WORKERS, but never spawn more than there is
+        # pending work for. Done under the lock so concurrent appends can't
+        # over-spawn past the cap.
+        want = min(RENDER_WORKERS, len(REGEN_QUEUE))
+        to_start = max(0, want - REGEN_ACTIVE)
+        REGEN_ACTIVE += to_start
+    for _ in range(to_start):
         threading.Thread(target=_regen_worker, daemon=True).start()
-    return jsonify({"ok": True, "count": len(ids), "total": total, "queued": not fresh})
+    return jsonify({"ok": True, "count": len(ids), "total": total,
+                    "queued": not fresh, "workers": RENDER_WORKERS})
 
 
 @app.get("/api/assets/batch/render/status")
