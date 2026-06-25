@@ -200,6 +200,24 @@ def _from_model(asset, out):
     return _render_model(asset, out)
 
 
+# Texture-map name hints, so a material/surface set previews as its COLOUR map
+# rather than (whichever has the shortest filename) its normal/roughness/AO map.
+_COLOR_MAP_HINTS = ("basecolor", "base_color", "albedo", "diffuse", "color",
+                    "_col", "_alb", "_diff")
+_OTHER_MAP_HINTS = ("normal", "_nrm", "_nor", "roughness", "_rough", "_rgh",
+                    "metal", "_ao", "occlusion", "displace", "height", "_disp",
+                    "gloss", "specular", "_spec", "opacity", "_orm", "bump")
+
+
+def _map_rank(name):
+    """0 = colour/albedo map (best preview), 2 = an obvious non-colour map, 1 = other."""
+    if any(h in name for h in _COLOR_MAP_HINTS):
+        return 0
+    if any(h in name for h in _OTHER_MAP_HINTS):
+        return 2
+    return 1
+
+
 def _find_sibling_preview(model_path):
     p = Path(model_path)
     stem = p.stem.lower()
@@ -217,8 +235,11 @@ def _find_sibling_preview(model_path):
         if name == stem or name in SIBLING_NAMES or name.startswith(stem + "_"):
             candidates.append(entry)
     if candidates:
-        # Prefer an exact stem match for accuracy.
-        candidates.sort(key=lambda e: (e.stem.lower() != stem, len(e.stem)))
+        # Prefer an exact stem match, then a colour/albedo map (the right preview
+        # for a material/surface set), then the shortest name.
+        candidates.sort(key=lambda e: (e.stem.lower() != stem,
+                                       _map_rank(e.stem.lower()),
+                                       len(e.stem)))
         return candidates[0]
     return None
 
@@ -836,22 +857,28 @@ def _apply_default_material():
 def frame_and_render(out):
     scene = bpy.context.scene
 
+    # No renderable geometry at all — e.g. a USD that's just a material/surface
+    # definition (a Megascans texture set), not a model. Don't render a blank;
+    # signal it so Hangar can fall back to the set's colour map instead.
+    pts = _scene_points(scene)
+    if not pts:
+        print("HANGAR_NO_GEOMETRY")
+        return
+
     if scene.camera is None:
         cam_data = bpy.data.cameras.new("HangarCam")
         cam = bpy.data.objects.new("HangarCam", cam_data)
         scene.collection.objects.link(cam)
         scene.camera = cam
-        pts = _scene_points(scene)
-        if pts:
-            mn = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)))
-            mx = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
-            center = (mn + mx) / 2.0
-            radius = max((mx - mn).length / 2.0, 0.5)
-            cam.data.lens = 50
-            d = Vector((1.0, -1.2, 0.8)).normalized()
-            cam.location = center + d * (radius * 3.2)
-            look = center - cam.location
-            cam.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
+        mn = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)))
+        mx = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
+        center = (mn + mx) / 2.0
+        radius = max((mx - mn).length / 2.0, 0.5)
+        cam.data.lens = 50
+        d = Vector((1.0, -1.2, 0.8)).normalized()
+        cam.location = center + d * (radius * 3.2)
+        look = center - cam.location
+        cam.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
 
     _set_engine(scene)
     _ensure_world(scene)
@@ -948,6 +975,23 @@ def render_model(model_path, out_jpg):
             )
         except Exception as e:
             _record_render_log(blender, model_path, None, exc=e)
+            return False
+        # A material/surface file with no geometry (e.g. a Megascans USD) — the
+        # render is intentionally empty. Preview it with the set's colour map.
+        if proc is not None and "HANGAR_NO_GEOMETRY" in (proc.stdout or ""):
+            sib = _find_sibling_preview(model_path)
+            if sib is not None:
+                try:
+                    with Image.open(sib) as im:
+                        if _save_downscaled(im, out_jpg):
+                            LAST_RENDER_ERROR = None
+                            _record_render_log(blender, model_path, proc)
+                            return True
+                except Exception:
+                    pass
+            LAST_RENDER_ERROR = ("No geometry in this file — it looks like a "
+                                 "material/surface, not a model.")
+            _record_render_log(blender, model_path, proc)
             return False
         if os.path.exists(png):
             try:
