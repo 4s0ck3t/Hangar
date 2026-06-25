@@ -2063,7 +2063,9 @@ async function manualCheckUpdate() {
   const prev = btn.textContent;
   btn.disabled = true; btn.textContent = "Checking…";
   let u;
-  try { u = await api("update/check"); }
+  // force=1 bypasses the hour-long release cache — an explicit click should
+  // always query GitHub fresh, never report a stale "latest".
+  try { u = await api("update/check?force=1"); }
   catch (e) { u = null; }
   btn.disabled = false; btn.textContent = prev;
   if (!u || !u.ok) {

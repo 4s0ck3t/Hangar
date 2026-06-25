@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.52"
+__version__ = "0.13.53"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -850,11 +850,15 @@ def _version_tuple(s):
     return tuple(int(n) for n in nums) if nums else (0,)
 
 
-def _fetch_latest_release():
+def _fetch_latest_release(force=False):
     import urllib.request
     now = time.time()
     cached = _RELEASE_CACHE.get("data")
-    if cached and now - _RELEASE_CACHE.get("ts", 0) < _RELEASE_CACHE_TTL:
+    # The hour-long cache exists to throttle the *automatic* boot check. An
+    # explicit "Check for updates" click must hit GitHub fresh, otherwise it
+    # keeps reporting a stale "you're on the latest" for up to an hour after a
+    # release ships.
+    if not force and cached and now - _RELEASE_CACHE.get("ts", 0) < _RELEASE_CACHE_TTL:
         return cached
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(url, headers={
@@ -910,8 +914,9 @@ def _platform_asset(assets):
 
 @app.get("/api/update/check")
 def update_check():
+    force = request.args.get("force") in ("1", "true", "yes")
     try:
-        rel = _fetch_latest_release()
+        rel = _fetch_latest_release(force=force)
     except Exception as e:
         return jsonify({"ok": False, "error": f"Couldn't reach GitHub: {e}"}), 200
     latest = (rel.get("tag_name") or "").lstrip("v")
