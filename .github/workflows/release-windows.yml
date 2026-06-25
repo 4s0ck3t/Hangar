@@ -48,6 +48,7 @@ jobs:
           --hidden-import clr
           --hidden-import imageio
           --hidden-import numpy
+          --hidden-import worker
           desktop.py
 
       - name: Self-test native webview (diagnostic — never fails the build)

@@ -719,6 +719,28 @@ button, input, select { font-family: inherit; color: inherit; }
 .diag-close { background: none; border: none; color: var(--mute); font-size: 22px; line-height: 1; cursor: pointer; }
 .diag-close:hover { color: var(--ink); }
 .diag-hint { margin: 10px 14px 0; color: var(--faint); font-size: 12px; }
+
+/* ---- render farm panel ---- */
+.farm-panel { margin: 10px 14px 0; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel, rgba(255,255,255,0.02)); }
+.farm-head { display: flex; align-items: center; justify-content: space-between; }
+.farm-title { font-weight: 600; font-size: 13px; }
+.farm-chunk { font-size: 12px; color: var(--faint); display: flex; align-items: center; gap: 6px; }
+.farm-step { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--line);
+  background: transparent; color: var(--fg); cursor: pointer; font-size: 14px; line-height: 1; }
+.farm-step:hover { background: rgba(255,255,255,0.08); }
+#farmChunkVal { min-width: 22px; text-align: center; color: var(--fg); font-weight: 600; }
+.farm-workers { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+.farm-empty { color: var(--faint); font-size: 12px; }
+.farm-worker { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.farm-worker.offline { opacity: 0.45; }
+.fw-dot { width: 8px; height: 8px; border-radius: 50%; background: #43c463; flex: none; }
+.farm-worker.offline .fw-dot { background: var(--faint); }
+.fw-name { font-weight: 600; flex: none; }
+.fw-gpu { color: var(--faint); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fw-stats { color: var(--faint); flex: none; }
+.farm-hint { margin: 8px 0 0; color: var(--faint); font-size: 11px; }
+.farm-hint code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; }
 .diag-text {
   margin: 10px 14px 14px; flex: 1; min-height: 320px; resize: none;
   background: var(--void); border: 1px solid var(--line); border-radius: 8px;

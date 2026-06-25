@@ -1961,6 +1961,12 @@ async function openDiagnostics() {
   const ta = $("#diagText");
   ta.value = "Loading…";
   $("#diagModal").classList.remove("hidden");
+  refreshFarm();
+  if (_farmPoll) clearInterval(_farmPoll);
+  _farmPoll = setInterval(() => {
+    if ($("#diagModal").classList.contains("hidden")) { clearInterval(_farmPoll); _farmPoll = null; return; }
+    refreshFarm();
+  }, 2000);
   try {
     const d = await api("diagnostics");
     const parts = [d.info, ""];
@@ -1972,6 +1978,36 @@ async function openDiagnostics() {
     ta.value = "Couldn't load diagnostics: " + e;
   }
 }
+
+// ---- render farm panel ----------------------------------------------------
+let _farmPoll = null;
+async function refreshFarm() {
+  let d;
+  try { d = await api("farm/workers"); } catch (_) { return; }
+  $("#farmChunkVal").textContent = d.chunk;
+  const box = $("#farmWorkers");
+  if (!d.workers.length) {
+    box.innerHTML = `<div class="farm-empty">No workers connected.</div>`;
+    return;
+  }
+  box.innerHTML = d.workers.map((w) => `
+    <div class="farm-worker${w.online ? "" : " offline"}">
+      <span class="fw-dot"></span>
+      <span class="fw-name" title="${w.id}">${w.name}</span>
+      <span class="fw-gpu" title="${w.gpu}">${w.gpu}</span>
+      <span class="fw-stats">${w.claimed ? w.claimed + " active · " : ""}${w.done} done${w.failed ? " · " + w.failed + " failed" : ""}</span>
+    </div>`).join("");
+}
+async function _setFarmChunk(delta) {
+  const cur = parseInt($("#farmChunkVal").textContent, 10) || 30;
+  const next = Math.max(1, Math.min(500, cur + delta));
+  try {
+    const r = await post("farm/chunk", { chunk: next });
+    if (r && r.ok) $("#farmChunkVal").textContent = r.chunk;
+  } catch (_) { /* ignore */ }
+}
+$("#farmChunkUp").onclick = () => _setFarmChunk(+5);
+$("#farmChunkDown").onclick = () => _setFarmChunk(-5);
 // ---- in-app updater -------------------------------------------------------
 let _updateInfo = null;
 let _updatePoll = null;

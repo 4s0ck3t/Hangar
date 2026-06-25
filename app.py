@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.60"
+__version__ = "0.13.61"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -766,7 +766,38 @@ REGEN = {"running": False, "done": 0, "total": 0, "ok": 0, "failed": 0,
          "current": "", "last_error": "", "finished_at": 0}
 REGEN_LOCK = threading.Lock()
 REGEN_QUEUE = []          # pending asset ids, drained concurrently by the pool
-REGEN_ACTIVE = 0          # live worker threads
+REGEN_ACTIVE = 0          # live LOCAL worker threads
+
+# ---- render farm (LAN/Tailscale workers sharing the same queue) ------------
+# Remote workers (other machines that can see the same asset paths, e.g. the NAS
+# over Tailscale) claim chunks off REGEN_QUEUE, render locally and post the JPEG
+# back. They share the queue with the local pool, so progress accounting and the
+# status bar cover both. All farm state lives under REGEN_LOCK with the queue.
+FARM = {}                 # worker_id -> {name, gpu, last_seen, done, failed}
+FARM_LEASES = {}          # asset_id -> {"worker": id, "ts": float}
+FARM_LOCAL_ONLY = set()   # ids a remote couldn't reach (path not visible) → local
+FARM_CHUNK = 30           # jobs handed out per claim (tunable from the UI)
+FARM_TOKEN = os.environ.get("HANGAR_FARM_TOKEN", "")
+LEASE_TIMEOUT = 300       # requeue a job if its worker goes silent this long
+
+
+def _regen_maybe_finish():
+    """Caller holds REGEN_LOCK. The run is done only when the queue is empty, no
+    local worker is rendering, AND no farm worker has an outstanding lease."""
+    if (REGEN["running"] and not REGEN_QUEUE
+            and REGEN_ACTIVE == 0 and not FARM_LEASES):
+        REGEN.update(running=False, current="", finished_at=time.time())
+
+
+def _regen_topup_locked():
+    """Caller holds REGEN_LOCK. Returns how many local workers to spawn to cover
+    the pending queue (capped at RENDER_WORKERS). Start the threads outside the
+    lock."""
+    global REGEN_ACTIVE
+    want = min(RENDER_WORKERS, len(REGEN_QUEUE))
+    n = max(0, want - REGEN_ACTIVE)
+    REGEN_ACTIVE += n
+    return n
 
 
 def _regen_worker():
@@ -779,8 +810,7 @@ def _regen_worker():
                 # work: either we still see it here, or batch_render sees
                 # running=False and starts a fresh pool.
                 REGEN_ACTIVE -= 1
-                if REGEN_ACTIVE == 0:
-                    REGEN.update(running=False, current="", finished_at=time.time())
+                _regen_maybe_finish()
                 return
             aid = REGEN_QUEUE.pop(0)
         asset = store.get_asset(aid)
@@ -834,12 +864,9 @@ def batch_render():
         REGEN_QUEUE.extend(ids)
         REGEN["total"] += len(ids)
         total = REGEN["total"]
-        # Top the pool up to RENDER_WORKERS, but never spawn more than there is
-        # pending work for. Done under the lock so concurrent appends can't
-        # over-spawn past the cap.
-        want = min(RENDER_WORKERS, len(REGEN_QUEUE))
-        to_start = max(0, want - REGEN_ACTIVE)
-        REGEN_ACTIVE += to_start
+        # Top the local pool up (capped at RENDER_WORKERS). Remote farm workers,
+        # if any are connected, also claim from this same queue.
+        to_start = _regen_topup_locked()
     for _ in range(to_start):
         threading.Thread(target=_regen_worker, daemon=True).start()
     return jsonify({"ok": True, "count": len(ids), "total": total,
@@ -848,10 +875,192 @@ def batch_render():
 
 @app.get("/api/assets/batch/render/status")
 def batch_render_status():
+    now = time.time()
     with REGEN_LOCK:
         s = dict(REGEN)
+        s["farm_workers"] = sum(
+            1 for w in FARM.values() if now - w.get("last_seen", 0) < LEASE_TIMEOUT)
+        s["farm_inflight"] = len(FARM_LEASES)
     s["pct"] = round(100 * s["done"] / s["total"]) if s["total"] else 0
     return jsonify(s)
+
+
+# ---- render-farm coordinator endpoints ------------------------------------
+def _farm_authed():
+    return not FARM_TOKEN or request.headers.get("X-Hangar-Farm-Token", "") == FARM_TOKEN
+
+
+def _farm_touch_locked(wid):
+    """Refresh a worker's last_seen and keep all its in-flight leases alive — any
+    contact from a worker proves it's still chewing through its chunk."""
+    now = time.time()
+    w = FARM.get(wid)
+    if w is not None:
+        w["last_seen"] = now
+    for v in FARM_LEASES.values():
+        if v["worker"] == wid:
+            v["ts"] = now
+
+
+@app.post("/api/farm/register")
+def farm_register():
+    if not _farm_authed():
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    d = request.get_json(force=True)
+    wid = (d.get("worker_id") or "").strip()
+    if not wid:
+        return jsonify({"ok": False, "error": "worker_id required"}), 200
+    with REGEN_LOCK:
+        w = FARM.setdefault(wid, {"done": 0, "failed": 0})
+        w.update(name=d.get("name") or wid, gpu=d.get("gpu") or "?",
+                 last_seen=time.time())
+    return jsonify({"ok": True, "lease_timeout": LEASE_TIMEOUT, "chunk": FARM_CHUNK})
+
+
+@app.post("/api/farm/claim")
+def farm_claim():
+    if not _farm_authed():
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    wid = (request.get_json(force=True).get("worker_id") or "").strip()
+    jobs = []
+    with REGEN_LOCK:
+        if wid not in FARM:
+            return jsonify({"ok": False, "error": "register first"}), 200
+        _farm_touch_locked(wid)
+        taken, skipped = [], []
+        while REGEN_QUEUE and len(taken) < FARM_CHUNK:
+            aid = REGEN_QUEUE.pop(0)
+            (skipped if aid in FARM_LOCAL_ONLY else taken).append(aid)
+        for aid in reversed(skipped):     # local-only — leave for the local pool
+            REGEN_QUEUE.insert(0, aid)
+        now = time.time()
+        for aid in taken:
+            asset = store.get_asset(aid)
+            if asset:
+                FARM_LEASES[aid] = {"worker": wid, "ts": now}
+                jobs.append({"id": aid, "path": asset["path"], "ext": asset["ext"]})
+            elif REGEN["running"]:        # unknown asset — count it off
+                REGEN["done"] += 1
+                REGEN["failed"] += 1
+        # Local-only items may have been left behind with no local worker running.
+        to_start = _regen_topup_locked()
+        _regen_maybe_finish()
+    for _ in range(to_start):
+        threading.Thread(target=_regen_worker, daemon=True).start()
+    return jsonify({"ok": True, "jobs": jobs})
+
+
+@app.post("/api/farm/result/<int:asset_id>")
+def farm_result(asset_id):
+    if not _farm_authed():
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    wid = request.args.get("worker", "")
+    data = request.get_data()             # raw JPEG bytes
+    asset = store.get_asset(asset_id)
+    saved = False
+    if asset and data:
+        try:
+            saved = thumbs.save_thumbnail_bytes(asset, data)
+        except Exception:
+            saved = False
+    with REGEN_LOCK:
+        lease = FARM_LEASES.pop(asset_id, None)
+        _farm_touch_locked(wid)
+        w = FARM.get(wid)
+        if lease is not None:
+            REGEN["done"] += 1
+            if saved:
+                REGEN["ok"] += 1
+                if w:
+                    w["done"] = w.get("done", 0) + 1
+            else:
+                REGEN["failed"] += 1
+                if w:
+                    w["failed"] = w.get("failed", 0) + 1
+                REGEN["last_error"] = f"farm result not saved for asset {asset_id}"
+        _regen_maybe_finish()
+    return jsonify({"ok": saved})
+
+
+@app.post("/api/farm/fail/<int:asset_id>")
+def farm_fail(asset_id):
+    if not _farm_authed():
+        return jsonify({"ok": False, "error": "bad token"}), 403
+    wid = request.args.get("worker", "")
+    reason = (request.get_json(silent=True) or {}).get("reason", "")
+    to_start = 0
+    with REGEN_LOCK:
+        lease = FARM_LEASES.pop(asset_id, None)
+        _farm_touch_locked(wid)
+        w = FARM.get(wid)
+        if reason == "unreachable":
+            # The remote can't see this path (e.g. a local-drive asset) — hand it
+            # back for LOCAL rendering only so it doesn't bounce around the farm.
+            FARM_LOCAL_ONLY.add(asset_id)
+            REGEN_QUEUE.append(asset_id)
+            to_start = _regen_topup_locked()
+        elif lease is not None:
+            REGEN["done"] += 1
+            REGEN["failed"] += 1
+            if w:
+                w["failed"] = w.get("failed", 0) + 1
+            REGEN["last_error"] = f"farm: {reason or 'render failed'} [asset {asset_id}]"
+        _regen_maybe_finish()
+    for _ in range(to_start):
+        threading.Thread(target=_regen_worker, daemon=True).start()
+    return jsonify({"ok": True})
+
+
+@app.get("/api/farm/workers")
+def farm_workers():
+    now = time.time()
+    with REGEN_LOCK:
+        workers = [{
+            "id": wid, "name": w.get("name", wid), "gpu": w.get("gpu", "?"),
+            "done": w.get("done", 0), "failed": w.get("failed", 0),
+            "claimed": sum(1 for v in FARM_LEASES.values() if v["worker"] == wid),
+            "online": (now - w.get("last_seen", 0)) < LEASE_TIMEOUT,
+        } for wid, w in FARM.items()]
+        chunk = FARM_CHUNK
+    workers.sort(key=lambda x: (not x["online"], x["name"]))
+    return jsonify({"workers": workers, "chunk": chunk, "token_required": bool(FARM_TOKEN)})
+
+
+@app.post("/api/farm/chunk")
+def farm_set_chunk():
+    global FARM_CHUNK
+    try:
+        n = int(request.get_json(force=True).get("chunk"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "chunk must be a number"}), 200
+    with REGEN_LOCK:
+        FARM_CHUNK = max(1, min(500, n))
+        chunk = FARM_CHUNK
+    return jsonify({"ok": True, "chunk": chunk})
+
+
+def _farm_reaper():
+    """Requeue jobs whose worker has gone silent past the lease timeout, and make
+    sure the local pool is running to pick them up. Runs forever in the background."""
+    while True:
+        time.sleep(15)
+        to_start = 0
+        with REGEN_LOCK:
+            now = time.time()
+            stale = [aid for aid, v in FARM_LEASES.items()
+                     if now - v["ts"] > LEASE_TIMEOUT]
+            for aid in stale:
+                del FARM_LEASES[aid]
+                REGEN_QUEUE.append(aid)
+            if stale:
+                REGEN["last_error"] = f"requeued {len(stale)} stalled farm job(s)"
+                to_start = _regen_topup_locked()
+            _regen_maybe_finish()
+        for _ in range(to_start):
+            threading.Thread(target=_regen_worker, daemon=True).start()
+
+
+threading.Thread(target=_farm_reaper, daemon=True).start()
 
 
 @app.post("/api/settings/blender")

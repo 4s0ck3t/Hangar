@@ -95,6 +95,21 @@
         <button id="diagCopy" class="diag-copy">Copy all</button>
         <button id="diagClose" class="diag-close" aria-label="Close">&times;</button>
       </div>
+      <div id="farmPanel" class="farm-panel">
+        <div class="farm-head">
+          <span class="farm-title">Render farm</span>
+          <span class="farm-chunk">
+            chunk
+            <button id="farmChunkDown" class="farm-step" title="Fewer per worker">−</button>
+            <span id="farmChunkVal">30</span>
+            <button id="farmChunkUp" class="farm-step" title="More per worker">+</button>
+          </span>
+        </div>
+        <div id="farmWorkers" class="farm-workers"></div>
+        <p class="farm-hint">Run <code>Hangar.exe --worker --coordinator http://THIS-PC:7575</code>
+          on another machine that can see the same asset paths. It picks up work
+          whenever previews are generating.</p>
+      </div>
       <p class="diag-hint">Copy this and paste it to support to diagnose window / preview issues.</p>
       <textarea id="diagText" class="diag-text" readonly spellcheck="false"></textarea>
     </div>

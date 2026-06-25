@@ -394,6 +394,13 @@ def _kill_stale_instances():
 def main():
     if "--selftest" in sys.argv:
         sys.exit(_selftest())
+    # Render-farm worker mode: no window, just claim/render/return against a
+    # coordinator. Same exe, so a remote box runs `Hangar.exe --worker …`.
+    if "--worker" in sys.argv:
+        import worker
+        argv = [a for a in sys.argv[1:] if a != "--worker"]
+        worker.main(argv)
+        return
     # Clear out any orphaned older instances before we bind a port / open a window.
     _kill_stale_instances()
     # Bind to a guaranteed-free port (the default may be held by an orphaned
