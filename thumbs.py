@@ -901,6 +901,13 @@ def frame_and_render(out):
     r.image_settings.color_mode = 'RGBA'
     r.filepath = out
     bpy.ops.render.render(write_still=True)
+    # Report which engine + GPU actually did the render, so Hangar can show it.
+    print("HANGAR_ENGINE:", scene.render.engine)
+    try:
+        import gpu
+        print("HANGAR_GPU:", gpu.platform.vendor_get(), "::", gpu.platform.renderer_get())
+    except Exception:
+        print("HANGAR_GPU: unavailable")
 
 
 def main():
@@ -917,7 +924,25 @@ main()
 # UI/endpoint can tell the user *why* instead of a generic failure. Full Blender
 # output is also written to ~/.hangar/last_render.log for deeper debugging.
 LAST_RENDER_ERROR = None
+# Engine + GPU the most recent successful render used (parsed from Blender's
+# output), so the diagnostics panel can show what's actually doing the work.
+LAST_RENDER_GPU = None
 RENDER_LOG = store.DATA_DIR / "last_render.log"
+
+
+def _parse_render_gpu(proc):
+    """Pull the HANGAR_ENGINE/HANGAR_GPU lines out of Blender's stdout."""
+    global LAST_RENDER_GPU
+    if not proc or not proc.stdout:
+        return
+    eng = gpu = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("HANGAR_ENGINE:"):
+            eng = line.split(":", 1)[1].strip()
+        elif line.startswith("HANGAR_GPU:"):
+            gpu = line.split(":", 1)[1].strip()
+    if eng or gpu:
+        LAST_RENDER_GPU = f"{eng or '?'} · {gpu or '?'}"
 
 
 def _record_render_log(blender, model_path, proc, exc=None):
@@ -1010,6 +1035,7 @@ def render_model(model_path, out_jpg):
                     ok = _save_downscaled(img, out_jpg)
                 if ok:
                     LAST_RENDER_ERROR = None
+                    _parse_render_gpu(proc)
                     _record_render_log(blender, model_path, proc)
                     return True
             except Exception as e:

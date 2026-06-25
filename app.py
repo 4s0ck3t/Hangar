@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.58"
+__version__ = "0.13.59"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -231,6 +231,7 @@ def diagnostics():
         f"blender: {thumbs.find_blender() or '<not found>'}",
         f"hdri backends: {thumbs._hdri_backends()}",
         f"render workers: {RENDER_WORKERS}",
+        f"last render gpu: {thumbs.LAST_RENDER_GPU or '<no render yet this session>'}",
     ]
     with WARM_LOCK:
         w = dict(WARM)
