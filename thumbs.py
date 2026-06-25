@@ -353,6 +353,33 @@ def _no_window():
     return {"startupinfo": si, "creationflags": 0x08000000}
 
 
+def system_gpus():
+    """Best-effort list of the machine's GPU name(s), without launching Blender.
+    Used for the diagnostics panel and for a render-farm worker to report what
+    hardware it has. Returns [] if it can't tell."""
+    sysname = platform.system()
+    try:
+        if sysname == "Windows":
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_VideoController | "
+                 "ForEach-Object { $_.Name }"],
+                capture_output=True, text=True, timeout=12, **_no_window()).stdout
+        elif sysname == "Darwin":
+            raw = subprocess.run(["system_profiler", "SPDisplaysDataType"],
+                                 capture_output=True, text=True, timeout=12).stdout
+            out = "\n".join(l.split(":", 1)[1] for l in raw.splitlines()
+                            if "Chipset Model:" in l)
+        else:  # Linux
+            raw = subprocess.run(["lspci"], capture_output=True, text=True,
+                                 timeout=12).stdout
+            out = "\n".join(l.split(": ", 1)[-1] for l in raw.splitlines()
+                            if "VGA compatible" in l or "3D controller" in l)
+        return [l.strip() for l in out.splitlines() if l.strip()]
+    except Exception:
+        return []
+
+
 def _strip_light_bg(img, lum_thresh=190, tol=40):
     """BFS flood-fill from the 4 corners; makes connected near-white/light-grey
     pixels transparent so they composite onto Hangar's dark tile background.
