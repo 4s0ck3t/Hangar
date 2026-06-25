@@ -942,7 +942,9 @@ function buildCard(a, i) {
   // dragging, and the only way to file into a category that has no tiles yet).
   card.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    showCategoryMenu(e.clientX, e.clientY, a);
+    // With a multi-selection active, right-click acts on the whole selection.
+    if (selection.size > 0) showBatchMenu(e.clientX, e.clientY);
+    else showCategoryMenu(e.clientX, e.clientY, a);
   });
   // Hover dwell → floating auto-rotating 3D quick-preview (viewable models only).
   bindHoverPreview(card, a);
@@ -958,6 +960,22 @@ function closeCtxMenu() {
   _ctxMenuEl.remove(); _ctxMenuEl = null;
   document.removeEventListener("mousedown", _onCtxOutside, true);
   document.removeEventListener("keydown", _onCtxKey, true);
+}
+
+// Place a built menu at (x, y), nudged back on-screen if it would overflow, and
+// wire up dismiss-on-outside-click / Escape. Shared by every right-click menu.
+function _mountCtxMenu(menu, x, y) {
+  menu.style.visibility = "hidden";
+  document.body.appendChild(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+  menu.style.visibility = "visible";
+  _ctxMenuEl = menu;
+  setTimeout(() => {
+    document.addEventListener("mousedown", _onCtxOutside, true);
+    document.addEventListener("keydown", _onCtxKey, true);
+  }, 0);
 }
 
 function showCategoryMenu(x, y, a) {
@@ -1015,18 +1033,85 @@ function showCategoryMenu(x, y, a) {
   };
   menu.appendChild(mk);
 
-  // Place it, then nudge back on-screen if it would overflow the viewport.
-  menu.style.visibility = "hidden";
-  document.body.appendChild(menu);
-  const r = menu.getBoundingClientRect();
-  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - r.width - 8)) + "px";
-  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - r.height - 8)) + "px";
-  menu.style.visibility = "visible";
-  _ctxMenuEl = menu;
-  setTimeout(() => {
-    document.addEventListener("mousedown", _onCtxOutside, true);
-    document.addEventListener("keydown", _onCtxKey, true);
-  }, 0);
+  _mountCtxMenu(menu, x, y);
+}
+
+// ---- right-click batch menu (shown when a multi-selection is active) -------
+function showBatchMenu(x, y) {
+  closeCtxMenu();
+  const ids = [...selection];
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+
+  const title = document.createElement("div");
+  title.className = "ctx-title";
+  title.textContent = `${ids.length} selected`;
+  menu.appendChild(title);
+
+  // Only Blender-renderable models can have a preview regenerated; textures and
+  // HDRIs already carry their own image, so they're filtered out of the count.
+  const renderable = ids
+    .map((id) => _currentAssets.find((a) => a.id === id))
+    .filter((a) => a && a.kind === "model" && appCaps.renderExts.includes(a.ext));
+
+  if (!renderable.length) {
+    const none = document.createElement("div");
+    none.className = "ctx-empty";
+    none.textContent = "No renderable models selected";
+    menu.appendChild(none);
+  } else {
+    const regen = document.createElement("button");
+    regen.className = "ctx-item";
+    regen.innerHTML =
+      `<span class="ctx-ico">🖼</span>` +
+      `<span class="ctx-name">Regenerate previews (${renderable.length})</span>`;
+    regen.onclick = async (e) => {
+      e.stopPropagation(); closeCtxMenu();
+      await regenerateSelectedPreviews(renderable);
+    };
+    menu.appendChild(regen);
+  }
+
+  _mountCtxMenu(menu, x, y);
+}
+
+// Force a fresh full Blender render for each selected model, sequentially so
+// Blender (single-instance) is never asked for two renders at once. Tiles
+// sharpen one by one as each finishes; a single toast tracks progress. This is
+// the manual escape hatch for .blend files whose embedded 128px thumbnail looks
+// blurry — it overwrites the cached thumb with a full EEVEE render.
+let _batchRendering = false;
+async function regenerateSelectedPreviews(assets) {
+  if (_batchRendering) return;
+  if (!appCaps.blenderReady) {
+    toast("Blender not found — set its path first to render previews.", "error");
+    return;
+  }
+  _batchRendering = true;
+  let ok = 0, failed = 0;
+  try {
+    for (let i = 0; i < assets.length; i++) {
+      const a = assets[i];
+      toast(`Rendering previews… ${i + 1}/${assets.length}`);
+      let r;
+      try { r = await post(`assets/${a.id}/render`); }
+      catch (_) { r = null; }
+      if (r && r.ok) {
+        ok++;
+        thumbBust[a.id] = Date.now();
+        const cardImg = document.querySelector(`#grid .card[data-id="${a.id}"] img`);
+        if (cardImg) cardImg.src = thumbUrl(a.id);
+        if (drawerAssetId === a.id) loadPreview(a);
+      } else {
+        failed++;
+      }
+    }
+  } finally {
+    _batchRendering = false;
+  }
+  toast(
+    failed ? `Regenerated ${ok}, ${failed} failed` : `Regenerated ${ok} preview${ok === 1 ? "" : "s"}`,
+    failed ? "error" : "success");
 }
 
 // Move semantics: the asset ends up in exactly `name` among the categories that
