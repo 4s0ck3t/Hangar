@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.53"
+__version__ = "0.13.54"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -745,51 +745,52 @@ def render_model_preview(asset_id):
 
 
 # ---- batch preview regeneration -------------------------------------------
-# Right-click → "Regenerate previews" on a multi-selection. Runs in a background
-# thread (ONE Blender process at a time, like the warm pass) and reports progress
-# through /status so the status bar shows live feedback instead of a silent wait.
+# Right-click → "Regenerate previews" on a multi-selection. A single background
+# worker drains a queue ONE Blender render at a time (like the warm pass) and
+# reports progress through /status so the status bar shows live feedback. Firing
+# another selection while one is running APPENDS to the queue (total grows) — it
+# doesn't get rejected.
 REGEN = {"running": False, "done": 0, "total": 0, "ok": 0, "failed": 0,
          "current": "", "last_error": "", "finished_at": 0}
 REGEN_LOCK = threading.Lock()
+REGEN_QUEUE = []          # pending asset ids, drained in order by the worker
 
 
-def _run_regen(ids):
-    with REGEN_LOCK:
-        REGEN.update(running=True, done=0, total=len(ids), ok=0, failed=0,
-                     current="", last_error="", finished_at=0)
-    done = ok = failed = 0
-    last_error = ""
-    for aid in ids:
+def _regen_worker():
+    while True:
+        with REGEN_LOCK:
+            if not REGEN_QUEUE:                       # queue drained — we're done
+                REGEN.update(running=False, current="", finished_at=time.time())
+                return
+            aid = REGEN_QUEUE.pop(0)
         asset = store.get_asset(aid)
-        done += 1
+        ok = False
+        err = ""
         if not asset:
-            failed += 1
-            last_error = f"Asset {aid} not found."
+            err = f"Asset {aid} not found."
         elif asset["kind"] != "model" or asset["ext"] not in thumbs.BLENDER_RENDER_EXTS:
-            failed += 1
-            last_error = f"Can't render {asset.get('path', aid)}"
+            err = f"Can't render {asset.get('path', aid)}"
         elif not thumbs.blender_available():
-            failed += 1
-            last_error = "Blender not found — set its path in settings."
+            err = "Blender not found — set its path in settings."
         else:
             with REGEN_LOCK:
                 REGEN["current"] = asset["path"]
             try:
                 if thumbs.render_model_preview(asset):
-                    ok += 1
+                    ok = True
                 else:
-                    failed += 1
-                    last_error = (thumbs.LAST_RENDER_ERROR
-                                  or "Render produced no image") + f"  [{asset['path']}]"
+                    err = (thumbs.LAST_RENDER_ERROR
+                           or "Render produced no image") + f"  [{asset['path']}]"
             except Exception as e:
-                failed += 1
-                last_error = f"{e}  [{asset['path']}]"
+                err = f"{e}  [{asset['path']}]"
         with REGEN_LOCK:
-            REGEN.update(done=done, ok=ok, failed=failed)
+            REGEN["done"] += 1
+            if ok:
+                REGEN["ok"] += 1
+            else:
+                REGEN["failed"] += 1
+                REGEN["last_error"] = err
         time.sleep(0.05)              # keep the render pass low-priority
-    with REGEN_LOCK:
-        REGEN.update(running=False, current="", last_error=last_error,
-                     finished_at=time.time())
 
 
 @app.post("/api/assets/batch/render")
@@ -803,11 +804,18 @@ def batch_render():
                         "error": "Blender wasn't found. Set its path in settings "
                                  "to regenerate previews."}), 200
     with REGEN_LOCK:
-        if REGEN["running"]:
-            return jsonify({"ok": False,
-                            "error": "Already regenerating previews — let it finish."}), 200
-    threading.Thread(target=_run_regen, args=(list(ids),), daemon=True).start()
-    return jsonify({"ok": True, "count": len(ids)})
+        fresh = not REGEN["running"]
+        if fresh:
+            # Previous run (if any) is finished — start counters over.
+            REGEN.update(running=True, done=0, total=0, ok=0, failed=0,
+                         current="", last_error="", finished_at=0)
+            REGEN_QUEUE.clear()
+        REGEN_QUEUE.extend(ids)
+        REGEN["total"] += len(ids)
+        total = REGEN["total"]
+    if fresh:                                         # ride the existing worker otherwise
+        threading.Thread(target=_regen_worker, daemon=True).start()
+    return jsonify({"ok": True, "count": len(ids), "total": total, "queued": not fresh})
 
 
 @app.get("/api/assets/batch/render/status")

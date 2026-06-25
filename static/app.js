@@ -1077,11 +1077,12 @@ function showBatchMenu(x, y) {
 
 // Force a fresh full Blender render for each selected model — the manual escape
 // hatch for .blend files whose embedded 128px thumbnail looks blurry. The work
-// runs server-side in a background thread (ONE Blender at a time); we poll its
-// status and drive the status-bar progress UI so the user sees live feedback
-// (which file, how far along) instead of a silent wait.
+// runs server-side in a background worker (ONE Blender at a time); we poll its
+// status and drive the status-bar progress UI so the user sees live feedback.
+// Firing it again while a run is going APPENDS to the queue (the total grows)
+// rather than being rejected.
+let _regenIds = new Set();   // every id queued in the current run, for the final repaint
 async function regenerateSelectedPreviews(assets) {
-  if (state.regenTimer) { toast("Already regenerating previews…", "error"); return; }
   if (!appCaps.blenderReady) {
     toast("Blender not found — set its path first to regenerate previews.", "error");
     return;
@@ -1094,12 +1095,17 @@ async function regenerateSelectedPreviews(assets) {
     toast((r && r.error) || "Couldn't start preview regeneration.", "error");
     return;
   }
-  toast(`Regenerating ${ids.length} preview${ids.length === 1 ? "" : "s"}…`, "success");
-  startRegenPolling(ids);
+  ids.forEach((id) => _regenIds.add(id));
+  toast(
+    r.queued
+      ? `Added ${ids.length} to the queue (${r.total} total)…`
+      : `Regenerating ${ids.length} preview${ids.length === 1 ? "" : "s"}…`,
+    "success");
+  startRegenPolling();        // no-op if a poll is already running
 }
 
-function startRegenPolling(ids) {
-  if (state.regenTimer) clearInterval(state.regenTimer);
+function startRegenPolling() {
+  if (state.regenTimer) return;
   $("#statusSummary").classList.add("hidden");
   $("#scanProgress").classList.remove("hidden");
   const tick = async () => {
@@ -1120,6 +1126,8 @@ function startRegenPolling(ids) {
       $("#statusSummary").classList.remove("hidden");
       // Bust caches so the freshly rendered tiles reload instead of showing the
       // browser-cached blurry version, then repaint the grid + open drawer.
+      const ids = [..._regenIds];
+      _regenIds = new Set();
       for (const id of ids) thumbBust[id] = Date.now();
       refresh();
       const a = _currentAssets.find((x) => x.id === drawerAssetId);
