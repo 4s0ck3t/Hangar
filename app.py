@@ -20,7 +20,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.51"
+__version__ = "0.13.52"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -742,6 +742,80 @@ def render_model_preview(asset_id):
             "log": str(thumbs.RENDER_LOG),
         }), 200
     return jsonify({"ok": True})
+
+
+# ---- batch preview regeneration -------------------------------------------
+# Right-click → "Regenerate previews" on a multi-selection. Runs in a background
+# thread (ONE Blender process at a time, like the warm pass) and reports progress
+# through /status so the status bar shows live feedback instead of a silent wait.
+REGEN = {"running": False, "done": 0, "total": 0, "ok": 0, "failed": 0,
+         "current": "", "last_error": "", "finished_at": 0}
+REGEN_LOCK = threading.Lock()
+
+
+def _run_regen(ids):
+    with REGEN_LOCK:
+        REGEN.update(running=True, done=0, total=len(ids), ok=0, failed=0,
+                     current="", last_error="", finished_at=0)
+    done = ok = failed = 0
+    last_error = ""
+    for aid in ids:
+        asset = store.get_asset(aid)
+        done += 1
+        if not asset:
+            failed += 1
+            last_error = f"Asset {aid} not found."
+        elif asset["kind"] != "model" or asset["ext"] not in thumbs.BLENDER_RENDER_EXTS:
+            failed += 1
+            last_error = f"Can't render {asset.get('path', aid)}"
+        elif not thumbs.blender_available():
+            failed += 1
+            last_error = "Blender not found — set its path in settings."
+        else:
+            with REGEN_LOCK:
+                REGEN["current"] = asset["path"]
+            try:
+                if thumbs.render_model_preview(asset):
+                    ok += 1
+                else:
+                    failed += 1
+                    last_error = (thumbs.LAST_RENDER_ERROR
+                                  or "Render produced no image") + f"  [{asset['path']}]"
+            except Exception as e:
+                failed += 1
+                last_error = f"{e}  [{asset['path']}]"
+        with REGEN_LOCK:
+            REGEN.update(done=done, ok=ok, failed=failed)
+        time.sleep(0.05)              # keep the render pass low-priority
+    with REGEN_LOCK:
+        REGEN.update(running=False, current="", last_error=last_error,
+                     finished_at=time.time())
+
+
+@app.post("/api/assets/batch/render")
+def batch_render():
+    data = request.get_json(force=True)
+    ids = data.get("ids") or []
+    if not ids:
+        return jsonify({"ok": False, "error": "No assets selected."}), 200
+    if not thumbs.blender_available():
+        return jsonify({"ok": False, "blender": False,
+                        "error": "Blender wasn't found. Set its path in settings "
+                                 "to regenerate previews."}), 200
+    with REGEN_LOCK:
+        if REGEN["running"]:
+            return jsonify({"ok": False,
+                            "error": "Already regenerating previews — let it finish."}), 200
+    threading.Thread(target=_run_regen, args=(list(ids),), daemon=True).start()
+    return jsonify({"ok": True, "count": len(ids)})
+
+
+@app.get("/api/assets/batch/render/status")
+def batch_render_status():
+    with REGEN_LOCK:
+        s = dict(REGEN)
+    s["pct"] = round(100 * s["done"] / s["total"]) if s["total"] else 0
+    return jsonify(s)
 
 
 @app.post("/api/settings/blender")

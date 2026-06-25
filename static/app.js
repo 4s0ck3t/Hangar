@@ -1075,43 +1075,65 @@ function showBatchMenu(x, y) {
   _mountCtxMenu(menu, x, y);
 }
 
-// Force a fresh full Blender render for each selected model, sequentially so
-// Blender (single-instance) is never asked for two renders at once. Tiles
-// sharpen one by one as each finishes; a single toast tracks progress. This is
-// the manual escape hatch for .blend files whose embedded 128px thumbnail looks
-// blurry — it overwrites the cached thumb with a full EEVEE render.
-let _batchRendering = false;
+// Force a fresh full Blender render for each selected model — the manual escape
+// hatch for .blend files whose embedded 128px thumbnail looks blurry. The work
+// runs server-side in a background thread (ONE Blender at a time); we poll its
+// status and drive the status-bar progress UI so the user sees live feedback
+// (which file, how far along) instead of a silent wait.
 async function regenerateSelectedPreviews(assets) {
-  if (_batchRendering) return;
+  if (state.regenTimer) { toast("Already regenerating previews…", "error"); return; }
   if (!appCaps.blenderReady) {
-    toast("Blender not found — set its path first to render previews.", "error");
+    toast("Blender not found — set its path first to regenerate previews.", "error");
     return;
   }
-  _batchRendering = true;
-  let ok = 0, failed = 0;
-  try {
-    for (let i = 0; i < assets.length; i++) {
-      const a = assets[i];
-      toast(`Rendering previews… ${i + 1}/${assets.length}`);
-      let r;
-      try { r = await post(`assets/${a.id}/render`); }
-      catch (_) { r = null; }
-      if (r && r.ok) {
-        ok++;
-        thumbBust[a.id] = Date.now();
-        const cardImg = document.querySelector(`#grid .card[data-id="${a.id}"] img`);
-        if (cardImg) cardImg.src = thumbUrl(a.id);
-        if (drawerAssetId === a.id) loadPreview(a);
-      } else {
-        failed++;
-      }
-    }
-  } finally {
-    _batchRendering = false;
+  const ids = assets.map((a) => a.id);
+  let r;
+  try { r = await post("assets/batch/render", { ids }); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) {
+    toast((r && r.error) || "Couldn't start preview regeneration.", "error");
+    return;
   }
-  toast(
-    failed ? `Regenerated ${ok}, ${failed} failed` : `Regenerated ${ok} preview${ok === 1 ? "" : "s"}`,
-    failed ? "error" : "success");
+  toast(`Regenerating ${ids.length} preview${ids.length === 1 ? "" : "s"}…`, "success");
+  startRegenPolling(ids);
+}
+
+function startRegenPolling(ids) {
+  if (state.regenTimer) clearInterval(state.regenTimer);
+  $("#statusSummary").classList.add("hidden");
+  $("#scanProgress").classList.remove("hidden");
+  const tick = async () => {
+    let s;
+    try { s = await api("assets/batch/render/status"); } catch (_) { return; }
+    $("#scanText").textContent = `Regenerating previews — ${s.done}/${s.total}`;
+    $("#scanFill").style.width = (s.pct || 0) + "%";
+    $("#scanPct").textContent = (s.pct || 0) + "%";
+    if (s.current) {
+      $("#scanFile").textContent = s.current.replace(/.*[\\/]/, "");
+      $("#scanFile").title = s.current;
+    } else {
+      $("#scanFile").textContent = ""; $("#scanFile").title = "";
+    }
+    if (!s.running) {
+      clearInterval(state.regenTimer); state.regenTimer = null;
+      $("#scanProgress").classList.add("hidden");
+      $("#statusSummary").classList.remove("hidden");
+      // Bust caches so the freshly rendered tiles reload instead of showing the
+      // browser-cached blurry version, then repaint the grid + open drawer.
+      for (const id of ids) thumbBust[id] = Date.now();
+      refresh();
+      const a = _currentAssets.find((x) => x.id === drawerAssetId);
+      if (a && ids.includes(a.id)) loadPreview(a);
+      const ok = s.ok || 0, failed = s.failed || 0;
+      toast(
+        failed
+          ? `Regenerated ${ok}, ${failed} failed${s.last_error ? " — " + s.last_error : ""}`
+          : `Regenerated ${ok} preview${ok === 1 ? "" : "s"}`,
+        failed ? "error" : "success");
+    }
+  };
+  state.regenTimer = setInterval(tick, 400);
+  tick();
 }
 
 // Move semantics: the asset ends up in exactly `name` among the categories that
@@ -1927,7 +1949,8 @@ async function checkForUpdate() {
     const pill = $("#updatePill");
     pill.textContent = `⬆ Update to v${u.latest}`;
     pill.classList.remove("hidden");
-    pill.onclick = openUpdateModal;
+    // One click downloads in the background, then turns into a Restart button.
+    pill.onclick = beginBackgroundUpdate;
   } catch (_) { /* offline — no banner */ }
 }
 function openUpdateModal() {
@@ -1998,6 +2021,25 @@ function startUpdatePolling() {
   }, 500);
 }
 
+// Kick off (or resume) the download in the background — no modal step. Used by
+// the manual "Check for updates" button and the status-bar pill, so the user
+// just gets a "Restart to finish" button once it's downloaded.
+function beginBackgroundUpdate() {
+  if (!_updateInfo) return;
+  if (_updateReady) { launchUpdate(); return; }      // already downloaded → restart now
+  if (_updatePoll) { openUpdateModal(); return; }    // already downloading → show progress
+  if (!_updateInfo.asset_url) {                       // no build attached → open releases page
+    window.open(_updateInfo.html_url || "https://github.com/4s0ck3t/Hangar/releases", "_blank");
+    return;
+  }
+  post("update/download", {
+    url: _updateInfo.asset_url, name: _updateInfo.asset_name, version: _updateInfo.latest,
+  });
+  startUpdatePolling();
+  _setPill(`⬇ Downloading v${_updateInfo.latest}… 0%`, openUpdateModal);
+  toast(`Downloading v${_updateInfo.latest} in the background…`, "success");
+}
+
 async function startUpdateDownload() {
   if (!_updateInfo) return;
   if (!_updateInfo.asset_url) { window.open(_updateInfo.html_url || "https://github.com/4s0ck3t/Hangar/releases", "_blank"); return; }
@@ -2030,11 +2072,9 @@ async function manualCheckUpdate() {
   }
   if (u.update_available) {
     _updateInfo = u;
-    const pill = $("#updatePill");
-    pill.textContent = `⬆ Update to v${u.latest}`;
-    pill.classList.remove("hidden");
-    pill.onclick = openUpdateModal;
-    openUpdateModal();
+    // Start the download straight away in the background; the pill tracks it and
+    // becomes a "Restart to finish" button when it's ready.
+    beginBackgroundUpdate();
   } else {
     toast(`You're on the latest version (v${u.current}).`, "success");
   }
