@@ -433,7 +433,8 @@ async function updateFacetStrip() {
 // ---- multi-select ---------------------------------------------------------
 const selection = new Set(); // Set of asset IDs currently selected
 let _lastSelectedIdx = -1;  // index into _currentAssets; anchor for shift-range
-let _currentAssets = [];    // flat ordered asset list of the current render
+let _currentAssets = [];    // assets in DISPLAY order (grouped views concatenate sections)
+let _displaySections = [];  // section key per _currentAssets index; shift-range stays within one
 
 function updateBatchBar() {
   let bar = $("#batchBar");
@@ -538,9 +539,14 @@ function toggleSelect(id, card, idx) {
 }
 
 function rangeSelect(toIdx) {
+  // Stay inside the anchor's section so shift-selecting within a category (or
+  // folder group) never bleeds into the other sections that sit between them in
+  // the flat list. In a plain grid every item shares section "" → normal range.
+  const anchorSec = _displaySections[_lastSelectedIdx];
   const lo = Math.min(_lastSelectedIdx, toIdx);
   const hi = Math.max(_lastSelectedIdx, toIdx);
   for (let j = lo; j <= hi; j++) {
+    if (_displaySections[j] !== anchorSec) continue;
     const a = _currentAssets[j];
     if (!a) continue;
     selection.add(a.id);
@@ -659,10 +665,13 @@ async function refresh() {
   if (folderGrouped) { p.set("limit", "2000"); }
 
   const data = await api("assets?" + p.toString());
-  currentAssets = data.assets;
   if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
   else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
+  // The renderers build _currentAssets in display order (grouped views reorder
+  // by section); the drawer's prev/next must walk that same order, and the card
+  // indices passed to openDrawer index into it.
+  currentAssets = _currentAssets;
   await loadState();
   enqueueMissingThumbs(data.assets);   // fill in USD/Alembic tiles in the background
   updateActiveLabel(data.total);
@@ -707,7 +716,9 @@ function renderGroupedGrid(assets, kind, total) {
       sections.unshift({ cat: { name: "Unclassified", icon: "📂" }, items: uncategorized, uncat: true });
   }
 
-  const idxOf = new Map(assets.map((a, i) => [a, i]));
+  const ordered = [];   // assets in card-display order (section by section)
+  const secOf = [];     // section key per ordered[] entry — shift-range stays within one
+  let secKey = 0;
   const frag = document.createDocumentFragment();
   for (const s of sections) {
     // Empty named categories still render — as a labelled drop zone — so a tile
@@ -741,7 +752,9 @@ function renderGroupedGrid(assets, kind, total) {
     sgrid.className = "section-grid";
     if (s.items.length) {
       for (const a of s.items) {
-        const card = buildCard(a, idxOf.get(a));
+        const di = ordered.length;
+        ordered.push(a); secOf.push(secKey);
+        const card = buildCard(a, di);
         // srcCat: only category sections carry a drag-from-category origin.
         card.dataset.srcCat = (s.uncat || s.typeKind) ? "" : s.cat.name;
         sgrid.appendChild(card);
@@ -783,6 +796,7 @@ function renderGroupedGrid(assets, kind, total) {
       });
     }
     frag.appendChild(section);
+    secKey++;
   }
 
   // Inline "new category" affordance — only in a per-type view (categories are
@@ -795,6 +809,8 @@ function renderGroupedGrid(assets, kind, total) {
     frag.appendChild(adder);
   }
 
+  _currentAssets = ordered;
+  _displaySections = secOf;
   grid.replaceChildren(frag);
   grid.scrollTop = 0;
 }
@@ -827,7 +843,9 @@ function renderGroupedByFolder(assets, libraryPath) {
   const sections = [...groups.values()]
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
 
-  const idxOf = new Map(assets.map((a, i) => [a, i]));
+  const ordered = [];
+  const secOf = [];
+  let secKey = 0;
   const frag = document.createDocumentFragment();
   for (const s of sections) {
     const section = document.createElement("div");
@@ -841,11 +859,18 @@ function renderGroupedByFolder(assets, libraryPath) {
     section.appendChild(head);
     const sgrid = document.createElement("div");
     sgrid.className = "section-grid";
-    for (const a of s.items) sgrid.appendChild(buildCard(a, idxOf.get(a)));
+    for (const a of s.items) {
+      const di = ordered.length;
+      ordered.push(a); secOf.push(secKey);
+      sgrid.appendChild(buildCard(a, di));
+    }
     section.appendChild(sgrid);
     frag.appendChild(section);
+    secKey++;
   }
 
+  _currentAssets = ordered;
+  _displaySections = secOf;
   grid.replaceChildren(frag);
   grid.scrollTop = 0;
 }
@@ -1295,6 +1320,7 @@ function renderGrid(assets, total) {
   grid.classList.remove("grouped");  // leave grouped-section layout
   if (!assets.length) {
     _vAssets = []; _vRange = { start: -1, end: -1 };
+    _currentAssets = []; _displaySections = [];
     grid.replaceChildren();
     empty.classList.remove("hidden");
     empty.innerHTML = total === 0 && !state.search && !state.filter.tag
@@ -1308,6 +1334,7 @@ function renderGrid(assets, total) {
   empty.classList.add("hidden");
   _vAssets = assets;
   _currentAssets = assets;
+  _displaySections = assets.map(() => "");   // one flat section → contiguous shift-range
   _vRange = { start: -1, end: -1 };
   grid.scrollTop = 0;
   bindVirtual();
