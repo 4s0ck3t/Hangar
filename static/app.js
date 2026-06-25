@@ -1999,6 +1999,26 @@ function _setPill(text, handler) {
   pill.onclick = handler;
 }
 
+// Show the background download on the shared status-bar progress bar, but never
+// fight a scan or a regenerate pass that already owns it.
+function _updateStatusBar(pct) {
+  if (state.scanTimer || state.regenTimer) return;
+  state.updateBar = true;
+  $("#statusSummary").classList.add("hidden");
+  $("#scanProgress").classList.remove("hidden");
+  $("#scanText").textContent = `Downloading update v${_updateInfo.latest}`;
+  $("#scanFill").style.width = pct + "%";
+  $("#scanPct").textContent = pct + "%";
+  $("#scanFile").textContent = ""; $("#scanFile").title = "";
+}
+function _clearUpdateStatusBar() {
+  if (!state.updateBar) return;
+  state.updateBar = false;
+  if (state.scanTimer || state.regenTimer) return;   // someone else owns it now
+  $("#scanProgress").classList.add("hidden");
+  $("#statusSummary").classList.remove("hidden");
+}
+
 function startUpdatePolling() {
   if (_updatePoll) clearInterval(_updatePoll);
   _updatePoll = setInterval(async () => {
@@ -2008,6 +2028,7 @@ function startUpdatePolling() {
     $("#updatePct").textContent = pct + "%";
     if (s.done) {
       clearInterval(_updatePoll); _updatePoll = null;
+      _clearUpdateStatusBar();
       _updateReady = true;
       const btn = $("#updateDownloadBtn");
       btn.textContent = "Downloaded ✓"; btn.disabled = true;
@@ -2016,14 +2037,16 @@ function startUpdatePolling() {
       toast(`v${_updateInfo.latest} is ready — click Restart when you're ready.`, "success");
     } else if (s.error) {
       clearInterval(_updatePoll); _updatePoll = null;
+      _clearUpdateStatusBar();
       const btn = $("#updateDownloadBtn");
       btn.disabled = false; btn.textContent = "Retry download";
       $("#updateProgress").classList.add("hidden");
       _setPill(`⬆ Update to v${_updateInfo.latest}`, openUpdateModal);
       toast("Update failed: " + s.error, "error");
     } else {
-      // Still downloading — reflect progress on the always-visible pill so the
-      // user can close the modal and keep working.
+      // Still downloading — show it on the status bar AND keep the always-visible
+      // pill in sync so the user can close the modal and keep working.
+      _updateStatusBar(pct);
       _setPill(`⬇ Downloading v${_updateInfo.latest}… ${pct}%`, openUpdateModal);
     }
   }, 500);
