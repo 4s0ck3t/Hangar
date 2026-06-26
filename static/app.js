@@ -434,7 +434,7 @@ async function updateFacetStrip() {
 const selection = new Set(); // Set of asset IDs currently selected
 let _lastSelectedIdx = -1;  // index into _currentAssets; anchor for shift-range
 let _currentAssets = [];    // assets in DISPLAY order (grouped views concatenate sections)
-let _displaySections = [];  // section key per _currentAssets index; shift-range stays within one
+let _displaySections = [];  // section key per _currentAssets index (display-order bookkeeping)
 
 function updateBatchBar() {
   let bar = $("#batchBar");
@@ -539,14 +539,14 @@ function toggleSelect(id, card, idx) {
 }
 
 function rangeSelect(toIdx) {
-  // Stay inside the anchor's section so shift-selecting within a category (or
-  // folder group) never bleeds into the other sections that sit between them in
-  // the flat list. In a plain grid every item shares section "" → normal range.
-  const anchorSec = _displaySections[_lastSelectedIdx];
+  // Select the whole display-order range between the anchor and the target —
+  // this spans category/folder sections, picking up exactly what's visible
+  // between the two clicks. Safe because _currentAssets is in DISPLAY order
+  // (grouped views concatenate their sections into it), so the range matches
+  // the on-screen layout rather than the flat API order.
   const lo = Math.min(_lastSelectedIdx, toIdx);
   const hi = Math.max(_lastSelectedIdx, toIdx);
   for (let j = lo; j <= hi; j++) {
-    if (_displaySections[j] !== anchorSec) continue;
     const a = _currentAssets[j];
     if (!a) continue;
     selection.add(a.id);
