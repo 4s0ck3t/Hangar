@@ -425,6 +425,12 @@ def main():
     else:
         _log("WARNING: server not reachable after 20s — window may be blank")
     _ensure_webview2()  # Windows: install the WebView2 runtime if it's missing
+    if getattr(sys, "frozen", False) and sys.platform == "win32" and "--native-window" not in sys.argv:
+        _log("frozen Windows build: skipping native pywebview; using Edge/Chrome --app window")
+        if _launch_app_window(url):
+            return
+        _run_in_default_browser(url)
+        return
     if _try_pywebview(url):
         return
     if _launch_app_window(url):
