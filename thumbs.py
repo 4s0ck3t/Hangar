@@ -339,6 +339,16 @@ import store
 
 _BLENDER_CACHE = {"path": None, "checked": False}
 
+# Per-render Blender timeout (seconds). Heavy authored .blend scenes (lots of
+# geometry / high-res textures) can take a while, especially on weaker GPUs, and
+# a too-short timeout kills the render so the tile falls back to the blurry 128px
+# embedded preview. Overridable via HANGAR_RENDER_TIMEOUT.
+RENDER_TIMEOUT = 300
+try:
+    RENDER_TIMEOUT = max(30, int(os.environ.get("HANGAR_RENDER_TIMEOUT", RENDER_TIMEOUT)))
+except ValueError:
+    pass
+
 
 def _no_window():
     """subprocess kwargs that suppress the console window a child process would
@@ -1027,8 +1037,15 @@ def render_model(model_path, out_jpg):
         try:
             proc = subprocess.run(
                 [blender, "-b", "-P", script, "--", model_path, png],
-                timeout=180, capture_output=True, text=True, **_no_window(),
+                timeout=RENDER_TIMEOUT, capture_output=True, text=True, **_no_window(),
             )
+        except subprocess.TimeoutExpired as e:
+            _record_render_log(blender, model_path, None, exc=e)
+            LAST_RENDER_ERROR = (
+                f"Render timed out after {RENDER_TIMEOUT}s — this scene is too heavy "
+                f"for a quick thumbnail. Raise HANGAR_RENDER_TIMEOUT, or render it on "
+                f"a faster GPU / farm worker.")
+            return False
         except Exception as e:
             _record_render_log(blender, model_path, None, exc=e)
             return False
