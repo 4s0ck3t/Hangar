@@ -830,11 +830,29 @@ def _scene_points(scene):
     return pts
 
 
-def _set_engine(scene):
+def _set_cpu_cycles(scene):
+    """Use CPU Cycles for authored .blend scenes."""
+    try:
+        scene.render.engine = 'CYCLES'
+        scene.cycles.device = 'CPU'
+        scene.cycles.samples = 16
+        scene.cycles.preview_samples = 8
+        scene.cycles.use_denoising = False
+        scene.render.use_persistent_data = False
+        return 'CYCLES_CPU'
+    except Exception:
+        return None
+
+
+def _set_engine(scene, ext):
     """Pick EEVEE so materials/textures show (Workbench renders flat, no
     materials). The engine id changed across versions — EEVEE Next is
     'BLENDER_EEVEE_NEXT' in 4.2 and 'BLENDER_EEVEE' in 3.x and 5.x — so try the
     known ids until one sticks; fall back to Workbench only if none exist."""
+    if ext == ".blend":
+        eng = _set_cpu_cycles(scene)
+        if eng:
+            return eng
     for eng in ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE', 'BLENDER_WORKBENCH'):
         try:
             scene.render.engine = eng
@@ -891,7 +909,7 @@ def _apply_default_material():
         ob.data.materials.append(default)
 
 
-def frame_and_render(out):
+def frame_and_render(out, ext):
     scene = bpy.context.scene
 
     # No renderable geometry at all — e.g. a USD that's just a material/surface
@@ -917,7 +935,7 @@ def frame_and_render(out):
         look = center - cam.location
         cam.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
 
-    _set_engine(scene)
+    _set_engine(scene, ext)
     _ensure_world(scene)
     _ensure_lights(scene)
     _apply_default_material()
@@ -955,7 +973,7 @@ def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     src, out = argv[0], argv[1]
     load_model(src)
-    frame_and_render(out)
+    frame_and_render(out, os.path.splitext(src)[1].lower())
 
 main()
 '''
