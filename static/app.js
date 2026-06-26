@@ -37,6 +37,20 @@ const state = {
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
 const $ = (s) => document.querySelector(s);
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch]));
+}
+function safeColor(value, fallback = "#8A8F9A") {
+  const s = String(value || "").trim();
+  if (/^#[0-9a-f]{3}$/i.test(s)) {
+    return "#" + [...s.slice(1)].map((ch) => ch + ch).join("");
+  }
+  if (/^#[0-9a-f]{6}$/i.test(s)) return s;
+  if (/^var\(--[a-z0-9-]+\)$/i.test(s)) return s;
+  return fallback;
+}
 
 // The four collapsible Library types.
 const TYPE_KINDS = ["model", "texture", "hdri", "material"];
@@ -115,7 +129,7 @@ function renderOfflineBanner(libs) {
   banner.innerHTML =
     `<span class="ob-ico">⚠</span> ` +
     `${offline.length === 1 ? "Folder" : offline.length + " folders"} not accessible: ` +
-    `<strong>${names}</strong> — ${offline.length === 1 ? "its" : "their"} assets are kept ` +
+    `<strong>${esc(names)}</strong> — ${offline.length === 1 ? "its" : "their"} assets are kept ` +
     `indexed but can't be opened. Reconnect the drive/folder, then ` +
     `<button id="obRescan" class="ob-rescan">Rescan</button>.`;
   $("#obRescan").onclick = () => $("#rescanBtn").click();
@@ -163,7 +177,7 @@ function renderKindFilters(counts, cats) {
       : `<span class="twisty-spacer"></span>`;
     li.innerHTML = twisty +
       `<span class="dot" style="background:${color}"></span>` +
-      `<span>${KIND_LABELS[key]}</span><span class="count">${count}</span>`;
+      `<span>${esc(KIND_LABELS[key])}</span><span class="count">${count}</span>`;
     li.onclick = () => {
       resetFilter();
       state.filter.kind = kind;
@@ -200,7 +214,7 @@ function renderKindFilters(counts, cats) {
         if (subActive) sub.classList.add("active");
         sub.innerHTML =
           `<span class="sub-dot"></span>` +
-          `<span>${grp.label}</span><span class="count">${grpCount}</span>`;
+          `<span>${esc(grp.label)}</span><span class="count">${grpCount}</span>`;
         sub.onclick = (e) => {
           e.stopPropagation();
           resetFilter();
@@ -243,14 +257,14 @@ function buildCategoryItem(c, nested) {
     const li = document.createElement("li");
     li.className = "cat-item" + (nested ? " cat-sub" : "");
     if (state.filter.category === c.name) li.classList.add("active");
-    const icon = c.icon ? `<span class="cat-ico">${c.icon}</span>` : `<span class="dot" style="background:var(--k-model)"></span>`;
+    const icon = c.icon ? `<span class="cat-ico">${esc(c.icon)}</span>` : `<span class="dot" style="background:var(--k-model)"></span>`;
     const kwTitle = c.keywords
       ? `Auto-match keywords: ${c.keywords}\nClick to edit`
       : "No auto-match keywords yet — click to add";
     li.innerHTML =
       icon +
-      `<span class="cat-name">${c.name}</span><span class="count">${c.c}</span>` +
-      `<button class="cat-kw" title="${kwTitle}">✎</button>` +
+      `<span class="cat-name">${esc(c.name)}</span><span class="count">${c.c}</span>` +
+      `<button class="cat-kw" title="${esc(kwTitle)}">✎</button>` +
       `<button class="cat-remove" title="Delete category">&times;</button>`;
     // Keep the current kind context when drilling into a category (Poly Haven
     // stays on the HDRI tab when you pick an HDRI category).
@@ -311,7 +325,7 @@ function renderCollectionFilters(cols) {
     if (state.filter.collection === c.name) li.classList.add("active");
     li.innerHTML =
       `<span class="dot" style="background:var(--select)"></span>` +
-      `<span>${c.name}</span><span class="count">${c.c}</span>`;
+      `<span>${esc(c.name)}</span><span class="count">${c.c}</span>`;
     li.onclick = () => { resetFilter(); state.filter.collection = c.name; refresh(); };
 
     // Drop target: accept dragged model cards.
@@ -351,7 +365,7 @@ function renderLibraries(libs) {
     const warn = lib.available === false ? `<span class="lib-warn" title="Folder unavailable">⚠</span>` : "";
     li.innerHTML =
       `<span class="dot" style="background:${dotColor}"></span>` +
-      `<span class="lib-name">${lib.name}</span>` + warn +
+      `<span class="lib-name">${esc(lib.name)}</span>` + warn +
       `<button class="lib-remove" title="Stop indexing this folder (files kept on disk)">&times;</button>`;
     // Click the folder to filter the grid to everything under it.
     li.onclick = () => { resetFilter(); state.filter.folder = lib.path; refresh(); };
@@ -404,7 +418,7 @@ async function updateFacetStrip() {
   const f = state.filter;
   const chip = (facet, val, count) =>
     `<button class="facet-chip${f[facet] === val ? " is-on" : ""}"
-       data-facet="${facet}" data-val="${val}">${val}<span class="facet-c">${count}</span></button>`;
+       data-facet="${esc(facet)}" data-val="${esc(val)}">${esc(val)}<span class="facet-c">${count}</span></button>`;
 
   let html = "";
   if (subtypes.length) {
@@ -450,7 +464,7 @@ function updateBatchBar() {
   }
   const tags = allTags.length
     ? allTags.map(t =>
-        `<button class="batch-tag-btn" data-tag="${t.name}" style="border-color:${t.color}40;color:${t.color}">${t.name}</button>`
+        `<button class="batch-tag-btn" data-tag="${esc(t.name)}" style="border-color:${safeColor(t.color)}40;color:${safeColor(t.color)}">${esc(t.name)}</button>`
       ).join("")
     : '<span style="color:var(--faint);font-size:11px">No tags yet</span>';
   // "Send to Blender" only when the bridge has rendered at least once / Blender
@@ -731,10 +745,10 @@ function renderGroupedGrid(assets, kind, total) {
     head.className = "section-head" + (s.uncat ? " uncat" : "") + (s.typeKind ? " type-head" : "");
     const ico = s.typeKind
       ? `<span class="kind-dot" style="background:${KIND_COLORS[s.typeKind]}"></span>`
-      : `<span class="section-ico">${s.cat.icon || ""}</span>`;
+      : `<span class="section-ico">${esc(s.cat.icon || "")}</span>`;
     head.innerHTML =
       ico +
-      `<span class="section-name">${s.cat.name}</span>` +
+      `<span class="section-name">${esc(s.cat.name)}</span>` +
       `<span class="section-count">${s.items.length}</span>`;
     // In "All assets", a type header drills into that type's category view.
     if (s.typeKind) {
@@ -804,7 +818,7 @@ function renderGroupedGrid(assets, kind, total) {
   if (!isAll) {
     const adder = document.createElement("button");
     adder.className = "section-add";
-    adder.innerHTML = `<span class="sa-plus">＋</span> New ${KIND_LABELS[kind] || kind} category`;
+    adder.innerHTML = `<span class="sa-plus">＋</span> New ${esc(KIND_LABELS[kind] || kind)} category`;
     adder.onclick = async () => { if (await promptNewCategory(kind)) refresh(); };
     frag.appendChild(adder);
   }
@@ -854,7 +868,7 @@ function renderGroupedByFolder(assets, libraryPath) {
     head.className = "section-head";
     head.innerHTML =
       `<span class="section-ico">📁</span>` +
-      `<span class="section-name">${s.label}</span>` +
+      `<span class="section-name">${esc(s.label)}</span>` +
       `<span class="section-count">${s.items.length}</span>`;
     section.appendChild(head);
     const sgrid = document.createElement("div");
@@ -897,7 +911,7 @@ function buildCard(a, i) {
   const color = KIND_COLORS[a.kind] || "var(--mute)";
   const ext = a.ext.replace(".", "").toUpperCase();
   const tagDots = (a.tags || []).slice(0, 4)
-    .map((t) => `<span class="tdot" style="background:${t.color}"></span>`).join("");
+    .map((t) => `<span class="tdot" style="background:${safeColor(t.color)}"></span>`).join("");
   // Texture sets collapse many maps into one tile — show how many it represents.
   const setBadge = (a.set_count > 1)
     ? `<span class="set-badge" title="${a.set_count} texture maps in this set">⛃ ${a.set_count} maps</span>`
@@ -906,7 +920,7 @@ function buildCard(a, i) {
   const parts = (a.path || "").replace(/[\\/]+$/, "").split(/[\\/]/);
   const folder = parts.length > 1 ? parts[parts.length - 2] : "";
   const folderLine = folder
-    ? `<div class="card-folder" title="${a.path || ""}">🗀 ${folder}</div>`
+    ? `<div class="card-folder" title="${esc(a.path || "")}">🗀 ${esc(folder)}</div>`
     : "";
   card.innerHTML = `
     <div class="card-thumb">
@@ -914,14 +928,14 @@ function buildCard(a, i) {
       <span class="fav-pin">●</span>
       ${setBadge}
       <div class="badge-tile">
-        <span class="badge-ext" style="color:${color}">${ext}</span>
+        <span class="badge-ext" style="color:${color}">${esc(ext)}</span>
       </div>
     </div>
     <div class="card-meta">
-      <div class="card-name" title="${a.name}">${a.name}</div>
+      <div class="card-name" title="${esc(a.name)}">${esc(a.name)}</div>
       ${folderLine}
       <div class="card-line">
-        <span class="card-ext" style="color:${color}">${ext}</span>
+        <span class="card-ext" style="color:${color}">${esc(ext)}</span>
         <span>·</span><span>${fmtSize(a.size)}</span>
         <span class="card-tags">${tagDots}</span>
       </div>
@@ -1026,8 +1040,8 @@ function showCategoryMenu(x, y, a) {
     const item = document.createElement("button");
     item.className = "ctx-item" + (current.has(c.name) ? " on" : "");
     item.innerHTML =
-      `<span class="ctx-ico">${c.icon || ""}</span>` +
-      `<span class="ctx-name">${c.name}</span>` +
+      `<span class="ctx-ico">${esc(c.icon || "")}</span>` +
+      `<span class="ctx-name">${esc(c.name)}</span>` +
       (current.has(c.name) ? `<span class="ctx-check">✓</span>` : "");
     item.onclick = async (e) => {
       e.stopPropagation(); closeCtxMenu();
@@ -1445,7 +1459,7 @@ function enqueueMissingThumbs(assets) {
   if (!appCaps.blenderReady) return;
   const exts = new Set(appCaps.renderExts);
   for (const a of assets) {
-    if (a.has_thumb || a.kind !== "model") continue;
+    if (a.has_thumb !== false || a.kind !== "model") continue;
     if (VIEWER_EXTS.has(a.ext) || !exts.has(a.ext)) continue;  // GLB/GLTF/FBX use the viewer
     _thumbQueue.push({ id: a.id, seq });
   }
@@ -1519,7 +1533,7 @@ async function openDrawer(id, idx) {
     <div class="d-preview" id="dPreview">
       <div class="d-thumb-placeholder">
         <span class="d-ph-stripe" style="background:${color}"></span>
-        <span class="d-ph-ext" style="color:${color}">${ext}</span>
+        <span class="d-ph-ext" style="color:${color}">${esc(ext)}</span>
       </div>
     </div>
     <div class="d-nav">
@@ -1528,12 +1542,12 @@ async function openDrawer(id, idx) {
       <button class="d-nav-btn" id="dNext" ${hasNext ? "" : "disabled"}>Next →</button>
     </div>
     <div class="d-body">
-      <h2 class="d-name">${a.name}</h2>
-      <div class="d-path" id="dPath" title="${a.path}">${a.path}</div>
+      <h2 class="d-name">${esc(a.name)}</h2>
+      <div class="d-path" id="dPath" title="${esc(a.path)}">${esc(a.path)}</div>
       ${a.exists === false ? `<div class="d-missing">⚠ This file isn't accessible right now — the drive/folder may be disconnected, moved, or deleted.</div>` : ""}
       <div class="d-format-row">
-        <span class="d-format-badge" style="color:${color};border-color:${color}40">${ext}</span>
-        <span class="d-kind-label">${a.kind}</span>
+        <span class="d-format-badge" style="color:${color};border-color:${color}40">${esc(ext)}</span>
+        <span class="d-kind-label">${esc(a.kind)}</span>
       </div>
       <div class="d-specs">
         <div><div class="spec-k">Size</div><div class="spec-v">${fmtSize(a.size)}</div></div>
@@ -1550,7 +1564,7 @@ async function openDrawer(id, idx) {
       ${(a.collections || []).length ? `
         <div class="d-section-label">Collections</div>
         <div class="d-collections">${(a.collections || []).map(c =>
-          `<span class="chip on" style="border-color:var(--select)">${c}</span>`).join("")}
+          `<span class="chip on" style="border-color:var(--select)">${esc(c)}</span>`).join("")}
         </div>` : ""}
       <div class="d-actions">
         <button class="act" id="favAct">
@@ -1726,7 +1740,7 @@ function renderTagEditor(a) {
   for (const t of allTags) {
     const chip = document.createElement("span");
     chip.className = "chip" + (current.has(t.name) ? " on" : "");
-    chip.innerHTML = `<span class="tdot" style="background:${t.color}"></span>${t.name}`;
+    chip.innerHTML = `<span class="tdot" style="background:${safeColor(t.color)}"></span>${esc(t.name)}`;
     chip.onclick = async () => {
       if (current.has(t.name)) current.delete(t.name); else current.add(t.name);
       await post(`assets/${a.id}/tags`, { tags: [...current] });
@@ -1761,7 +1775,7 @@ function renderDrawerCategoryEditor(a) {
   for (const c of allCategories) {
     const chip = document.createElement("span");
     chip.className = "chip cat-chip" + (current.has(c.name) ? " on" : "");
-    chip.innerHTML = `${c.icon ? `<span class="cat-ico">${c.icon}</span>` : ""}${c.name}`;
+    chip.innerHTML = `${c.icon ? `<span class="cat-ico">${esc(c.icon)}</span>` : ""}${esc(c.name)}`;
     chip.title = current.has(c.name) ? "Click to remove from this category" : "Click to add to this category";
     chip.onclick = async () => {
       const add = !current.has(c.name);
@@ -1805,10 +1819,10 @@ async function renderTextureMaps(a) {
       const role = m.map_role || "other";
       const mext = m.ext.replace(".", "").toUpperCase();
       const active = m.id === a.id ? " active" : "";
-      return `<button class="map-row${active}" data-id="${m.id}" title="${m.path}">
+      return `<button class="map-row${active}" data-id="${m.id}" title="${esc(m.path)}">
         <img class="map-thumb" src="${thumbUrl(m.id)}" alt="" loading="lazy" />
-        <span class="map-role">${role}</span>
-        <span class="map-ext">${mext}</span>
+        <span class="map-role">${esc(role)}</span>
+        <span class="map-ext">${esc(mext)}</span>
         <span class="map-size">${fmtSize(m.size)}</span>
       </button>`;
     }).join("") +
@@ -1993,8 +2007,8 @@ async function refreshFarm() {
   box.innerHTML = d.workers.map((w) => `
     <div class="farm-worker${w.online ? "" : " offline"}">
       <span class="fw-dot"></span>
-      <span class="fw-name" title="${w.id}">${w.name}</span>
-      <span class="fw-gpu" title="${w.gpu}">${w.gpu}</span>
+      <span class="fw-name" title="${esc(w.id)}">${esc(w.name)}</span>
+      <span class="fw-gpu" title="${esc(w.gpu)}">${esc(w.gpu)}</span>
       <span class="fw-stats">${w.claimed ? w.claimed + " active · " : ""}${w.done} done${w.failed ? " · " + w.failed + " failed" : ""}</span>
     </div>`).join("");
 }

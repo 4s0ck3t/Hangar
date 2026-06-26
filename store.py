@@ -341,42 +341,55 @@ def list_libraries():
 
 # ---- assets ---------------------------------------------------------------
 
-def upsert_asset(meta):
-    """meta: dict with path, name, ext, kind, size, mtime, set_key, map_role,
-    map_order (the last three default sensibly when absent)."""
+def _upsert_asset(conn, meta):
     set_key = meta.get("set_key") or meta["path"]
     map_role = meta.get("map_role", "")
     map_order = meta.get("map_order", 50)
     subtype = meta.get("subtype", "")
     resolution = meta.get("resolution", "")
-    with connect() as conn:
-        existing = conn.execute(
-            "SELECT id, mtime FROM assets WHERE path=?", (meta["path"],)
-        ).fetchone()
-        if existing:
-            # If the file changed on disk, invalidate cached mesh stats.
-            stats_reset = meta["mtime"] != existing["mtime"]
-            conn.execute(
-                "UPDATE assets SET name=?, ext=?, kind=?, size=?, mtime=?, "
-                "set_key=?, map_role=?, map_order=?, subtype=?, resolution=?, missing=0"
-                + (", stats_done=0, vertices=NULL, faces=NULL" if stats_reset else "")
-                + " WHERE id=?",
-                (meta["name"], meta["ext"], meta["kind"], meta["size"],
-                 meta["mtime"], set_key, map_role, map_order, subtype, resolution,
-                 existing["id"]),
-            )
-            return existing["id"]
-        cur = conn.execute(
-            "INSERT INTO assets(path, name, ext, kind, size, mtime, "
-            "set_key, map_role, map_order, subtype, resolution, added_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (meta["path"], meta["name"], meta["ext"], meta["kind"],
-             meta["size"], meta["mtime"], set_key, map_role, map_order,
-             subtype, resolution, time.time()),
+    existing = conn.execute(
+        "SELECT id, mtime FROM assets WHERE path=?", (meta["path"],)
+    ).fetchone()
+    if existing:
+        # If the file changed on disk, invalidate cached mesh stats.
+        stats_reset = meta["mtime"] != existing["mtime"]
+        conn.execute(
+            "UPDATE assets SET name=?, ext=?, kind=?, size=?, mtime=?, "
+            "set_key=?, map_role=?, map_order=?, subtype=?, resolution=?, missing=0"
+            + (", stats_done=0, vertices=NULL, faces=NULL" if stats_reset else "")
+            + " WHERE id=?",
+            (meta["name"], meta["ext"], meta["kind"], meta["size"],
+             meta["mtime"], set_key, map_role, map_order, subtype, resolution,
+             existing["id"]),
         )
-        # Auto-suggest categories for any new asset from its folder/file name.
-        _auto_categorize(conn, cur.lastrowid, meta["path"], meta["kind"])
-        return cur.lastrowid
+        return existing["id"]
+    cur = conn.execute(
+        "INSERT INTO assets(path, name, ext, kind, size, mtime, "
+        "set_key, map_role, map_order, subtype, resolution, added_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (meta["path"], meta["name"], meta["ext"], meta["kind"],
+         meta["size"], meta["mtime"], set_key, map_role, map_order,
+         subtype, resolution, time.time()),
+    )
+    # Auto-suggest categories for any new asset from its folder/file name.
+    _auto_categorize(conn, cur.lastrowid, meta["path"], meta["kind"])
+    return cur.lastrowid
+
+
+def upsert_asset(meta):
+    """meta: dict with path, name, ext, kind, size, mtime, set_key, map_role,
+    map_order (the last three default sensibly when absent)."""
+    with connect() as conn:
+        return _upsert_asset(conn, meta)
+
+
+def upsert_assets(metas):
+    """Upsert many assets in one SQLite transaction and return their ids."""
+    ids = []
+    with connect() as conn:
+        for meta in metas:
+            ids.append(_upsert_asset(conn, meta))
+    return ids
 
 
 def mark_missing(seen_ids, library_path):

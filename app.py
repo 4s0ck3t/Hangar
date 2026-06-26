@@ -13,6 +13,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+import zipfile
 
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
@@ -354,8 +355,6 @@ def list_assets():
         subtype=q.get("subtype", "").strip(),
         resolution=q.get("resolution", "").strip(),
     )
-    for a in assets:
-        a["has_thumb"] = thumbs.has_cached_thumb(a)
     return jsonify({"assets": assets, "total": total})
 
 
@@ -888,7 +887,13 @@ def batch_render_status():
 
 # ---- render-farm coordinator endpoints ------------------------------------
 def _farm_authed():
-    return not FARM_TOKEN or request.headers.get("X-Hangar-Farm-Token", "") == FARM_TOKEN
+    supplied = request.headers.get("X-Hangar-Farm-Token", "")
+    if FARM_TOKEN:
+        return supplied == FARM_TOKEN
+    # Keep single-machine usage zero-config, but don't accept unauthenticated
+    # render-farm calls from LAN/Tailscale clients.
+    remote = request.remote_addr or ""
+    return remote in ("127.0.0.1", "::1", "localhost")
 
 
 def _farm_touch_locked(wid):
@@ -1182,7 +1187,6 @@ def update_check():
 
 def _do_update_download(url, name, version):
     import urllib.request
-    import zipfile
     import tarfile
     import shutil
     dest = os.path.join(_downloads_dir(), name)
@@ -1206,11 +1210,9 @@ def _do_update_download(url, name, version):
             shutil.rmtree(folder, ignore_errors=True)
         low = name.lower()
         if low.endswith((".tar.gz", ".tgz")):
-            with tarfile.open(dest, "r:gz") as t:
-                t.extractall(folder)
+            _safe_extract_tar(dest, folder)
         else:
-            with zipfile.ZipFile(dest) as z:
-                z.extractall(folder)
+            _safe_extract_zip(dest, folder)
         # The launcher binary: Hangar.exe on Windows, Hangar on Linux/macOS.
         exe_name = "Hangar.exe" if platform.system() == "Windows" else "Hangar"
         exe = os.path.join(folder, exe_name)
@@ -1236,6 +1238,36 @@ def _do_update_download(url, name, version):
     except Exception as e:
         with UPDATE_LOCK:
             UPDATE.update(running=False, done=False, error=str(e))
+
+
+def _is_within_dir(base, candidate):
+    base = os.path.abspath(base)
+    candidate = os.path.abspath(candidate)
+    try:
+        return os.path.commonpath([base, candidate]) == base
+    except ValueError:
+        return False
+
+
+def _safe_extract_tar(archive, folder):
+    import tarfile
+    with tarfile.open(archive, "r:gz") as t:
+        for member in t.getmembers():
+            target = os.path.join(folder, member.name)
+            if (member.name.startswith(("/", "\\")) or member.issym()
+                    or member.islnk() or not _is_within_dir(folder, target)):
+                raise RuntimeError(f"Unsafe path in update archive: {member.name}")
+        t.extractall(folder)
+
+
+def _safe_extract_zip(archive, folder):
+    with zipfile.ZipFile(archive) as z:
+        for member in z.infolist():
+            target = os.path.join(folder, member.filename)
+            if (member.filename.startswith(("/", "\\")) or
+                    not _is_within_dir(folder, target)):
+                raise RuntimeError(f"Unsafe path in update archive: {member.filename}")
+        z.extractall(folder)
 
 
 @app.post("/api/update/download")

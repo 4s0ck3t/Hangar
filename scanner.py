@@ -129,6 +129,7 @@ IGNORE_DIRS = {".git", "__pycache__", ".hangar", "node_modules", ".svn"}
 # own right would flood the grid; we still index them but they're filterable.
 
 MAX_STATS_BYTES = 250 * 1024 * 1024  # skip mesh-stat parsing above this size
+UPSERT_BATCH_SIZE = 500
 
 
 def count_files(library_path):
@@ -162,6 +163,15 @@ def scan_library(library_path, on_file=None):
         return None
     seen = set()
     found = 0
+    batch = []
+
+    def flush_batch():
+        nonlocal batch
+        if not batch:
+            return
+        seen.update(store.upsert_assets(batch))
+        batch = []
+
     for root, dirs, files in os.walk(library_path):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
         for fname in files:
@@ -191,11 +201,13 @@ def scan_library(library_path, on_file=None):
             if kind in ("texture", "hdri"):
                 subtype, resolution = texture_facets(root, name_noext)
                 meta["subtype"], meta["resolution"] = subtype, resolution
-            asset_id = store.upsert_asset(meta)
-            seen.add(asset_id)
+            batch.append(meta)
             found += 1
             if on_file:
                 on_file(full)
+            if len(batch) >= UPSERT_BATCH_SIZE:
+                flush_batch()
+    flush_batch()
     store.mark_missing(seen, library_path)
     return found
 
