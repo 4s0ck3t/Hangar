@@ -889,7 +889,7 @@ def frame_and_render(out):
     # signal it so Hangar can fall back to the set's colour map instead.
     pts = _scene_points(scene)
     if not pts:
-        print("HANGAR_NO_GEOMETRY")
+        print("HANGAR_NO_GEOMETRY", flush=True)
         return
 
     if scene.camera is None:
@@ -929,12 +929,16 @@ def frame_and_render(out):
     r.filepath = out
     bpy.ops.render.render(write_still=True)
     # Report which engine + GPU actually did the render, so Hangar can show it.
-    print("HANGAR_ENGINE:", scene.render.engine)
+    # flush=True because Blender (esp. 4.2 in background) block-buffers a piped
+    # stdout and hard-exits without flushing, which loses these lines.
+    print("HANGAR_ENGINE:", scene.render.engine, flush=True)
     try:
         import gpu
-        print("HANGAR_GPU:", gpu.platform.vendor_get(), "::", gpu.platform.renderer_get())
+        print("HANGAR_GPU:", gpu.platform.vendor_get(), "::",
+              gpu.platform.renderer_get(), flush=True)
     except Exception:
-        print("HANGAR_GPU: unavailable")
+        print("HANGAR_GPU: unavailable", flush=True)
+    sys.stdout.flush()
 
 
 def main():

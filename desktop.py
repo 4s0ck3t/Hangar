@@ -244,9 +244,13 @@ def _try_pywebview(url):
         webview.start(_ready, window, gui="edgechromium")
         _log("native window closed normally")
         return True
-    except Exception:
-        _log("native webview FAILED — falling back to Edge --app:\n"
-             + traceback.format_exc())
+    except Exception as e:
+        # Expected on most frozen Windows builds: pythonnet/.NET can't initialise
+        # under PyInstaller, so the embedded webview is unavailable and we use an
+        # Edge/Chrome --app window instead. Functionally identical, so log a single
+        # concise line rather than a multi-frame traceback that reads like a crash.
+        reason = str(e).splitlines()[0] if str(e).strip() else type(e).__name__
+        _log(f"native webview unavailable ({reason}) — using Edge/Chrome --app window")
         return False
 
 
