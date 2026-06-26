@@ -971,6 +971,18 @@ LAST_RENDER_GPU = None
 RENDER_LOG = store.DATA_DIR / "last_render.log"
 
 
+def _blender_env():
+    """Environment for thumbnail renders.
+
+    Blender ships its own Python. Dropping Python-related variables inherited
+    from Hangar avoids leaking stale frozen-app paths into Blender's process.
+    """
+    env = os.environ.copy()
+    for key in ("PYTHONNET_PYDLL", "PYTHONPATH", "PYTHONHOME"):
+        env.pop(key, None)
+    return env
+
+
 def _parse_render_gpu(proc):
     """Pull the HANGAR_ENGINE/HANGAR_GPU lines out of Blender's stdout."""
     global LAST_RENDER_GPU
@@ -984,6 +996,39 @@ def _parse_render_gpu(proc):
             gpu = line.split(":", 1)[1].strip()
     if eng or gpu:
         LAST_RENDER_GPU = f"{eng or '?'} · {gpu or '?'}"
+
+
+def _render_failure_summary(proc=None, exc=None):
+    if exc is not None:
+        if isinstance(exc, subprocess.TimeoutExpired):
+            return (f"Render timed out after {RENDER_TIMEOUT}s. This scene is too "
+                    "heavy for a quick thumbnail; raise HANGAR_RENDER_TIMEOUT or "
+                    "render it on a faster machine / farm worker.")
+        return f"Couldn't launch Blender: {exc}"
+
+    text = ""
+    if proc is not None:
+        text = (proc.stderr or "") + "\n" + (proc.stdout or "")
+    crash = ""
+    m = re.search(r"Writing:\s*(.+?\.crash\.txt)", text, re.IGNORECASE)
+    if m:
+        crash = f" Crash report: {m.group(1).strip()}"
+    low = text.lower()
+    if "malloc returns null" in low or "out of memory" in low:
+        return ("Blender ran out of memory while opening/rendering this scene. "
+                "The embedded .blend preview will remain in use." + crash)
+    if ("exception_access_violation" in low
+            or (proc is not None and proc.returncode not in (None, 0))):
+        code = f" (exit code {proc.returncode})" if proc is not None else ""
+        return ("Blender crashed while rendering this preview" + code + ". "
+                "The embedded .blend preview will remain in use." + crash)
+
+    tail = ""
+    for line in reversed(text.splitlines()):
+        if line.strip():
+            tail = line.strip()
+            break
+    return tail or "Blender ran but produced no image."
 
 
 def _record_render_log(blender, model_path, proc, exc=None):
@@ -1002,6 +1047,8 @@ def _record_render_log(blender, model_path, proc, exc=None):
         RENDER_LOG.write_text(text, encoding="utf-8")
     except Exception:
         pass
+    LAST_RENDER_ERROR = _render_failure_summary(proc, exc)
+    return LAST_RENDER_ERROR
     # Build a concise reason: the last non-empty line of Blender's output is
     # usually the actual error (e.g. "Error: unable to open … import failed").
     if exc is not None:
@@ -1036,8 +1083,10 @@ def render_model(model_path, out_jpg):
             fh.write(_MODEL_RENDER_SCRIPT)
         try:
             proc = subprocess.run(
-                [blender, "-b", "-P", script, "--", model_path, png],
-                timeout=RENDER_TIMEOUT, capture_output=True, text=True, **_no_window(),
+                [blender, "--background", "--factory-startup", "--disable-autoexec",
+                 "-P", script, "--", model_path, png],
+                timeout=RENDER_TIMEOUT, capture_output=True, text=True,
+                env=_blender_env(), **_no_window(),
             )
         except subprocess.TimeoutExpired as e:
             _record_render_log(blender, model_path, None, exc=e)

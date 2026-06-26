@@ -45,14 +45,19 @@ def _no_window():
 def _hint_pythonnet_pydll():
     """When frozen, point pythonnet at the bundled Python DLL before any `clr`
     import. A frozen app has no python3XX.dll on PATH the way pythonnet's loader
-    expects, which is a common cause of the .NET loader failing to initialise."""
+    expects, which is a common cause of the .NET loader failing to initialise.
+
+    Always prefer the DLL bundled with THIS frozen build. Older Hangar launches
+    can leave PYTHONNET_PYDLL in the parent environment pointing at a previous
+    update folder, and setdefault would keep that stale path.
+    """
     if not getattr(sys, "frozen", False):
         return
     base = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
     for cand in ("python313.dll", "python312.dll", "python311.dll", "python310.dll"):
         p = os.path.join(base, cand)
         if os.path.exists(p):
-            os.environ.setdefault("PYTHONNET_PYDLL", p)
+            os.environ["PYTHONNET_PYDLL"] = p
             return
 
 
