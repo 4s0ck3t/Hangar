@@ -844,12 +844,12 @@ def _set_cpu_cycles(scene):
         return None
 
 
-def _set_engine(scene, ext):
+def _set_engine(scene, ext, mode):
     """Pick EEVEE so materials/textures show (Workbench renders flat, no
     materials). The engine id changed across versions — EEVEE Next is
     'BLENDER_EEVEE_NEXT' in 4.2 and 'BLENDER_EEVEE' in 3.x and 5.x — so try the
     known ids until one sticks; fall back to Workbench only if none exist."""
-    if ext == ".blend":
+    if ext == ".blend" and mode == "cpu":
         eng = _set_cpu_cycles(scene)
         if eng:
             return eng
@@ -909,7 +909,7 @@ def _apply_default_material():
         ob.data.materials.append(default)
 
 
-def frame_and_render(out, ext):
+def frame_and_render(out, ext, mode):
     scene = bpy.context.scene
 
     # No renderable geometry at all — e.g. a USD that's just a material/surface
@@ -935,7 +935,7 @@ def frame_and_render(out, ext):
         look = center - cam.location
         cam.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
 
-    _set_engine(scene, ext)
+    _set_engine(scene, ext, mode)
     _ensure_world(scene)
     _ensure_lights(scene)
     _apply_default_material()
@@ -972,8 +972,9 @@ def frame_and_render(out, ext):
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:]
     src, out = argv[0], argv[1]
+    mode = argv[2] if len(argv) > 2 else "auto"
     load_model(src)
-    frame_and_render(out, os.path.splitext(src)[1].lower())
+    frame_and_render(out, os.path.splitext(src)[1].lower(), mode)
 
 main()
 '''
@@ -1049,6 +1050,28 @@ def _render_failure_summary(proc=None, exc=None):
     return tail or "Blender ran but produced no image."
 
 
+def _should_retry_cpu(proc):
+    if proc is None:
+        return False
+    text = ((proc.stderr or "") + "\n" + (proc.stdout or "")).lower()
+    return any(s in text for s in (
+        "out of memory",
+        "malloc returns null",
+        "exception_access_violation",
+        "gpu_material_compile",
+        "internal malloc failed",
+    ))
+
+
+def _run_blender_render(blender, script, model_path, png, mode):
+    return subprocess.run(
+        [blender, "--background", "--factory-startup", "--disable-autoexec",
+         "-P", script, "--", model_path, png, mode],
+        timeout=RENDER_TIMEOUT, capture_output=True, text=True,
+        env=_blender_env(), **_no_window(),
+    )
+
+
 def _record_render_log(blender, model_path, proc, exc=None):
     """Persist the Blender invocation + its output to the render log; return a
     short error summary (or None if it looks like it succeeded)."""
@@ -1100,12 +1123,16 @@ def render_model(model_path, out_jpg):
         with open(script, "w", encoding="utf-8") as fh:
             fh.write(_MODEL_RENDER_SCRIPT)
         try:
-            proc = subprocess.run(
-                [blender, "--background", "--factory-startup", "--disable-autoexec",
-                 "-P", script, "--", model_path, png],
-                timeout=RENDER_TIMEOUT, capture_output=True, text=True,
-                env=_blender_env(), **_no_window(),
-            )
+            proc = _run_blender_render(blender, script, model_path, png, "auto")
+            if (proc.returncode and os.path.splitext(model_path)[1].lower() == ".blend"
+                    and _should_retry_cpu(proc)):
+                first = proc
+                proc = _run_blender_render(blender, script, model_path, png, "cpu")
+                if proc.returncode:
+                    proc.stdout = ((first.stdout or "") + "\n--- CPU retry stdout ---\n"
+                                   + (proc.stdout or ""))
+                    proc.stderr = ((first.stderr or "") + "\n--- CPU retry stderr ---\n"
+                                   + (proc.stderr or ""))
         except subprocess.TimeoutExpired as e:
             _record_render_log(blender, model_path, None, exc=e)
             LAST_RENDER_ERROR = (
