@@ -348,6 +348,20 @@ function renderCollectionFilters(cols) {
   }
 }
 
+// Short label for the drive/volume a path lives on, shown beside each library
+// folder. Windows drive letters ("C:") and UNC shares ("\\nas\share") get a
+// label; POSIX paths have no drive-letter concept so the top-level root is used.
+function driveLabel(path) {
+  if (!path) return "";
+  const win = path.match(/^([A-Za-z]):/);
+  if (win) return win[1].toUpperCase() + ":";
+  const unc = path.match(/^\\\\([^\\/]+)[\\/]+([^\\/]+)/);
+  if (unc) return "\\\\" + unc[1] + "\\" + unc[2];
+  const posix = path.match(/^\/([^\/]+)/);   // e.g. "/mnt/ext" → "/mnt"
+  if (posix) return "/" + posix[1];
+  return "";
+}
+
 function renderLibraries(libs) {
   const ul = $("#libraryList"); ul.innerHTML = "";
   if (!libs.length) {
@@ -363,9 +377,11 @@ function renderLibraries(libs) {
     if (state.filter.folder === lib.path) li.classList.add("active");
     const dotColor = lib.available === false ? "var(--k-model)" : "var(--faint)";
     const warn = lib.available === false ? `<span class="lib-warn" title="Folder unavailable">⚠</span>` : "";
+    const drv = driveLabel(lib.path);
+    const drive = drv ? `<span class="lib-drive" title="On ${esc(drv)}">${esc(drv)}</span>` : "";
     li.innerHTML =
       `<span class="dot" style="background:${dotColor}"></span>` +
-      `<span class="lib-name">${esc(lib.name)}</span>` + warn +
+      `<span class="lib-name">${esc(lib.name)}</span>` + drive + warn +
       `<button class="lib-remove" title="Stop indexing this folder (files kept on disk)">&times;</button>`;
     // Click the folder to filter the grid to everything under it.
     li.onclick = () => { resetFilter(); state.filter.folder = lib.path; refresh(); };

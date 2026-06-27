@@ -157,6 +157,11 @@ button, input, select { font-family: inherit; color: inherit; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--mono); font-size: 11px;
 }
+.library-list .lib-drive {
+  flex: none; margin-left: 6px; padding: 0 4px; border-radius: 3px;
+  font-family: var(--mono); font-size: 10px; line-height: 15px;
+  color: var(--faint); background: var(--raised); border: 1px solid var(--line);
+}
 .library-list .lib-remove {
   margin-left: auto; background: none; border: none; color: var(--faint);
   cursor: pointer; font-size: 14px; opacity: 0; transition: opacity .12s;
