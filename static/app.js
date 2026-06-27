@@ -2286,6 +2286,16 @@ $("#sort").onchange = (e) => { state.sort = e.target.value; refresh(); };
 $("#drawerClose").onclick = closeDrawer;
 $("#scrim").onclick = closeDrawer;
 $("#clearFilterBtn").onclick = () => { resetFilter(); state.search = ""; $("#search").value = ""; refresh(); };
+// Suppress the host browser's (Edge WebView2 / Chrome --app) default right-click
+// menu so the app feels native — no "Reload / Save as / Print / Inspect". Our own
+// context menus (e.g. the card "Move to category" menu) call preventDefault in
+// their own handlers and still show. Text fields keep their copy/paste menu.
+document.addEventListener("contextmenu", (e) => {
+  if (isTyping(e.target)) return;       // allow native copy/paste in inputs/textareas
+  if (window.getSelection && String(window.getSelection())) return;  // selected text → allow copy
+  e.preventDefault();
+});
+
 document.addEventListener("keydown", (e) => {
   // "/" jumps to the search box (unless you're already typing in a field).
   if (e.key === "/" && !isTyping(e.target) && !e.metaKey && !e.ctrlKey) {
