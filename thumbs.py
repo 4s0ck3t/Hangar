@@ -47,6 +47,22 @@ def has_cached_thumb(asset):
         return False
 
 
+def delete_cached_thumb(asset):
+    """Remove this asset's cached thumbnail JPEG, if present.
+
+    Returns True when a file was actually deleted. The next get_or_make() call
+    re-bakes the thumbnail from source — for a .blend that re-reads the preview
+    embedded in the file, which is the fix for a tile that cached blank/stale."""
+    try:
+        out = _thumb_path(asset)
+        if out.exists():
+            out.unlink()
+            return True
+    except Exception:
+        log.exception("delete_cached_thumb failed for %s", asset.get("path", "?"))
+    return False
+
+
 def get_or_make(asset):
     """Return a path to a cached JPEG thumbnail, or None if unavailable."""
     out = _thumb_path(asset)
