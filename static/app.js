@@ -1088,9 +1088,17 @@ function showCategoryMenu(x, y, a) {
   };
   menu.appendChild(mk);
 
-  // ---- asset actions (reveal / drop cached preview) ----
+  // ---- asset actions (open / reveal / drop cached preview) ----
   const sep2 = document.createElement("div"); sep2.className = "ctx-sep";
   menu.appendChild(sep2);
+
+  if (a.kind === "model") {
+    const openBl = document.createElement("button");
+    openBl.className = "ctx-item";
+    openBl.innerHTML = `<span class="ctx-ico">🔶</span><span class="ctx-name">Open in Blender</span>`;
+    openBl.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await openAssetInBlender(a); };
+    menu.appendChild(openBl);
+  }
 
   const reveal = document.createElement("button");
   reveal.className = "ctx-item";
@@ -1105,6 +1113,20 @@ function showCategoryMenu(x, y, a) {
   menu.appendChild(delPrev);
 
   _mountCtxMenu(menu, x, y);
+}
+
+// Launch Blender on this asset (.blend opens directly; other models import into
+// a fresh Blender). Distinct from "Send to Blender", which needs the add-on
+// running in an already-open Blender.
+async function openAssetInBlender(a) {
+  let r;
+  try { r = await post(`assets/${a.id}/open-blender`); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) {
+    toast((r && r.error) || "Couldn't open in Blender.", "error");
+    return;
+  }
+  toast(`Opening ${a.name} in Blender…`, "success");
 }
 
 // Open the OS file manager with this asset's file selected.
@@ -2094,6 +2116,10 @@ async function _setFarmChunk(delta) {
 }
 $("#farmChunkUp").onclick = () => _setFarmChunk(+5);
 $("#farmChunkDown").onclick = () => _setFarmChunk(-5);
+// Download the standalone render-worker bundle (pre-filled with this Hangar's
+// address) to copy onto another machine — no full app install needed.
+const _farmDl = $("#farmDownload");
+if (_farmDl) _farmDl.onclick = () => { window.location.href = "/api/farm/worker-download"; };
 // ---- in-app updater -------------------------------------------------------
 let _updateInfo = null;
 let _updatePoll = null;

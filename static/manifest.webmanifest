@@ -1,0 +1,13 @@
+{
+  "name": "Hangar",
+  "short_name": "Hangar",
+  "description": "Local-first 3D asset manager",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1b1c20",
+  "theme_color": "#1b1c20",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-256.png", "sizes": "256x256", "type": "image/png", "purpose": "any" }
+  ]
+}

@@ -11,6 +11,9 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
 <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png" />
 <link rel="apple-touch-icon" href="icon-256.png" />
+<!-- A web-app manifest makes the Edge/Chrome --app window adopt Hangar's icon
+     for the window/taskbar (favicons alone leave Edge's own logo there). -->
+<link rel="manifest" href="manifest.webmanifest" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -112,9 +115,11 @@
           </span>
         </div>
         <div id="farmWorkers" class="farm-workers"></div>
-        <p class="farm-hint">Run <code>Hangar.exe --worker --coordinator http://THIS-PC:7575</code>
-          on another machine that can see the same asset paths. It picks up work
-          whenever previews are generating.</p>
+        <button id="farmDownload" class="farm-download">⬇ Download worker for another PC</button>
+        <p class="farm-hint">Unzip and run on another machine that can see the same
+          asset paths (needs Python + Blender). It's pre-filled with this Hangar's
+          address and picks up work whenever previews are generating. Already have
+          the app there? <code>Hangar.exe --worker --coordinator http://THIS-PC:7575</code></p>
       </div>
       <p class="diag-hint">Copy this and paste it to support to diagnose window / preview issues.</p>
       <textarea id="diagText" class="diag-text" readonly spellcheck="false"></textarea>

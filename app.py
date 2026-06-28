@@ -5,6 +5,7 @@ Run as a local web app: python app.py  (opens in your browser)
 """
 
 import json
+import mimetypes
 import os
 import platform
 import subprocess
@@ -21,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.70"
+__version__ = "0.13.71"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -39,6 +40,9 @@ except ValueError:
 # When frozen by PyInstaller the static files live under sys._MEIPASS.
 BASE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+# Ensure the web-app manifest is served with a sensible type (Python's mimetypes
+# doesn't know .webmanifest by default), so Edge/Chrome honour it for the icon.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="")
 store.init_db()
@@ -678,6 +682,66 @@ def send_blender(asset_id):
     return jsonify({"ok": True, "queued": asset["name"]})
 
 
+# Per-extension Blender import operators, newest-API first with an older
+# fallback (4.x renamed several to the `wm.*_import` family). A .blend is opened
+# directly and never appears here.
+_IMPORT_OPS = {
+    ".fbx":  ["bpy.ops.import_scene.fbx(filepath=P)"],
+    ".obj":  ["bpy.ops.wm.obj_import(filepath=P)", "bpy.ops.import_scene.obj(filepath=P)"],
+    ".gltf": ["bpy.ops.import_scene.gltf(filepath=P)"],
+    ".glb":  ["bpy.ops.import_scene.gltf(filepath=P)"],
+    ".stl":  ["bpy.ops.wm.stl_import(filepath=P)", "bpy.ops.import_mesh.stl(filepath=P)"],
+    ".ply":  ["bpy.ops.wm.ply_import(filepath=P)", "bpy.ops.import_mesh.ply(filepath=P)"],
+    ".dae":  ["bpy.ops.wm.collada_import(filepath=P)"],
+    ".usd":  ["bpy.ops.wm.usd_import(filepath=P)"],
+    ".usda": ["bpy.ops.wm.usd_import(filepath=P)"],
+    ".usdc": ["bpy.ops.wm.usd_import(filepath=P)"],
+    ".usdz": ["bpy.ops.wm.usd_import(filepath=P)"],
+}
+
+
+def _blender_import_expr(ext, path):
+    """A --python-expr script that imports `path` into a fresh Blender session,
+    trying each operator until one succeeds (Blender-version tolerance). Returns
+    None for an extension Blender can't import on its own."""
+    ops = _IMPORT_OPS.get(ext)
+    if not ops:
+        return None
+    lines = ["import bpy", f"P = {path!r}", "ok = False"]
+    for op in ops:
+        lines += ["if not ok:", "    try:", f"        {op}", "        ok = True",
+                  "    except Exception as e:", "        print('Hangar import failed:', e)"]
+    return "\n".join(lines)
+
+
+@app.post("/api/assets/<int:asset_id>/open-blender")
+def open_blender(asset_id):
+    """Launch Blender on this asset: a .blend opens directly; any other model
+    opens a fresh Blender and imports it. Unlike send-blender (which needs the
+    add-on running in an already-open Blender), this starts Blender itself."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["kind"] != "model":
+        return jsonify({"error": "Only model files can be opened in Blender."}), 400
+    blender = thumbs.find_blender()
+    if not blender:
+        return jsonify({"error": "Blender not found — set its path first.",
+                        "need_blender": True}), 400
+    ext = (asset["ext"] or "").lower()
+    try:
+        if ext == ".blend":
+            subprocess.Popen([blender, asset["path"]])
+        else:
+            expr = _blender_import_expr(ext, asset["path"])
+            if not expr:
+                return jsonify({"error": f"Blender can't open {ext} directly."}), 400
+            subprocess.Popen([blender, "--python-expr", expr])
+    except Exception as e:
+        return jsonify({"error": f"Couldn't launch Blender: {e}"}), 500
+    return jsonify({"ok": True, "opened": asset["name"]})
+
+
 @app.post("/api/assets/<int:asset_id>/send-material")
 def send_material(asset_id):
     """Send a texture set to Blender as a ready-built Principled-BSDF material.
@@ -1057,6 +1121,79 @@ def farm_set_chunk():
         FARM_CHUNK = max(1, min(500, n))
         chunk = FARM_CHUNK
     return jsonify({"ok": True, "chunk": chunk})
+
+
+# Source modules a standalone render worker needs. Resolved from BASE_DIR so the
+# bundle works both from source and from the frozen build (added via --add-data).
+_WORKER_BUNDLE_FILES = ["worker_main.py", "worker.py", "store.py", "thumbs.py", "scanner.py"]
+
+
+def _worker_run_bat(coord, token):
+    tok = f" --token {token}" if token else ""
+    return ("@echo off\r\n"
+            "REM Hangar render worker - needs Python 3.10+ and Blender installed.\r\n"
+            "pip install -r requirements.txt\r\n"
+            f"python worker_main.py --coordinator {coord}{tok}\r\n"
+            "pause\r\n")
+
+
+def _worker_run_sh(coord, token):
+    tok = f" --token {token}" if token else ""
+    return ("#!/usr/bin/env bash\n"
+            "# Hangar render worker - needs Python 3.10+ and Blender installed.\n"
+            "set -e\n"
+            'cd "$(dirname "$0")"\n'
+            "pip install -r requirements.txt\n"
+            f"exec python3 worker_main.py --coordinator {coord}{tok}\n")
+
+
+def _worker_readme(coord, token):
+    tok = f"Farm token: {token}\n" if token else ""
+    return (
+        "Hangar render worker\n====================\n\n"
+        "Runs on another machine to help Hangar generate previews. It must be\n"
+        "able to SEE THE SAME ASSET PATHS as Hangar (e.g. the NAS share over\n"
+        "Tailscale) and have Blender installed.\n\n"
+        "Requirements: Python 3.10+, Blender, and `pip install -r requirements.txt`.\n\n"
+        f"Coordinator (this Hangar): {coord}\n{tok}\n"
+        "Run it:\n"
+        "  Windows:      double-click run.bat\n"
+        "  macOS/Linux:  ./run.sh\n\n"
+        "Or manually:\n"
+        f"  python worker_main.py --coordinator {coord}\n\n"
+        "It registers, claims chunks of render jobs, renders each with Blender,\n"
+        "and posts the JPEG back. Leave it running; Ctrl+C to stop.\n")
+
+
+@app.get("/api/farm/worker-download")
+def farm_worker_download():
+    """Bundle the standalone render worker (source modules + run scripts + readme,
+    pre-filled with this Hangar's address) into a zip to copy onto a remote
+    machine. Far lighter than shipping the whole GUI app."""
+    import io
+    import zipfile
+    coord = request.host_url.rstrip("/")
+    missing = []
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in _WORKER_BUNDLE_FILES:
+            p = os.path.join(BASE_DIR, f)
+            if os.path.exists(p):
+                z.write(p, f"HangarWorker/{f}")
+            else:
+                missing.append(f)
+        z.writestr("HangarWorker/requirements.txt", "Pillow>=10.0\nzstandard>=0.21\n")
+        z.writestr("HangarWorker/run.bat", _worker_run_bat(coord, FARM_TOKEN))
+        sh = zipfile.ZipInfo("HangarWorker/run.sh")
+        sh.external_attr = 0o755 << 16            # keep the +x bit on unzip
+        z.writestr(sh, _worker_run_sh(coord, FARM_TOKEN))
+        z.writestr("HangarWorker/README.txt", _worker_readme(coord, FARM_TOKEN))
+    if missing:
+        app.logger.warning("worker bundle missing source files "
+                           "(frozen build needs --add-data): %s", missing)
+    buf.seek(0)
+    return send_file(buf, mimetype="application/zip", as_attachment=True,
+                     download_name="HangarWorker.zip")
 
 
 def _farm_reaper():

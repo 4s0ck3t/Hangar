@@ -30,6 +30,11 @@ jobs:
         run: >
           pyinstaller --name Hangar
           --add-data "static:static"
+          --add-data "worker_main.py:."
+          --add-data "worker.py:."
+          --add-data "store.py:."
+          --add-data "thumbs.py:."
+          --add-data "scanner.py:."
           --collect-all trimesh
           --collect-all cv2
           --hidden-import imageio

@@ -744,6 +744,10 @@ button, input, select { font-family: inherit; color: inherit; }
 .fw-name { font-weight: 600; flex: none; }
 .fw-gpu { color: var(--faint); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fw-stats { color: var(--faint); flex: none; }
+.farm-download { margin-top: 10px; width: 100%; padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--line); background: rgba(255,255,255,0.05); color: var(--text);
+  font-size: 12px; font-weight: 600; cursor: pointer; }
+.farm-download:hover { background: rgba(255,255,255,0.10); }
 .farm-hint { margin: 8px 0 0; color: var(--faint); font-size: 11px; }
 .farm-hint code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 4px; }
 .diag-text {
