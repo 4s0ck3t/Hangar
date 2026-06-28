@@ -601,6 +601,20 @@ def reveal(asset_id):
     return jsonify({"ok": True})
 
 
+@app.post("/api/assets/<int:asset_id>/preview/clear")
+def clear_preview(asset_id):
+    """Delete this asset's cached thumbnail and immediately re-bake it from the
+    source. For a .blend that means falling back to the preview embedded in the
+    file (Blender's own thumbnail) — the fix for a tile that cached blank or
+    stale. Returns whether a file was removed and whether a fresh thumb was made."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    removed = thumbs.delete_cached_thumb(asset)
+    rebaked = thumbs.get_or_make(asset) is not None
+    return jsonify({"ok": True, "removed": bool(removed), "rebaked": bool(rebaked)})
+
+
 @app.post("/api/open-data-dir")
 def open_data_dir():
     """Open Hangar's data folder (~/.hangar: SQLite index, thumbnail cache,

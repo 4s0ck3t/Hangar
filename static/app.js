@@ -1088,7 +1088,63 @@ function showCategoryMenu(x, y, a) {
   };
   menu.appendChild(mk);
 
+  // ---- asset actions (reveal / drop cached preview) ----
+  const sep2 = document.createElement("div"); sep2.className = "ctx-sep";
+  menu.appendChild(sep2);
+
+  const reveal = document.createElement("button");
+  reveal.className = "ctx-item";
+  reveal.innerHTML = `<span class="ctx-ico">📁</span><span class="ctx-name">Reveal in file manager</span>`;
+  reveal.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await revealAsset(a); };
+  menu.appendChild(reveal);
+
+  const delPrev = document.createElement("button");
+  delPrev.className = "ctx-item";
+  delPrev.innerHTML = `<span class="ctx-ico">🗑</span><span class="ctx-name">Delete preview</span>`;
+  delPrev.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await clearAssetPreview(a); };
+  menu.appendChild(delPrev);
+
   _mountCtxMenu(menu, x, y);
+}
+
+// Open the OS file manager with this asset's file selected.
+async function revealAsset(a) {
+  let r;
+  try { r = await post(`assets/${a.id}/reveal`); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) toast((r && r.error) || "Couldn't open the file manager.", "error");
+}
+
+// Drop the cached thumbnail and let Hangar re-bake it from source. For a .blend
+// that re-reads the preview embedded in the file — the fix for a tile that
+// cached blank/stale. Repaints the on-screen tile with the fresh image.
+async function clearAssetPreview(a) {
+  let r;
+  try { r = await post(`assets/${a.id}/preview/clear`); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) {
+    toast((r && r.error) || "Couldn't delete the preview.", "error");
+    return;
+  }
+  thumbBust[a.id] = Date.now();
+  const ca = currentAssets.find((x) => x.id === a.id);
+  if (ca) ca.has_thumb = !!r.rebaked;
+  const card = $(`#grid .card[data-id="${a.id}"]`);
+  if (card) {
+    const cardImg = card.querySelector("img");
+    if (cardImg) {
+      cardImg.src = thumbUrl(a.id);                 // live <img>: just re-fetch
+    } else if (r.rebaked) {                          // placeholder tile: swap one in
+      const tile = card.querySelector(".badge-tile");
+      if (tile) {
+        const img = new Image();
+        img.draggable = false; img.alt = a.name;
+        img.onload = () => { if (tile.isConnected) tile.replaceWith(img); };
+        img.src = thumbUrl(a.id);
+      }
+    }
+  }
+  toast(r.rebaked ? "Preview refreshed from source." : "Preview deleted.", "success");
 }
 
 // ---- right-click batch menu (shown when a multi-selection is active) -------
