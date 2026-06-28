@@ -305,6 +305,37 @@ def _cleanup_profile(profile):
         pass
 
 
+def _seed_edge_profile(profile, url):
+    """Write a minimal Chromium/Edge Local State + Preferences into the fresh
+    profile directory before launch. This pre-registers the app origin so Edge
+    picks up Hangar's icon (from the manifest) for the title bar and taskbar
+    rather than showing its own logo.
+
+    The file is tiny and written once; Edge merges/overwrites it on first run.
+    Failure is silently swallowed — it's a best-effort cosmetic improvement."""
+    try:
+        os.makedirs(profile, exist_ok=True)
+        # The icon path: prefer the frozen static dir, fall back to the source tree.
+        icon_candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "icon-256.png"),
+            os.path.join(getattr(sys, "_MEIPASS", ""), "static", "icon-256.png"),
+        ]
+        icon_path = next((p for p in icon_candidates if os.path.exists(p)), "")
+        prefs = {
+            "browser": {"check_default_browser": False},
+            "profile": {"name": "Hangar"},
+        }
+        if icon_path:
+            prefs["web_app_icon"] = icon_path.replace("\\", "/")
+        prefs_path = os.path.join(profile, "Default")
+        os.makedirs(prefs_path, exist_ok=True)
+        import json as _json
+        with open(os.path.join(prefs_path, "Preferences"), "w", encoding="utf-8") as f:
+            _json.dump(prefs, f)
+    except Exception:
+        pass  # cosmetic only — never block the launch
+
+
 def _launch_app_window(url):
     browser = _find_chromium()
     if not browser:
@@ -315,6 +346,7 @@ def _launch_app_window(url):
     # would re-focus an older still-running Hangar's window instead — which is why
     # a freshly-updated build could keep showing the previous version.
     profile = os.path.join(tempfile.gettempdir(), f"hangar-app-{os.getpid()}")
+    _seed_edge_profile(profile, url)
     args = [browser, f"--app={url}", f"--user-data-dir={profile}", "--new-window",
             "--window-size=1320,860", "--no-first-run", "--no-default-browser-check"]
     # Chromium refuses to start as root unless sandboxing is disabled.
