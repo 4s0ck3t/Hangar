@@ -48,6 +48,22 @@
         <div class="nav-label">Folders</div>
         <ul id="libraryList" class="library-list"></ul>
       </div>
+
+      <div id="missingPanel" class="nav-group missing-panel hidden">
+        <div class="nav-label missing-label">
+          ⚠ Missing files
+          <span id="missingCount" class="missing-badge"></span>
+        </div>
+        <ul class="filter-list">
+          <li id="missingFilterBtn" class="kind-item missing-item">
+            <span class="dot" style="background:var(--warn)"></span>
+            <span>Show missing</span>
+            <span id="missingFilterCount" class="count"></span>
+          </li>
+        </ul>
+        <button id="missingPurgeBtn" class="missing-purge">Remove stale entries</button>
+        <p class="missing-hint">These files are recorded in your library but can't be found on disk — deleted, moved, or on an unmounted drive.</p>
+      </div>
     </nav>
   </aside>
 

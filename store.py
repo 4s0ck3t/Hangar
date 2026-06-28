@@ -404,6 +404,14 @@ def mark_missing(seen_ids, library_path):
                 conn.execute("UPDATE assets SET missing=1 WHERE id=?", (r["id"],))
 
 
+def delete_missing():
+    """Permanently remove all missing assets from the index. Returns the count deleted."""
+    with connect() as conn:
+        n = conn.execute("SELECT COUNT(*) c FROM assets WHERE missing=1").fetchone()["c"]
+        conn.execute("DELETE FROM assets WHERE missing=1")
+    return n
+
+
 def save_stats(asset_id, vertices, faces):
     with connect() as conn:
         conn.execute(
@@ -487,8 +495,8 @@ def iter_thumb_targets():
 def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
                  group="", set_key="", with_categories=False,
-                 subtype="", resolution=""):
-    clauses = ["a.missing=0"]
+                 subtype="", resolution="", missing=False):
+    clauses = ["a.missing=1"] if missing else ["a.missing=0"]
     joins = ""
     # Placeholders in the final SQL appear JOINs-first (text precedes WHERE), so
     # params must be ordered the same way. Keep join params and where-clause
@@ -666,11 +674,16 @@ def kind_counts():
             "SELECT ext, COUNT(*) c FROM assets WHERE missing=0 AND kind='model' "
             "GROUP BY ext ORDER BY c DESC"
         ).fetchall()
+    with connect() as conn2:
+        missing_count = conn2.execute(
+            "SELECT COUNT(*) c FROM assets WHERE missing=1"
+        ).fetchone()["c"]
     return {
         "by_kind": {r["kind"]: r["c"] for r in rows},
         "total": total,
         "favorites": favs,
         "model_by_ext": {r["ext"]: r["c"] for r in ext_rows},
+        "missing": missing_count,
     }
 
 

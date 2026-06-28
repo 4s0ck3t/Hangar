@@ -12,6 +12,7 @@
   /* accents */
   --signal: #E8B04B;   /* amber — primary highlight */
   --select: #5B8DEF;   /* blue — active/selection */
+  --warn:   #E05252;   /* red — warning / missing */
 
   /* format coding (the signature) */
   --k-model:    #E8794A;
@@ -99,6 +100,18 @@ button, input, select { font-family: inherit; color: inherit; }
 .nav:hover::-webkit-scrollbar-thumb { background: var(--line); background-clip: content-box; }
 .nav::-webkit-scrollbar-thumb:hover { background: var(--raised-hi); background-clip: content-box; }
 .nav-group { margin-top: 14px; }
+.missing-panel { border-top: 1px solid var(--line); padding-top: 8px; }
+.missing-label { color: var(--warn) !important; gap: 4px; }
+.missing-badge { background: var(--warn); color: #fff; border-radius: 10px;
+  font-size: 10px; padding: 1px 5px; margin-left: 4px; }
+.missing-item .dot { background: var(--warn) !important; }
+.missing-item:hover { background: rgba(224,82,82,0.08); }
+.missing-item.active { background: rgba(224,82,82,0.15); }
+.missing-purge { margin: 6px 8px 2px; width: calc(100% - 16px); padding: 5px 8px;
+  border-radius: 5px; border: 1px solid var(--warn); background: transparent;
+  color: var(--warn); font-size: 11px; cursor: pointer; }
+.missing-purge:hover { background: rgba(224,82,82,0.12); }
+.missing-hint { margin: 5px 8px 4px; color: var(--faint); font-size: 10px; line-height: 1.4; }
 .nav-label {
   display: flex; align-items: center;
   font-size: 11px; letter-spacing: .08em; text-transform: uppercase;

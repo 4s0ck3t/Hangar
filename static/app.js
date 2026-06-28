@@ -109,8 +109,47 @@ async function loadState() {
   renderLibraries(s.libraries);
   renderOfflineBanner(s.libraries);
   renderStatusBar(s.counts, s.version);
+  renderMissingPanel(s.counts.missing || 0);
   return s;
 }
+
+// ---- missing-files sidebar panel ------------------------------------------
+function renderMissingPanel(count) {
+  const panel = $("#missingPanel");
+  if (!panel) return;
+  if (!count) {
+    panel.classList.add("hidden");
+    // If missing filter was active and everything's now clean, clear the filter.
+    if (state.filter.missing) { resetFilter(); refresh(); }
+    return;
+  }
+  panel.classList.remove("hidden");
+  const badge = $("#missingCount"); if (badge) badge.textContent = count;
+  const btn = $("#missingFilterBtn");
+  const countEl = $("#missingFilterCount"); if (countEl) countEl.textContent = count;
+  if (btn) {
+    btn.classList.toggle("active", !!state.filter.missing);
+    btn.onclick = () => {
+      if (state.filter.missing) { resetFilter(); }
+      else { resetFilter(); state.filter.missing = true; }
+      refresh();
+    };
+  }
+}
+
+// Wire the purge button once on DOM load (it doesn't need re-wiring on each loadState).
+const _missingPurge = $("#missingPurgeBtn");
+if (_missingPurge) _missingPurge.onclick = async () => {
+  if (!confirm("Remove all missing entries from the index? This can't be undone.\n\nTo restore them, rescan after reconnecting the drive/folder.")) return;
+  let r;
+  try { r = await fetch("/api/assets/missing", { method: "DELETE" }).then(x => x.json()); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) { toast("Couldn't purge missing entries.", "error"); return; }
+  toast(`Removed ${r.deleted} stale entr${r.deleted === 1 ? "y" : "ies"} from the index.`, "success");
+  resetFilter();
+  await loadState();
+  refresh();
+};
 
 // Persistent notice when one or more added folders can't be reached, so missing
 // models are explained rather than silently absent.
@@ -403,7 +442,7 @@ let _facetKindCache = {};  // kind → { subtypes, resolutions }, invalidated on
 
 function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
-                   favorite: false, subtype: "", resolution: "" };
+                   favorite: false, subtype: "", resolution: "", missing: false };
   _facetKindCache = {};
 }
 
@@ -411,8 +450,8 @@ function resetFilter() {
 function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
     || state.filter.collection || state.filter.category || state.filter.folder
-    || state.filter.favorite || state.filter.subtype || state.filter.resolution
-    || state.search;
+    || state.filter.favorite || state.filter.missing || state.filter.subtype
+    || state.filter.resolution || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
@@ -684,6 +723,7 @@ async function refresh() {
   if (f.category) p.set("category", f.category);
   if (f.folder) p.set("folder", f.folder);
   if (f.favorite) p.set("favorite", "1");
+  if (f.missing) p.set("missing", "1");
   if (f.subtype) p.set("subtype", f.subtype);
   if (f.resolution) p.set("resolution", f.resolution);
   if (state.search) p.set("search", state.search);

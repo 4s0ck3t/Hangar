@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.71"
+__version__ = "0.13.72"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -358,8 +358,16 @@ def list_assets():
         with_categories=q.get("with_categories") == "1",
         subtype=q.get("subtype", "").strip(),
         resolution=q.get("resolution", "").strip(),
+        missing=q.get("missing") == "1",
     )
     return jsonify({"assets": assets, "total": total})
+
+
+@app.delete("/api/assets/missing")
+def purge_missing():
+    """Remove all missing (file-not-found) assets from the index permanently."""
+    n = store.delete_missing()
+    return jsonify({"ok": True, "deleted": n})
 
 
 @app.get("/api/facets")
