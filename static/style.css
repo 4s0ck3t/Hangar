@@ -863,6 +863,16 @@ button, input, select { font-family: inherit; color: inherit; }
   font-size: 9px; color: var(--faint); text-align: center;
   max-width: 76px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.d-asset-have { font-size: 9px; color: #2ecc71; font-weight: 600; text-align: center; }
+.d-extract-btn {
+  font-size: 9px; padding: 2px 7px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--raised-hi); color: var(--mute);
+  transition: background .12s, color .12s, border-color .12s;
+}
+.d-extract-btn:hover:not(:disabled) {
+  background: var(--accent, #4a90d9); color: #fff; border-color: transparent;
+}
+.d-extract-btn:disabled { opacity: .5; cursor: default; }
 
 /* Mark-as-asset action buttons (shown when nothing is marked yet) */
 .d-mark-actions { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }

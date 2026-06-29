@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.84"
+__version__ = "0.13.85"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -791,6 +791,51 @@ def unmark_assets(asset_id):
         n = thumbs.count_blend_marked_assets(asset["path"])
         store.save_blend_asset_count(asset_id, n)
         result["blend_assets"] = n
+    return jsonify(result), 200
+
+
+@app.post("/api/assets/<int:asset_id>/extract-asset")
+def extract_asset(asset_id):
+    """Save one marked datablock out to its own .blend next to the source file,
+    then index it so it appears in the library (and lights its green tick).
+    Body: {"name": "<datablock name>", "kind": "Object"|"Collection"}."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["ext"] != ".blend":
+        return jsonify({"error": "Only .blend files can be extracted from."}), 400
+    if not thumbs.blender_available():
+        return jsonify({"ok": False, "blender": False,
+                        "error": "Blender wasn't found — set its path first."}), 200
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name", "")).strip()
+    kind = body.get("kind", "Object")
+    if not name:
+        return jsonify({"error": "No asset name given."}), 400
+    if kind not in ("Object", "Collection"):
+        kind = "Object"
+    # Sanitise the datablock name into a safe sibling filename.
+    safe = "".join("_" if c in '/\\:*?"<>|' else c for c in name).strip()
+    if not safe:
+        return jsonify({"error": "That asset name can't be used as a filename."}), 400
+    out_path = os.path.join(os.path.dirname(asset["path"]), safe + ".blend")
+    if os.path.exists(out_path):
+        return jsonify({"error": f"“{safe}.blend” already exists here."}), 409
+    result = thumbs.extract_blend_asset(asset["path"], name, kind, out_path)
+    if not result.get("ok"):
+        return jsonify(result), 200
+    # Index the new file immediately so the library + green tick update without
+    # waiting for a rescan.
+    try:
+        st = os.stat(out_path)
+        store.upsert_asset({
+            "path": out_path, "name": safe, "ext": ".blend",
+            "kind": scanner.EXT_KIND.get(".blend", "model"),
+            "size": st.st_size, "mtime": st.st_mtime,
+        })
+    except Exception:
+        pass
+    result["extracted_name"] = safe
     return jsonify(result), 200
 
 

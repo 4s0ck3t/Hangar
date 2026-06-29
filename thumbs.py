@@ -681,6 +681,38 @@ _ID_CODE_KIND = {
 
 
 def inspect_blend(path):
+    """Pure-Python inspection of a .blend, cached on disk by (mtime, size).
+
+    The parse decompresses and walks the whole file, which is slow for big
+    asset packs — so the result is cached next to the preview manifest and
+    only recomputed when the file changes. Returns the same dict as
+    :func:`_inspect_blend_uncached`, or None if the file can't be parsed."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return _inspect_blend_uncached(path)
+    cache_file = _blend_asset_dir(path) / "inspect.json"
+    try:
+        with open(cache_file, "r", encoding="utf-8") as fh:
+            cached = json.load(fh)
+        if (cached.get("mtime") == st.st_mtime
+                and cached.get("size") == st.st_size):
+            return cached["result"]                  # fresh objects from JSON
+    except Exception:
+        pass                                         # no/stale/corrupt cache
+    result = _inspect_blend_uncached(path)
+    if result is not None:
+        try:
+            _blend_asset_dir(path).mkdir(parents=True, exist_ok=True)
+            with open(cache_file, "w", encoding="utf-8") as fh:
+                json.dump({"mtime": st.st_mtime, "size": st.st_size,
+                           "result": result}, fh)
+        except Exception:
+            log.exception("inspect_blend cache write failed for %s", path)
+    return result
+
+
+def _inspect_blend_uncached(path):
     """Pure-Python inspection of a .blend. Returns a dict with:
 
         count            int  — datablocks flagged "Mark as Asset"
@@ -940,6 +972,62 @@ def unmark_blend_assets(blend_path, target="collections"):
     if not os.path.exists(blend_path):
         return {"ok": False, "error": "File isn't accessible right now."}
     return _run_blend_assets(blender, blend_path, "unmark", target)
+
+
+# Extract one marked datablock into its own .blend. bpy.data.libraries.write
+# writes the named object/collection plus every datablock it depends on (mesh,
+# materials, textures), leaving the source file untouched.
+_EXTRACT_ASSET_SCRIPT = r'''
+import bpy, sys
+argv = sys.argv[sys.argv.index("--") + 1:]
+out_path, kind, name = argv[0], argv[1], argv[2]
+db = (bpy.data.collections.get(name) if kind == "Collection"
+      else bpy.data.objects.get(name))
+if db is None:
+    print("HANGAR_EXTRACT_FAIL: datablock not found:", name)
+    sys.exit(0)
+try:
+    bpy.data.libraries.write(out_path, {db}, fake_user=True, compress=True)
+    print("HANGAR_EXTRACT_DONE:", out_path)
+except Exception as e:
+    print("HANGAR_EXTRACT_FAIL:", e)
+'''
+
+
+def extract_blend_asset(blend_path, name, kind, out_path):
+    """Write a single marked datablock (object or collection) from `blend_path`
+    out to a new .blend at `out_path`, pulling its dependencies along. Leaves
+    the source file untouched. Returns {"ok", "path", "error"}."""
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "error": "Blender wasn't found — set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "error": "Source file isn't accessible right now."}
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        script = os.path.join(td, "hangar_extract_asset.py")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_EXTRACT_ASSET_SCRIPT)
+        try:
+            proc = subprocess.run(
+                [blender, "--background", "--factory-startup", "--disable-autoexec",
+                 blend_path, "-P", script, "--", out_path, kind, name],
+                timeout=RENDER_TIMEOUT, capture_output=True, text=True,
+                env=_blender_env(), **_no_window(),
+            )
+        except subprocess.TimeoutExpired as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Timed out after {RENDER_TIMEOUT}s."}
+        except Exception as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
+    _record_render_log(blender, blend_path, proc)
+    if "HANGAR_EXTRACT_DONE" in (proc.stdout or "") and os.path.exists(out_path):
+        return {"ok": True, "path": out_path}
+    if "not found" in (proc.stdout or ""):
+        return {"ok": False, "error": f"Couldn't find “{name}” in the file."}
+    return {"ok": False, "error": _render_failure_summary(proc)}
 
 
 def extract_blend_asset_previews(blend_path):

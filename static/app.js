@@ -1298,7 +1298,11 @@ async function renderBlendInfo(a) {
         html += `<div class="d-asset-noimg"><span>${esc(asset.kind[0])}</span></div>`;
       }
       html += `<div class="d-asset-name">${esc(asset.name)}</div>`;
-      html += `<div class="d-asset-source">${asset.has_thumb ? "Rendered" : "Type badge"}</div>`;
+      if (asset.has_individual) {
+        html += `<div class="d-asset-have">Own .blend ✓</div>`;
+      } else {
+        html += `<button class="d-extract-btn" data-name="${esc(asset.name)}" data-kind="${esc(asset.kind)}" title="Save “${esc(asset.name)}” to its own .blend file">Extract</button>`;
+      }
       html += `</div>`;
     }
     html += `</div>`;
@@ -1350,7 +1354,7 @@ async function renderBlendInfo(a) {
   // Show an animated status while a Blender job runs; disable all buttons so the
   // user can't kick off a second job. `verb` is e.g. "Marking objects".
   const setBusy = (busy, verb) => {
-    el.querySelectorAll(".d-mark-btn, .d-gen-previews-btn").forEach(b => { b.disabled = busy; });
+    el.querySelectorAll(".d-mark-btn, .d-gen-previews-btn, .d-extract-btn").forEach(b => { b.disabled = busy; });
     if (!status) return;
     if (busy) {
       status.hidden = false;
@@ -1400,6 +1404,26 @@ async function renderBlendInfo(a) {
   if (markBtnCol) markBtnCol.onclick = () => runMark("collections", "Marking collections");
   if (unmarkBtnCol) unmarkBtnCol.onclick = () => runUnmark("collections", "collections");
   if (unmarkBtnAll) unmarkBtnAll.onclick = () => runUnmark("all", "all asset marks");
+
+  // Extract a marked datablock to its own .blend file. On success the file is
+  // indexed and the tile flips to the green "own .blend" state.
+  el.querySelectorAll(".d-extract-btn").forEach(btn => {
+    btn.onclick = async () => {
+      const name = btn.dataset.name, kind = btn.dataset.kind;
+      setBusy(true, `Extracting ${name}`);
+      let r;
+      try { r = await post(`assets/${a.id}/extract-asset`, { name, kind }); }
+      catch (_) { r = null; }
+      if (r && r.ok) {
+        setDone(`Saved ${r.extracted_name || name}.blend. Refreshing…`, true);
+        refresh();                 // surface the new file in the grid
+        renderBlendInfo(a);        // re-fetch so this tile gets its green tick
+      } else {
+        setBusy(false);
+        setDone((r && r.error) || "Extract failed — check last_render.log.", false);
+      }
+    };
+  });
 
   const genBtn = $("#dGenPreviews");
   if (genBtn) {
