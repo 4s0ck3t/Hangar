@@ -844,15 +844,34 @@ button, input, select { font-family: inherit; color: inherit; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* Generate-previews button */
-.d-gen-previews-btn {
-  display: block; width: 100%; margin: 6px 0;
+/* Mark-as-asset action buttons (shown when nothing is marked yet) */
+.d-mark-actions { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.d-mark-btn, .d-gen-previews-btn {
+  display: block; width: 100%; margin: 0;
   padding: 7px 12px; border-radius: 7px; border: 1px solid var(--line);
   background: var(--raised-hi); color: var(--ink); font-size: 12px;
   cursor: pointer; text-align: center;
 }
+.d-gen-previews-btn { margin: 6px 0; }
+.d-mark-btn:hover:not(:disabled),
 .d-gen-previews-btn:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent); }
-.d-gen-previews-btn:disabled { opacity: .55; cursor: default; }
+.d-mark-btn:disabled, .d-gen-previews-btn:disabled { opacity: .55; cursor: default; }
+
+/* Long-running Blender job status line */
+.d-blend-status {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; padding: 7px 10px; margin: 6px 0; border-radius: 7px;
+  line-height: 1.4;
+}
+.d-blend-status-busy { background: var(--raised); color: var(--mute); border: 1px solid var(--line); }
+.d-blend-status-ok { background: rgba(80,200,120,.10); color: rgba(120,220,150,.95); border: 1px solid rgba(80,200,120,.30); }
+.d-blend-status-err { background: rgba(232,121,74,.10); color: rgba(240,150,110,.95); border: 1px solid rgba(232,121,74,.30); }
+.d-spinner {
+  flex: none; width: 13px; height: 13px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent);
+  animation: d-spin .7s linear infinite;
+}
+@keyframes d-spin { to { transform: rotate(360deg); } }
 
 /* Missing textures list */
 .d-missing-label { color: rgba(232,121,74,.9); }

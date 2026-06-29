@@ -1235,13 +1235,23 @@ async function renderBlendInfo(a) {
     html += `</div>`;
   } else if (info.count === 0) {
     html += `<div class="d-section-label">Marked assets</div>`;
-    html += `<div class="d-blend-note">None — right-click the tile to mark objects or collections as assets.</div>`;
+    html += `<div class="d-blend-note">Nothing in this file is marked as an asset yet.</div>`;
+    html += `<div class="d-mark-actions">`;
+    html += `<button class="d-mark-btn" id="dMarkObjects">Mark objects as assets</button>`;
+    html += `<button class="d-mark-btn" id="dMarkCollections">Mark collections as assets</button>`;
+    html += `</div>`;
   }
 
   // ── Generate previews button ───────────────────────────────────────────────
-  if (info.assets && info.assets.length && !info.previews_ready) {
-    html += `<button class="d-gen-previews-btn" id="dGenPreviews">Generate previews</button>`;
+  const needPreview = (info.assets || []).filter(x => !x.has_thumb).length;
+  if (needPreview) {
+    const label = needPreview === (info.assets || []).length
+      ? `Generate previews (${needPreview})`
+      : `Generate missing previews (${needPreview})`;
+    html += `<button class="d-gen-previews-btn" id="dGenPreviews">${label}</button>`;
   }
+  // Status line for long-running Blender jobs (marking / rendering).
+  html += `<div class="d-blend-status" id="dBlendStatus" hidden></div>`;
 
   // ── Missing textures ───────────────────────────────────────────────────────
   if (info.missing_textures && info.missing_textures.length) {
@@ -1259,19 +1269,56 @@ async function renderBlendInfo(a) {
 
   el.innerHTML = html;
 
+  const status = $("#dBlendStatus");
+  // Show an animated status while a Blender job runs; disable all buttons so the
+  // user can't kick off a second job. `verb` is e.g. "Marking objects".
+  const setBusy = (busy, verb) => {
+    el.querySelectorAll(".d-mark-btn, .d-gen-previews-btn").forEach(b => { b.disabled = busy; });
+    if (!status) return;
+    if (busy) {
+      status.hidden = false;
+      status.className = "d-blend-status d-blend-status-busy";
+      status.innerHTML = `<span class="d-spinner"></span>${esc(verb)}… Blender is running, this can take a minute.`;
+    }
+  };
+  const setDone = (msg, ok) => {
+    if (!status) return;
+    status.hidden = false;
+    status.className = "d-blend-status " + (ok ? "d-blend-status-ok" : "d-blend-status-err");
+    status.textContent = msg;
+  };
+
+  const markBtnObj = $("#dMarkObjects");
+  const markBtnCol = $("#dMarkCollections");
+  const runMark = async (target, verb) => {
+    setBusy(true, verb);
+    let r;
+    try { r = await post(`assets/${a.id}/mark-assets`, { target }); }
+    catch (_) { r = null; }
+    if (r && r.ok) {
+      setDone(`Marked ${r.marked || 0} ${target}. Refreshing…`, true);
+      renderBlendInfo(a);
+    } else {
+      setBusy(false);
+      setDone((r && r.error) || "Marking failed — check last_render.log.", false);
+    }
+  };
+  if (markBtnObj) markBtnObj.onclick = () => runMark("objects", "Marking objects");
+  if (markBtnCol) markBtnCol.onclick = () => runMark("collections", "Marking collections");
+
   const genBtn = $("#dGenPreviews");
   if (genBtn) {
     genBtn.onclick = async () => {
-      genBtn.disabled = true;
-      genBtn.textContent = "Rendering…";
+      setBusy(true, `Rendering ${info.assets.length} preview${info.assets.length === 1 ? "" : "s"}`);
       let r;
       try { r = await post(`assets/${a.id}/generate-asset-previews`); }
       catch (_) { r = null; }
       if (r && r.ok) {
+        setDone("Previews ready. Refreshing…", true);
         renderBlendInfo(a);
       } else {
-        genBtn.disabled = false;
-        genBtn.textContent = "Generate previews (failed — check last_render.log)";
+        setBusy(false);
+        setDone((r && r.error) || "Preview render failed — check last_render.log.", false);
       }
     };
   }
