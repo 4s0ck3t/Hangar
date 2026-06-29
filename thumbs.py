@@ -868,19 +868,17 @@ def main():
                 if db.asset_data is None:
                     db.asset_mark()
                 marked += 1
-                gen_preview(db)
             except Exception as e:
                 print("HANGAR_MARK_SKIP:", getattr(db, "name", "?"), e, flush=True)
-        try:
-            bpy.ops.wm.previews_ensure()
-        except Exception:
-            pass
+        # Save without generating previews — preview generation triggers full
+        # Cycles renders in background mode and can crash. Names are enough;
+        # Blender generates previews the next time the file is opened normally.
         try:
             bpy.ops.wm.save_mainfile(compress=bpy.data.use_autopack)
         except Exception as e:
             print("HANGAR_MARK_SAVE_FAIL:", e, flush=True)
 
-    # Export previews for every asset-marked datablock (objects + collections).
+    # Write manifest of marked datablocks (names + kinds only; no preview export).
     manifest = []
     for coll, kind in ((bpy.data.objects, "Object"),
                        (bpy.data.collections, "Collection"),
@@ -888,11 +886,7 @@ def main():
         for db in coll:
             if getattr(db, "asset_data", None) is None:
                 continue
-            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", db.name)[:80]
-            fname = "%s_%s.png" % (kind[:2].upper(), safe)
-            ok = export_preview(db, os.path.join(outdir, fname))
-            manifest.append({"name": db.name, "kind": kind,
-                             "file": fname if ok else None})
+            manifest.append({"name": db.name, "kind": kind, "file": None})
 
     with open(os.path.join(outdir, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(manifest, fh)
@@ -952,12 +946,11 @@ def _run_blend_assets(blender, blend_path, action, target):
             _record_render_log(blender, blend_path, None, exc=e)
             return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
     _record_render_log(blender, blend_path, proc)
-    if proc.returncode:
-        return {"ok": False, "error": _render_failure_summary(proc)}
-    marked = 0
     m = re.search(r"HANGAR_MARK_DONE: marked=(\d+)", proc.stdout or "")
-    if m:
-        marked = int(m.group(1))
+    if not m:
+        # DONE line never printed — script failed before finishing
+        return {"ok": False, "error": _render_failure_summary(proc)}
+    marked = int(m.group(1))
     return {"ok": True, "marked": marked, "assets": blend_asset_previews(blend_path)}
 
 
