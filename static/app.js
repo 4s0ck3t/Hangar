@@ -1146,6 +1146,16 @@ function showCategoryMenu(x, y, a) {
   reveal.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await revealAsset(a); };
   menu.appendChild(reveal);
 
+  // Only Blender-renderable models can have a fresh preview rendered; textures
+  // and HDRIs already carry their own image. Mirrors the multi-select batch menu.
+  if (a.kind === "model" && appCaps.renderExts.includes(a.ext)) {
+    const regen = document.createElement("button");
+    regen.className = "ctx-item";
+    regen.innerHTML = `<span class="ctx-ico">🖼</span><span class="ctx-name">Regenerate preview</span>`;
+    regen.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await regenerateSelectedPreviews([a]); };
+    menu.appendChild(regen);
+  }
+
   const delPrev = document.createElement("button");
   delPrev.className = "ctx-item";
   delPrev.innerHTML = `<span class="ctx-ico">🗑</span><span class="ctx-name">Delete preview</span>`;
