@@ -337,12 +337,32 @@ function buildCategoryItem(c, nested) {
       await loadState(); refresh();
     };
 
-    // Drop target: accept dragged model cards into this category.
-    li.addEventListener("dragover", (e) => { e.preventDefault(); li.classList.add("drop-over"); });
-    li.addEventListener("dragleave", () => li.classList.remove("drop-over"));
+    // Reorder source: drag this category to re-sort the sidebar.
+    li.draggable = true;
+    li.dataset.catId = c.id;
+    li.dataset.catKind = c.kind || "";
+    li.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/x-hangar-cat-id", String(c.id));
+      e.dataTransfer.effectAllowed = "move";
+      li.classList.add("dragging-cat");
+    });
+    li.addEventListener("dragend", () => li.classList.remove("dragging-cat"));
+
+    // Drop target: a dragged category reorders the list; a dragged asset card
+    // gets filed into this category. Distinguished by the dataTransfer type.
+    li.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      if (Array.from(e.dataTransfer.types || []).includes("text/x-hangar-cat-id"))
+        li.classList.add("cat-reorder-over");
+      else
+        li.classList.add("drop-over");
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("drop-over", "cat-reorder-over"));
     li.addEventListener("drop", async (e) => {
       e.preventDefault();
-      li.classList.remove("drop-over");
+      li.classList.remove("drop-over", "cat-reorder-over");
+      const dragCatId = e.dataTransfer.getData("text/x-hangar-cat-id");
+      if (dragCatId) { await reorderCategory(parseInt(dragCatId, 10), c); return; }
       const assetId = e.dataTransfer.getData("text/x-hangar-asset-id");
       if (!assetId) return;
       await post(`assets/${assetId}/category`, { category: c.name, add: true });
@@ -2539,24 +2559,112 @@ $("#addCollectionBtn").onclick = async () => {
 // Create a category. When `prefKind` is one of the asset types we skip the
 // "which type?" prompt and file it straight under that type (used by the inline
 // "+ New category" button inside a grouped type view).
-async function promptNewCategory(prefKind) {
-  const name = prompt("New category name (e.g. Robots):"); if (!name) return false;
-  const icon = prompt("Icon emoji (optional — press Cancel to skip):") || "";
-  let kind = ["model", "hdri", "texture", "material"].includes(prefKind) ? prefKind : "";
-  if (!kind) {
-    const kindRaw = (prompt(
-      "Which asset type is this category for?\n" +
-      "model / hdri / texture / material — or leave blank for shared (any type)."
-    ) || "").trim().toLowerCase();
-    kind = ["model", "hdri", "texture", "material"].includes(kindRaw) ? kindRaw : "";
+// Drag-reorder a category in the sidebar: drop `dragId` immediately before
+// `targetCat`. Only allowed within the same kind group, since the list is
+// rendered grouped by asset type.
+async function reorderCategory(dragId, targetCat) {
+  if (!dragId || dragId === targetCat.id) return;
+  const drag = allCategories.find((c) => c.id === dragId);
+  if (!drag) return;
+  if ((drag.kind || "") !== (targetCat.kind || "")) {
+    toast("Categories can only be reordered within the same asset type.", "error");
+    return;
   }
-  const keywords = prompt(
-    "Auto-match keywords (comma-separated, optional).\n" +
-    "Any asset whose folder/file name contains one of these is auto-filed here.\n" +
-    "e.g. robot, droid, mech"
-  ) || "";
-  await post("categories", { name, icon, kind, keywords });
-  if (keywords.trim()) await post("categories/auto", {});
+  const ids = allCategories.map((c) => c.id).filter((id) => id !== dragId);
+  const at = ids.indexOf(targetCat.id);
+  if (at < 0) return;
+  ids.splice(at, 0, dragId);
+  const r = await post("categories/reorder", { order: ids });
+  if (r && r.ok) await loadState();
+}
+
+// Curated icon set for the category dialog; the custom field accepts any emoji.
+const CATEGORY_ICONS = [
+  "🤖","🛸","🚀","🪐","👾","🛰️","🏠","🏛️","🏰","⛩️",
+  "🌲","🌿","🪨","🌊","🔥","🌋","🏔️","🌌","☀️","🌙",
+  "🚗","✈️","🚢","⚙️","🔧","🛠️","🧱","🪵","💎","🔩",
+  "🛋️","🪑","🛏️","🚪","🪟","🖼️","💡","🕯️","📦","🎨",
+  "🗿","🐉","🦴","👤","⚔️","🛡️","🔫","🎮","🔮","🎭",
+];
+
+// Modal dialog for creating a category: name, clickable icon grid (+ custom),
+// asset-type scope, and optional auto-match keywords. Resolves to the form
+// values, or null on cancel.
+function categoryDialog(prefKind) {
+  return new Promise((resolve) => {
+    const kinds = [["", "Shared (any type)"], ["model", "Model"],
+      ["hdri", "HDRI"], ["texture", "Texture"], ["material", "Material"]];
+    const wrap = document.createElement("div");
+    wrap.className = "cat-dialog";
+    wrap.innerHTML = `
+      <div class="cat-dlg-box">
+        <div class="cat-dlg-head">New category</div>
+        <div class="cat-dlg-body">
+          <div>
+            <label class="cat-dlg-label">Name</label>
+            <input class="cat-dlg-input" id="cdName" placeholder="e.g. Robots">
+          </div>
+          <div>
+            <label class="cat-dlg-label">Icon</label>
+            <div class="cat-icon-grid" id="cdIcons">
+              ${CATEGORY_ICONS.map((ic) => `<button type="button" class="cat-icon-opt" data-ic="${ic}">${ic}</button>`).join("")}
+            </div>
+            <input class="cat-dlg-input" id="cdIconCustom" placeholder="…or paste any emoji" maxlength="4" style="margin-top:6px">
+          </div>
+          <div>
+            <label class="cat-dlg-label">Asset type</label>
+            <select class="cat-dlg-select" id="cdKind">
+              ${kinds.map(([v, l]) => `<option value="${v}" ${v === (prefKind || "") ? "selected" : ""}>${l}</option>`).join("")}
+            </select>
+          </div>
+          <div>
+            <label class="cat-dlg-label">Auto-match keywords (optional, comma-separated)</label>
+            <input class="cat-dlg-input" id="cdKeywords" placeholder="robot, droid, mech">
+          </div>
+        </div>
+        <div class="cat-dlg-foot">
+          <button class="cat-dlg-btn" id="cdCancel">Cancel</button>
+          <button class="cat-dlg-btn primary" id="cdSave">Create</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+
+    let icon = "";
+    const custom = wrap.querySelector("#cdIconCustom");
+    wrap.querySelectorAll(".cat-icon-opt").forEach((b) => {
+      b.onclick = () => {
+        wrap.querySelectorAll(".cat-icon-opt").forEach((x) => x.classList.remove("sel"));
+        b.classList.add("sel"); icon = b.dataset.ic; custom.value = "";
+      };
+    });
+    custom.oninput = () => {
+      wrap.querySelectorAll(".cat-icon-opt").forEach((x) => x.classList.remove("sel"));
+      icon = custom.value.trim();
+    };
+
+    const onKey = (e) => { if (e.key === "Escape") close(null); };
+    const close = (val) => { wrap.remove(); document.removeEventListener("keydown", onKey); resolve(val); };
+    document.addEventListener("keydown", onKey);
+    wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(null); });
+    wrap.querySelector("#cdCancel").onclick = () => close(null);
+    const save = () => {
+      const name = wrap.querySelector("#cdName").value.trim();
+      if (!name) { wrap.querySelector("#cdName").focus(); return; }
+      close({ name, icon, kind: wrap.querySelector("#cdKind").value,
+        keywords: wrap.querySelector("#cdKeywords").value });
+    };
+    wrap.querySelector("#cdSave").onclick = save;
+    wrap.querySelector("#cdName").addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
+    setTimeout(() => wrap.querySelector("#cdName").focus(), 30);
+  });
+}
+
+async function promptNewCategory(prefKind) {
+  const pk = ["model", "hdri", "texture", "material"].includes(prefKind) ? prefKind : "";
+  const res = await categoryDialog(pk);
+  if (!res) return false;
+  await post("categories", res);
+  if (res.keywords.trim()) await post("categories/auto", {});
   loadState();
   return true;
 }

@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.81"
+__version__ = "0.13.82"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -527,6 +527,14 @@ def update_category_keywords(category_id):
 @app.delete("/api/categories/<int:category_id>")
 def delete_category(category_id):
     store.remove_category(category_id)
+    return jsonify({"ok": True, "categories": store.list_categories()})
+
+
+@app.post("/api/categories/reorder")
+def reorder_categories_route():
+    """Persist a drag-reordered sidebar. Body: {"order": [id, id, …]}."""
+    data = request.get_json(force=True)
+    store.reorder_categories(data.get("order", []))
     return jsonify({"ok": True, "categories": store.list_categories()})
 
 

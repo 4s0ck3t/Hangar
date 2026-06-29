@@ -817,6 +817,24 @@ def remove_category(category_id):
     _invalidate_matchers()
 
 
+def reorder_categories(ordered_ids):
+    """Persist a new sidebar order. `ordered_ids` is the full list of category
+    ids in the desired top-to-bottom order; each row's `sort` is set to its
+    index. Ids not present keep their old sort (and sort after the listed ones)."""
+    ids = []
+    for cid in ordered_ids or []:
+        try:
+            ids.append(int(cid))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return
+    with connect() as conn:
+        for i, cid in enumerate(ids):
+            conn.execute("UPDATE categories SET sort=? WHERE id=?", (i, cid))
+    _invalidate_matchers()
+
+
 def set_category_membership(category_name, asset_id, add=True):
     name = (category_name or "").strip()
     if not name:

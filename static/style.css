@@ -854,7 +854,7 @@ button, input, select { font-family: inherit; color: inherit; }
 }
 .d-gen-previews-btn { margin: 6px 0; }
 .d-mark-btn:hover:not(:disabled),
-.d-gen-previews-btn:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent); }
+.d-gen-previews-btn:hover:not(:disabled) { background: var(--raised); border-color: var(--select); }
 .d-mark-btn:disabled, .d-gen-previews-btn:disabled { opacity: .55; cursor: default; }
 
 /* Long-running Blender job status line */
@@ -868,10 +868,48 @@ button, input, select { font-family: inherit; color: inherit; }
 .d-blend-status-err { background: rgba(232,121,74,.10); color: rgba(240,150,110,.95); border: 1px solid rgba(232,121,74,.30); }
 .d-spinner {
   flex: none; width: 13px; height: 13px; border-radius: 50%;
-  border: 2px solid var(--line); border-top-color: var(--accent);
+  border: 2px solid var(--line); border-top-color: var(--select);
   animation: d-spin .7s linear infinite;
 }
-@keyframes d-spin { to { transform: rotate(360deg); } }
+
+/* ---- category create dialog ---- */
+.cat-dialog {
+  position: fixed; inset: 0; z-index: 70; padding: 32px;
+  background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center;
+}
+.cat-dlg-box {
+  width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.cat-dlg-head { padding: 12px 14px; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--ink); }
+.cat-dlg-body { padding: 14px; display: flex; flex-direction: column; gap: 13px; max-height: 70vh; overflow: auto; }
+.cat-dlg-label { display: block; font-size: 12px; color: var(--mute); margin-bottom: 5px; }
+.cat-dlg-input, .cat-dlg-select {
+  width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 7px;
+  border: 1px solid var(--line); background: var(--void); color: var(--ink); font-size: 13px;
+}
+.cat-dlg-input:focus, .cat-dlg-select:focus { outline: none; border-color: var(--select); }
+.cat-icon-grid { display: grid; grid-template-columns: repeat(10, 1fr); gap: 5px; }
+.cat-icon-opt {
+  aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 17px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--raised); cursor: pointer; padding: 0;
+}
+.cat-icon-opt:hover { background: var(--raised-hi); }
+.cat-icon-opt.sel { border-color: var(--select); background: rgba(91,141,239,.18); }
+.cat-dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--line); }
+.cat-dlg-btn {
+  padding: 7px 16px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--raised); color: var(--ink); font-size: 12px; cursor: pointer;
+}
+.cat-dlg-btn:hover { background: var(--raised-hi); }
+.cat-dlg-btn.primary { background: var(--select); border-color: var(--select); color: #fff; }
+.cat-dlg-btn.primary:hover { filter: brightness(1.1); }
+
+/* ---- category drag-reorder ---- */
+.cat-item.dragging-cat { opacity: .45; }
+.cat-item.cat-reorder-over { box-shadow: inset 0 2px 0 var(--select); }
 
 /* Missing textures list */
 .d-missing-label { color: rgba(232,121,74,.9); }
