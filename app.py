@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.77"
+__version__ = "0.13.78"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -590,24 +590,22 @@ def reveal(asset_id):
         return jsonify({"error": "Asset not found."}), 404
     path = asset["path"]
     sysname = platform.system()
+    devnull = subprocess.DEVNULL
+    nw = thumbs._no_window()
     try:
         if sysname == "Darwin":
-            subprocess.run(["open", "-R", path], check=False)
+            subprocess.Popen(["open", "-R", path], stdin=devnull, stdout=devnull, stderr=devnull)
         elif sysname == "Windows":
-            subprocess.run(["explorer", "/select,", os.path.normpath(path)], check=False)
+            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)],
+                             stdin=devnull, stdout=devnull, stderr=devnull, **nw)
         else:
             import shutil as _shutil
-            # Try file-manager-specific "select" flags, fall back to opening the folder.
-            if _shutil.which("nautilus"):
-                subprocess.Popen(["nautilus", "--select", path])
-            elif _shutil.which("dolphin"):
-                subprocess.Popen(["dolphin", "--select", path])
-            elif _shutil.which("nemo"):
-                subprocess.Popen(["nemo", path])
-            elif _shutil.which("thunar"):
-                subprocess.Popen(["thunar", path])
-            else:
-                subprocess.run(["xdg-open", os.path.dirname(path)], check=False)
+            fm = (["nautilus", "--select", path] if _shutil.which("nautilus") else
+                  ["dolphin", "--select", path] if _shutil.which("dolphin") else
+                  ["nemo", path] if _shutil.which("nemo") else
+                  ["thunar", path] if _shutil.which("thunar") else
+                  ["xdg-open", os.path.dirname(path)])
+            subprocess.Popen(fm, stdin=devnull, stdout=devnull, stderr=devnull)
     except Exception as e:
         return jsonify({"error": f"Couldn't open the file manager: {e}"}), 500
     return jsonify({"ok": True})
@@ -638,13 +636,14 @@ def open_file(asset_id):
     if not os.path.exists(path):
         return jsonify({"error": "File isn't accessible right now."}), 400
     sysname = platform.system()
+    devnull = subprocess.DEVNULL
     try:
         if sysname == "Windows":
             os.startfile(os.path.normpath(path))     # noqa: only exists on Windows
         elif sysname == "Darwin":
-            subprocess.Popen(["open", path])
+            subprocess.Popen(["open", path], stdin=devnull, stdout=devnull, stderr=devnull)
         else:
-            subprocess.Popen(["xdg-open", path])
+            subprocess.Popen(["xdg-open", path], stdin=devnull, stdout=devnull, stderr=devnull)
     except Exception as e:
         return jsonify({"error": f"Couldn't open the file: {e}"}), 500
     return jsonify({"ok": True})
@@ -827,14 +826,19 @@ def open_blender(asset_id):
         return jsonify({"error": "Blender not found — set its path first.",
                         "need_blender": True}), 400
     ext = (asset["ext"] or "").lower()
+    devnull = subprocess.DEVNULL
     try:
         if ext == ".blend":
-            subprocess.Popen([blender, asset["path"]])
+            subprocess.Popen([blender, asset["path"]],
+                             stdin=devnull, stdout=devnull, stderr=devnull,
+                             **thumbs._no_window())
         else:
             expr = _blender_import_expr(ext, asset["path"])
             if not expr:
                 return jsonify({"error": f"Blender can't open {ext} directly."}), 400
-            subprocess.Popen([blender, "--python-expr", expr])
+            subprocess.Popen([blender, "--python-expr", expr],
+                             stdin=devnull, stdout=devnull, stderr=devnull,
+                             **thumbs._no_window())
     except Exception as e:
         return jsonify({"error": f"Couldn't launch Blender: {e}"}), 500
     return jsonify({"ok": True, "opened": asset["name"]})
