@@ -359,7 +359,7 @@ _BLENDER_CACHE = {"path": None, "checked": False}
 # geometry / high-res textures) can take a while, especially on weaker GPUs, and
 # a too-short timeout kills the render so the tile falls back to the blurry 128px
 # embedded preview. Overridable via HANGAR_RENDER_TIMEOUT.
-RENDER_TIMEOUT = 600
+RENDER_TIMEOUT = 1800
 try:
     RENDER_TIMEOUT = max(30, int(os.environ.get("HANGAR_RENDER_TIMEOUT", RENDER_TIMEOUT)))
 except ValueError:
