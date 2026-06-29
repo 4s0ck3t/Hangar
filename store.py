@@ -434,6 +434,28 @@ def save_blend_asset_count(asset_id, count):
         )
 
 
+def rename_asset(asset_id, new_path, new_name):
+    """Point an existing asset row at a renamed file on disk (same id, new
+    path + display name). The caller is responsible for the actual os.rename."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE assets SET path=?, name=? WHERE id=?",
+            (new_path, new_name, asset_id),
+        )
+
+
+def existing_blend_names():
+    """Set of lowercased base names (no extension) of every .blend asset in the
+    library. Used to tell whether a marked datablock has its own .blend file."""
+    with connect() as conn:
+        return {
+            r["name"].lower()
+            for r in conn.execute(
+                "SELECT name FROM assets WHERE ext='.blend' AND missing=0"
+            ).fetchall()
+        }
+
+
 def get_asset(asset_id):
     with connect() as conn:
         row = conn.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()

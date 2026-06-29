@@ -1166,6 +1166,12 @@ function showCategoryMenu(x, y, a) {
   reveal.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await revealAsset(a); };
   menu.appendChild(reveal);
 
+  const renameItem = document.createElement("button");
+  renameItem.className = "ctx-item";
+  renameItem.innerHTML = `<span class="ctx-ico">✏</span><span class="ctx-name">Rename file</span>`;
+  renameItem.onclick = (e) => { e.stopPropagation(); closeCtxMenu(); renameAsset(a, -1); };
+  menu.appendChild(renameItem);
+
   // Only Blender-renderable models can have a fresh preview rendered; textures
   // and HDRIs already carry their own image. Mirrors the multi-select batch menu.
   if (a.kind === "model" && appCaps.renderExts.includes(a.ext)) {
@@ -1235,6 +1241,26 @@ async function openAssetFile(a) {
   if (!r || !r.ok) toast((r && r.error) || "Couldn't open the file.", "error");
 }
 
+// Rename an asset's file on disk. Prompts for a new base name (extension kept),
+// then updates the drawer header, path, and grid in place.
+async function renameAsset(a, idx) {
+  const next = prompt(`Rename file (the ${a.ext} extension is kept):`, a.name);
+  if (next === null) return;                       // cancelled
+  const base = next.trim();
+  if (!base || base === a.name) return;            // empty or unchanged
+  let r;
+  try { r = await post(`assets/${a.id}/rename`, { name: base }); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) { toast((r && r.error) || "Couldn't rename the file.", "error"); return; }
+  a.name = r.name; a.path = r.path;                // mutate the in-memory asset
+  const nameEl = $("#dName");
+  if (nameEl) nameEl.textContent = r.name;
+  const pathEl = $("#dPath");
+  if (pathEl) { pathEl.textContent = r.path; pathEl.title = `Open this file — ${r.path}`; }
+  toast("File renamed.", "success");
+  refresh();                                       // reflect the new name in the grid
+}
+
 // Fetch + render the .blend info panel: marked-asset gallery and missing textures.
 async function renderBlendInfo(a) {
   const el = $("#dBlend");
@@ -1259,7 +1285,13 @@ async function renderBlendInfo(a) {
       const source = asset.preview_source || (asset.has_thumb
         ? "Hangar rendered asset preview cache"
         : "No rendered asset preview; showing type badge");
-      html += `<div class="d-asset-tile" title="${esc(asset.kind)}: ${esc(asset.name)}\n${esc(source)}">`;
+      const ownTip = asset.has_individual
+        ? `\nHas its own ${esc(asset.name)}.blend in the library`
+        : "";
+      html += `<div class="d-asset-tile" title="${esc(asset.kind)}: ${esc(asset.name)}\n${esc(source)}${ownTip}">`;
+      if (asset.has_individual) {
+        html += `<span class="d-asset-tick" title="Saved as its own .blend file">✓</span>`;
+      }
       if (thumbUrl) {
         html += `<img class="d-asset-img" src="${thumbUrl}" alt="${esc(asset.name)}" loading="lazy">`;
       } else {
@@ -1908,7 +1940,10 @@ async function openDrawer(id, idx) {
       <button class="d-nav-btn" id="dNext" ${hasNext ? "" : "disabled"}>Next →</button>
     </div>
     <div class="d-body">
-      <h2 class="d-name">${esc(a.name)}</h2>
+      <div class="d-name-row">
+        <h2 class="d-name" id="dName">${esc(a.name)}</h2>
+        <button class="d-rename-btn" id="dRename" title="Rename file">✏</button>
+      </div>
       <div class="d-path clickable" id="dPath" title="Open this file — ${esc(a.path)}">${esc(a.path)}</div>
       ${a.exists === false ? `<div class="d-missing">⚠ This file isn't accessible right now — the drive/folder may be disconnected, moved, or deleted.</div>` : ""}
       <div class="d-format-row">
@@ -2069,6 +2104,10 @@ async function openDrawer(id, idx) {
   // Clickable path → open the file with the OS default app.
   const dPath = $("#dPath");
   if (dPath) dPath.onclick = () => openAssetFile(a);
+
+  // Rename the underlying file (keeps its extension and folder).
+  const dRename = $("#dRename");
+  if (dRename) dRename.onclick = () => renameAsset(a, idx);
 
   // .blend: list marked assets (names + previews) and missing textures.
   if (a.ext === ".blend") renderBlendInfo(a);

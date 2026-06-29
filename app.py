@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.83"
+__version__ = "0.13.84"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -633,6 +633,41 @@ def clear_preview(asset_id):
     return jsonify({"ok": True, "removed": bool(removed), "rebaked": bool(rebaked)})
 
 
+@app.post("/api/assets/<int:asset_id>/rename")
+def rename_asset(asset_id):
+    """Rename the asset's file on disk (keeping its extension and folder) and
+    update the library row. Body: {"name": "<new base name, no extension>"}."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    raw = (request.get_json(silent=True) or {}).get("name", "")
+    new_base = str(raw).strip()
+    # Strip an extension the user may have typed; we always keep the original one.
+    if new_base.lower().endswith(asset["ext"].lower()):
+        new_base = new_base[: -len(asset["ext"])]
+    new_base = new_base.strip()
+    if not new_base:
+        return jsonify({"error": "Please enter a name."}), 400
+    # No path traversal or directory separators — this renames in place only.
+    if any(c in new_base for c in '/\\:*?"<>|') or new_base in (".", ".."):
+        return jsonify({"error": "Name contains characters that aren't allowed."}), 400
+    old_path = asset["path"]
+    if not os.path.exists(old_path):
+        return jsonify({"error": "File isn't accessible right now."}), 400
+    new_path = os.path.join(os.path.dirname(old_path), new_base + asset["ext"])
+    if os.path.normcase(new_path) == os.path.normcase(old_path):
+        return jsonify({"ok": True, "name": asset["name"], "path": old_path,
+                        "unchanged": True})
+    if os.path.exists(new_path):
+        return jsonify({"error": "A file with that name already exists here."}), 409
+    try:
+        os.rename(old_path, new_path)
+    except OSError as e:
+        return jsonify({"error": f"Couldn't rename the file: {e}"}), 500
+    store.rename_asset(asset_id, new_path, new_base)
+    return jsonify({"ok": True, "name": new_base, "path": new_path})
+
+
 @app.post("/api/assets/<int:asset_id>/open-file")
 def open_file(asset_id):
     """Open the asset's file with the OS default application (what double-clicking
@@ -667,6 +702,11 @@ def _blend_info(asset):
         "count": 0, "assets": [], "missing_textures": []}
     previews = {p["name"]: p
                 for p in thumbs.blend_asset_previews(asset["path"])}
+    # Marked datablocks that have been extracted to their own .blend file get a
+    # green tick in the drawer. We match on base name: "bed_01_01" is "owned" if
+    # a "bed_01_01.blend" exists anywhere in the library (excluding self).
+    self_name = asset["name"].lower()
+    blend_names = store.existing_blend_names()
     for a in info["assets"]:
         preview = previews.get(a["name"], {})
         a["has_thumb"] = preview.get("has_thumb", False)
@@ -674,6 +714,8 @@ def _blend_info(asset):
             "preview_source",
             "No rendered asset preview; showing type badge",
         )
+        name_l = a["name"].lower()
+        a["has_individual"] = name_l in blend_names and name_l != self_name
     info["previews_ready"] = any(p.get("has_thumb") for p in previews.values())
     return info
 
