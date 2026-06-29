@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.75"
+__version__ = "0.13.76"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -625,6 +625,96 @@ def clear_preview(asset_id):
     removed = thumbs.delete_cached_thumb(asset)
     rebaked = thumbs.get_or_make(asset) is not None
     return jsonify({"ok": True, "removed": bool(removed), "rebaked": bool(rebaked)})
+
+
+@app.post("/api/assets/<int:asset_id>/open-file")
+def open_file(asset_id):
+    """Open the asset's file with the OS default application (what double-clicking
+    it would do). Backs the clickable path in the detail drawer."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    path = asset["path"]
+    if not os.path.exists(path):
+        return jsonify({"error": "File isn't accessible right now."}), 400
+    sysname = platform.system()
+    try:
+        if sysname == "Windows":
+            os.startfile(os.path.normpath(path))     # noqa: only exists on Windows
+        elif sysname == "Darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as e:
+        return jsonify({"error": f"Couldn't open the file: {e}"}), 500
+    return jsonify({"ok": True})
+
+
+def _blend_info(asset):
+    """Merge the pure-Python .blend inspection (marked-asset names + missing
+    textures) with the exported preview manifest (which assets have a thumbnail
+    cached). Returns the dict the drawer renders, or None if not a .blend."""
+    if asset["ext"] != ".blend" or not os.path.exists(asset["path"]):
+        return None
+    info = thumbs.inspect_blend(asset["path"]) or {
+        "count": 0, "assets": [], "missing_textures": []}
+    have = {p["name"]: p["has_thumb"]
+            for p in thumbs.blend_asset_previews(asset["path"])}
+    for a in info["assets"]:
+        a["has_thumb"] = have.get(a["name"], False)
+    info["previews_ready"] = any(have.values())
+    return info
+
+
+@app.get("/api/assets/<int:asset_id>/blend-info")
+def blend_info(asset_id):
+    """Marked-asset names (+ whether a preview is cached) and missing textures
+    for a .blend. Parsed on demand so it's always current."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    info = _blend_info(asset)
+    if info is None:
+        return jsonify({"error": "Not a reachable .blend file."}), 400
+    return jsonify(info), 200, _NO_CACHE
+
+
+@app.get("/api/assets/<int:asset_id>/blend-asset-thumb")
+def blend_asset_thumb(asset_id):
+    """Serve one marked datablock's exported preview PNG (by ?name=)."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return "", 404, _NO_CACHE
+    name = request.args.get("name", "")
+    p = thumbs.blend_asset_thumb_path(asset["path"], name) if name else None
+    if not p:
+        return "", 404, _NO_CACHE
+    return send_file(str(p), mimetype="image/png")
+
+
+@app.post("/api/assets/<int:asset_id>/mark-assets")
+def mark_assets(asset_id):
+    """Mark this .blend's top-level objects (or collections) as Asset-Browser
+    assets, generate per-asset previews, and save the file in place. Modifies
+    the source .blend. `target` body field: "objects" (default) | "collections"."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["ext"] != ".blend":
+        return jsonify({"error": "Only .blend files can be marked."}), 400
+    if not thumbs.blender_available():
+        return jsonify({"ok": False, "blender": False,
+                        "error": "Blender wasn't found — set its path first."}), 200
+    target = (request.get_json(silent=True) or {}).get("target", "objects")
+    if target not in ("objects", "collections"):
+        target = "objects"
+    result = thumbs.mark_blend_assets(asset["path"], target)
+    if result.get("ok"):
+        # Refresh the cached marked-asset count so the drawer/grid badge updates.
+        n = thumbs.count_blend_marked_assets(asset["path"])
+        store.save_blend_asset_count(asset_id, n)
+        result["blend_assets"] = n
+    return jsonify(result), 200
 
 
 @app.post("/api/open-data-dir")

@@ -1162,7 +1162,97 @@ function showCategoryMenu(x, y, a) {
   delPrev.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await clearAssetPreview(a); };
   menu.appendChild(delPrev);
 
+  if (a.ext === ".blend") {
+    const markSep = document.createElement("div"); markSep.className = "ctx-sep";
+    menu.appendChild(markSep);
+    const markObj = document.createElement("button");
+    markObj.className = "ctx-item";
+    markObj.innerHTML = `<span class="ctx-ico">📦</span><span class="ctx-name">Mark objects as assets</span>`;
+    markObj.onclick = async (e) => {
+      e.stopPropagation(); closeCtxMenu();
+      toast("Marking objects as assets — Blender is running, please wait…");
+      const r = await post(`assets/${a.id}/mark-assets`, { target: "objects" });
+      if (r.ok) toast(`Marked ${r.marked || 0} objects. Preview gallery ready.`, "success");
+      else toast(r.error || "Marking failed.", "error");
+      if (isDrawerOpen() && drawerAssetId === a.id) renderBlendInfo(a);
+    };
+    menu.appendChild(markObj);
+    const markCol = document.createElement("button");
+    markCol.className = "ctx-item";
+    markCol.innerHTML = `<span class="ctx-ico">📦</span><span class="ctx-name">Mark collections as assets</span>`;
+    markCol.onclick = async (e) => {
+      e.stopPropagation(); closeCtxMenu();
+      toast("Marking collections as assets — Blender is running, please wait…");
+      const r = await post(`assets/${a.id}/mark-assets`, { target: "collections" });
+      if (r.ok) toast(`Marked ${r.marked || 0} collections. Preview gallery ready.`, "success");
+      else toast(r.error || "Marking failed.", "error");
+      if (isDrawerOpen() && drawerAssetId === a.id) renderBlendInfo(a);
+    };
+    menu.appendChild(markCol);
+  }
+
   _mountCtxMenu(menu, x, y);
+}
+
+// Open the asset's file with the OS default application (double-click behaviour).
+async function openAssetFile(a) {
+  let r;
+  try { r = await post(`assets/${a.id}/open-file`); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) toast((r && r.error) || "Couldn't open the file.", "error");
+}
+
+// Fetch + render the .blend info panel: marked-asset gallery and missing textures.
+async function renderBlendInfo(a) {
+  const el = $("#dBlend");
+  if (!el) return;
+  el.innerHTML = `<div class="d-blend-loading">Loading .blend info…</div>`;
+  let info;
+  try { info = await api(`assets/${a.id}/blend-info`); }
+  catch (_) { el.innerHTML = ""; return; }
+  if (!info || info.error) { el.innerHTML = ""; return; }
+
+  let html = "";
+
+  // ── Marked assets gallery ──────────────────────────────────────────────────
+  if (info.assets && info.assets.length) {
+    html += `<div class="d-section-label">Marked assets (${info.assets.length})</div>`;
+    html += `<div class="d-asset-gallery">`;
+    for (const asset of info.assets) {
+      const safe = encodeURIComponent(asset.name);
+      const thumbUrl = asset.has_thumb
+        ? `/api/assets/${a.id}/blend-asset-thumb?name=${safe}`
+        : null;
+      html += `<div class="d-asset-tile" title="${esc(asset.kind)}: ${esc(asset.name)}">`;
+      if (thumbUrl) {
+        html += `<img class="d-asset-img" src="${thumbUrl}" alt="${esc(asset.name)}" loading="lazy">`;
+      } else {
+        html += `<div class="d-asset-noimg"><span>${esc(asset.kind[0])}</span></div>`;
+      }
+      html += `<div class="d-asset-name">${esc(asset.name)}</div>`;
+      html += `</div>`;
+    }
+    html += `</div>`;
+  } else if (info.count === 0) {
+    html += `<div class="d-section-label">Marked assets</div>`;
+    html += `<div class="d-blend-note">None — right-click the tile to mark objects or collections as assets.</div>`;
+  }
+
+  // ── Missing textures ───────────────────────────────────────────────────────
+  if (info.missing_textures && info.missing_textures.length) {
+    html += `<div class="d-section-label d-missing-label">⚠ Missing textures (${info.missing_textures.length})</div>`;
+    html += `<div class="d-missing-textures">`;
+    for (const t of info.missing_textures) {
+      html += `<div class="d-missing-tex" title="${esc(t.path)}">`;
+      html += `<span class="d-missing-ico">🟪</span>`;
+      html += `<span class="d-missing-name">${esc(t.name)}</span>`;
+      html += `<span class="d-missing-path">${esc(t.path)}</span>`;
+      html += `</div>`;
+    }
+    html += `</div>`;
+  }
+
+  el.innerHTML = html;
 }
 
 // Launch Blender on this asset (.blend opens directly; other models import into
@@ -1687,7 +1777,7 @@ async function openDrawer(id, idx) {
     </div>
     <div class="d-body">
       <h2 class="d-name">${esc(a.name)}</h2>
-      <div class="d-path" id="dPath" title="${esc(a.path)}">${esc(a.path)}</div>
+      <div class="d-path clickable" id="dPath" title="Open this file — ${esc(a.path)}">${esc(a.path)}</div>
       ${a.exists === false ? `<div class="d-missing">⚠ This file isn't accessible right now — the drive/folder may be disconnected, moved, or deleted.</div>` : ""}
       <div class="d-format-row">
         <span class="d-format-badge" style="color:${color};border-color:${color}40">${esc(ext)}</span>
@@ -1701,6 +1791,7 @@ async function openDrawer(id, idx) {
         <div><div class="spec-k">Marked assets</div><div class="spec-v">${fmtNum(a.blend_assets)}</div></div>` : ""}
       </div>
       <div id="dMaps"></div>
+      ${a.ext === ".blend" ? `<div id="dBlend"></div>` : ""}
       <div class="d-section-label">Tags</div>
       <div class="tag-row" id="tagRow"></div>
       <div class="d-section-label">Category</div>
@@ -1842,6 +1933,13 @@ async function openDrawer(id, idx) {
 
   const setBlenderBtn = $("#setBlenderAct");
   if (setBlenderBtn) setBlenderBtn.onclick = () => setBlenderPath(a.id, idx);
+
+  // Clickable path → open the file with the OS default app.
+  const dPath = $("#dPath");
+  if (dPath) dPath.onclick = () => openAssetFile(a);
+
+  // .blend: list marked assets (names + previews) and missing textures.
+  if (a.ext === ".blend") renderBlendInfo(a);
 
   $("#revealAct").onclick = async () => {
     const r = await post(`assets/${a.id}/reveal`);

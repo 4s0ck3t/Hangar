@@ -10,6 +10,7 @@ format badge instead, so the grid never shows broken images.
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -599,89 +600,394 @@ def _zstd_decompress(path):
     return None
 
 
-def count_blend_marked_assets(path):
-    """Count datablocks flagged "Mark as Asset" inside a .blend file.
-
-    Pure-Python: parses the .blend's DNA, finds the `asset_data` pointer offset
-    within the embedded `ID` of every datablock, and tallies the non-null ones.
-    No Blender process required. Returns an int, or None if the file can't be
-    parsed (e.g. zstd-compressed, truncated, or pre-2.90 layout we can't read).
-    """
-    try:
+def _blend_decompress(path):
+    """Return the fully-decompressed bytes of a .blend (handles raw, gzip, and
+    zstd), or None if it isn't a parseable .blend."""
+    with open(path, "rb") as fh:
+        magic = fh.read(4)
+    if magic[:2] == b"\x1f\x8b":                      # gzip-compressed .blend
+        import gzip
+        with gzip.open(path, "rb") as g:
+            data = g.read()
+    elif magic == b"\x28\xb5\x2f\xfd":                # zstd (Blender 3.0+ default)
+        data = _zstd_decompress(path)
+    else:
         with open(path, "rb") as fh:
-            magic = fh.read(4)
-        if magic[:2] == b"\x1f\x8b":                 # gzip-compressed .blend
-            import gzip
-            with gzip.open(path, "rb") as g:
-                data = g.read()
-        elif magic == b"\x28\xb5\x2f\xfd":           # zstd (Blender 3.0+ default)
-            data = _zstd_decompress(path)
-            if data is None:
-                return None
-        else:
-            with open(path, "rb") as fh:
-                data = fh.read()
+            data = fh.read()
+    if not data or data[:7] != b"BLENDER":            # unknown packing / not a blend
+        return None
+    return data
 
-        if data[:7] != b"BLENDER":                   # unknown packing / not a blend
+
+def _blend_index(data):
+    """Parse a decompressed .blend into (blocks, structs, types, type_lengths,
+    endian, ptr_size), where blocks = [(sdna_index, body_offset, length), ...].
+    Returns None if the DNA1 block can't be found or parsed."""
+    ptr_size = 8 if data[7:8] == b"-" else 4
+    endian = "<" if data[8:9] == b"v" else ">"
+    bhead = 16 + ptr_size
+    blocks, dna = [], None
+    pos, n = 12, len(data)
+    while pos + bhead <= n:
+        code = data[pos:pos + 4]
+        length = struct.unpack(endian + "i", data[pos + 4:pos + 8])[0]
+        sdna_index = struct.unpack(
+            endian + "i", data[pos + 8 + ptr_size:pos + 12 + ptr_size])[0]
+        body = pos + bhead
+        if code[:4] == b"DNA1":
+            dna = data[body:body + length]
+        if code[:4] == b"ENDB":
+            break
+        blocks.append((sdna_index, body, length))
+        pos = body + length
+    if dna is None:
+        return None
+    structs, types, type_lengths = _parse_blend_sdna(dna, endian, ptr_size)
+    return blocks, structs, types, type_lengths, endian, ptr_size
+
+
+def _struct_index(structs, types, name):
+    """Index of the struct whose type is `name` (e.g. 'ID', 'Image'), or None."""
+    return next((i for i, s in enumerate(structs) if types[s[0]] == name), None)
+
+
+def _field_offset(structs, type_lengths, ptr_size, struct_idx, *idents):
+    """Byte offset of the first field in structs[struct_idx] whose bare C
+    identifier matches any of `idents`, or None. Relies on makesdna's
+    no-implicit-padding layout (sum field sizes in declaration order)."""
+    off = 0
+    for ftype, fname in structs[struct_idx][1]:
+        if _blend_field_ident(fname) in idents:
+            return off
+        off += _blend_field_size(fname, ftype, type_lengths, ptr_size)
+    return None
+
+
+def _read_cstr(data, start, limit):
+    """Decode a NUL-terminated byte string at `start`, scanning at most `limit`
+    bytes, as UTF-8 (Blender's on-disk encoding)."""
+    end = data.find(b"\x00", start, start + limit)
+    if end < 0:
+        end = start + limit
+    return data[start:end].decode("utf-8", "replace")
+
+
+# ID-name 2-char type prefixes → friendly kind, for "Mark as Asset" datablocks.
+_ID_CODE_KIND = {
+    "OB": "Object", "GR": "Collection", "MA": "Material", "ME": "Mesh",
+    "WO": "World", "NT": "Node group", "AC": "Action", "BR": "Brush",
+    "IM": "Image", "TE": "Texture", "SC": "Scene", "GD": "Grease pencil",
+}
+
+
+def inspect_blend(path):
+    """Pure-Python inspection of a .blend. Returns a dict with:
+
+        count            int  — datablocks flagged "Mark as Asset"
+        assets           [{"name", "kind"}]  — those datablocks, named
+        missing_textures [{"name", "path"}]  — Image datablocks whose file is
+                               referenced but absent on disk (and not packed)
+
+    No Blender process required. Returns None if the file can't be parsed
+    (truncated, unknown packing, or a pre-2.90 DNA layout we can't read)."""
+    try:
+        data = _blend_decompress(path)
+        if data is None:
             return None
-        ptr_size = 8 if data[7:8] == b"-" else 4
-        endian = "<" if data[8:9] == b"v" else ">"
-        bhead = 16 + ptr_size
-
-        # Pass 1: index every file-block; capture the DNA1 body.
-        blocks, dna = [], None
-        pos = 12
-        n = len(data)
-        while pos + bhead <= n:
-            code = data[pos:pos + 4]
-            length = struct.unpack(endian + "i", data[pos + 4:pos + 8])[0]
-            sdna_index = struct.unpack(
-                endian + "i", data[pos + 8 + ptr_size:pos + 12 + ptr_size])[0]
-            body = pos + bhead
-            if code[:4] == b"DNA1":
-                dna = data[body:body + length]
-            if code[:4] == b"ENDB":
-                break
-            blocks.append((sdna_index, body, length))
-            pos = body + length
-        if dna is None:
+        idx = _blend_index(data)
+        if idx is None:
             return None
+        blocks, structs, types, type_lengths, endian, ptr_size = idx
+        ptr_fmt = endian + ("Q" if ptr_size == 8 else "I")
 
-        structs, types, type_lengths = _parse_blend_sdna(dna, endian, ptr_size)
-
-        # Offset of `asset_data` inside the `ID` struct (absent pre-2.90).
-        id_idx = next((i for i, s in enumerate(structs)
-                       if types[s[0]] == "ID"), None)
+        id_idx = _struct_index(structs, types, "ID")
         if id_idx is None:
             return None
-        asset_off = None
-        off = 0
-        for ftype, fname in structs[id_idx][1]:
-            if _blend_field_ident(fname) == "asset_data":
-                asset_off = off
-                break
-            off += _blend_field_size(fname, ftype, type_lengths, ptr_size)
-        if asset_off is None:
-            return 0                                 # file predates asset system
+        asset_off = _field_offset(structs, type_lengths, ptr_size, id_idx, "asset_data")
+        name_off = _field_offset(structs, type_lengths, ptr_size, id_idx, "name")
+        if name_off is None:
+            return None
 
-        # Datablocks embed `ID id;` as their first member (offset 0), so the
-        # asset_data pointer sits at `asset_off` from the block start.
-        ptr_fmt = endian + ("Q" if ptr_size == 8 else "I")
+        # Image-struct field offsets, for missing-texture detection.
+        img_idx = _struct_index(structs, types, "Image")
+        img_path_off = img_pack_off = None
+        if img_idx is not None:
+            img_path_off = _field_offset(structs, type_lengths, ptr_size,
+                                         img_idx, "filepath", "name")
+            img_pack_off = _field_offset(structs, type_lengths, ptr_size,
+                                         img_idx, "packedfile")
+
+        base = os.path.dirname(path)
         count = 0
+        assets = []
+        missing = []
+        seen_paths = set()
         for sdna_index, body, length in blocks:
             if sdna_index <= 0 or sdna_index >= len(structs):
                 continue
             stype, fields = structs[sdna_index]
             if not fields or types[fields[0][0]] != "ID":
                 continue                             # not a top-level datablock
-            if asset_off + ptr_size > length:
+
+            # --- "Mark as Asset" datablocks (named) ---
+            if asset_off is not None and asset_off + ptr_size <= length:
+                if struct.unpack(ptr_fmt,
+                                 data[body + asset_off:body + asset_off + ptr_size])[0]:
+                    count += 1
+                    raw = _read_cstr(data, body + name_off, 66)  # MAX_ID_NAME
+                    code, nm = raw[:2], raw[2:]
+                    assets.append({"name": nm or raw,
+                                   "kind": _ID_CODE_KIND.get(code, code or "?")})
+
+            # --- missing textures (Image datablocks) ---
+            if (img_idx is not None and stype == img_idx
+                    and img_path_off is not None
+                    and img_path_off + 1024 <= length):
+                # Packed images carry their pixels inside the .blend — never missing.
+                if img_pack_off is not None and img_pack_off + ptr_size <= length:
+                    if struct.unpack(ptr_fmt, data[body + img_pack_off:
+                                                   body + img_pack_off + ptr_size])[0]:
+                        continue
+                fp = _read_cstr(data, body + img_path_off, 1024).strip()
+                # Skip empty (generated/viewer images) and UDIM/sequence tokens
+                # whose on-disk name we can't resolve to one concrete file.
+                if not fp or "<" in fp:
+                    continue
+                resolved = fp
+                if resolved.startswith("//"):        # Blender = relative to .blend
+                    resolved = os.path.join(base, resolved[2:].lstrip("/\\"))
+                resolved = os.path.normpath(resolved.replace("\\", os.sep))
+                if resolved in seen_paths:
+                    continue
+                seen_paths.add(resolved)
+                if not os.path.exists(resolved):
+                    nm = _read_cstr(data, body + name_off, 66)[2:]
+                    missing.append({"name": nm or os.path.basename(fp), "path": fp})
+
+        if asset_off is None:
+            count = 0                                # file predates asset system
+        return {"count": count, "assets": assets, "missing_textures": missing}
+    except Exception:
+        log.exception("inspect_blend failed for %s", path)
+        return None
+
+
+def count_blend_marked_assets(path):
+    """Count datablocks flagged "Mark as Asset" inside a .blend. Returns an int,
+    or None if the file can't be parsed. Thin wrapper over inspect_blend()."""
+    info = inspect_blend(path)
+    return None if info is None else info["count"]
+
+
+# ---- "Mark as Asset" writing + per-asset preview extraction ----------------
+# Marking can only be done through Blender (bpy), and it modifies the source
+# .blend. We also export each marked datablock's preview thumbnail to a cache
+# dir (keyed by the file's path+mtime) so the drawer can show a gallery without
+# re-opening Blender on every view.
+BLEND_ASSET_DIR = store.DATA_DIR / "blend_assets"
+
+
+def _blend_asset_dir(path):
+    """Cache directory for one .blend's exported asset previews + manifest,
+    keyed by path+mtime so it self-invalidates when the file changes."""
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0
+    digest = hashlib.sha1(f"{path}:{mtime}".encode("utf-8")).hexdigest()[:16]
+    return BLEND_ASSET_DIR / digest
+
+
+# Run with: blender -b <src.blend> -P <script> -- <outdir> <action> <target>
+#   action: "mark"    = mark top-level objects/collections, then export previews
+#           "extract" = export previews for already-marked datablocks only
+#   target: "objects" | "collections"  (only used by "mark")
+# Writes <outdir>/manifest.json = [{"name","kind","file"}] and one PNG per asset.
+_MARK_ASSETS_SCRIPT = r'''
+import bpy, sys, os, json, re
+
+argv = sys.argv[sys.argv.index("--") + 1:]
+outdir, action, target = argv[0], argv[1], (argv[2] if len(argv) > 2 else "objects")
+os.makedirs(outdir, exist_ok=True)
+
+KIND = {"objects": "Object", "collections": "Collection"}
+
+
+def gen_preview(db):
+    """Force a synchronous asset preview in background mode. Operator spelling
+    changed across versions, so try the known forms."""
+    try:
+        with bpy.context.temp_override(id=db):
+            bpy.ops.ed.lib_id_generate_preview()
+        return True
+    except Exception:
+        pass
+    try:
+        bpy.ops.ed.lib_id_generate_preview({"id": db})
+        return True
+    except Exception:
+        return False
+
+
+def export_preview(db, path):
+    """Write a datablock's preview image to a PNG via a scratch bpy image
+    (no Pillow in Blender's Python). Returns True on a non-empty preview."""
+    pv = getattr(db, "preview", None)
+    if pv is None:
+        return False
+    w, h = tuple(pv.image_size)
+    if w <= 0 or h <= 0:
+        return False
+    try:
+        px = list(pv.image_pixels_float)
+    except Exception:
+        return False
+    if not px or not any(px[3::4]):           # fully transparent => no real preview
+        return False
+    img = bpy.data.images.new("_hangar_pv", w, h, alpha=True)
+    try:
+        img.pixels = px
+        img.filepath_raw = path
+        img.file_format = 'PNG'
+        img.save()
+        return True
+    finally:
+        bpy.data.images.remove(img)
+
+
+def main():
+    marked = 0
+    if action == "mark":
+        if target == "collections":
+            targets = list(bpy.data.collections)
+        else:
+            targets = [o for o in bpy.data.objects
+                       if o.parent is None and o.type == 'MESH']
+        for db in targets:
+            try:
+                if db.asset_data is None:
+                    db.asset_mark()
+                marked += 1
+                gen_preview(db)
+            except Exception as e:
+                print("HANGAR_MARK_SKIP:", getattr(db, "name", "?"), e, flush=True)
+        try:
+            bpy.ops.wm.previews_ensure()
+        except Exception:
+            pass
+        try:
+            bpy.ops.wm.save_mainfile(compress=bpy.data.use_autopack)
+        except Exception as e:
+            print("HANGAR_MARK_SAVE_FAIL:", e, flush=True)
+
+    # Export previews for every asset-marked datablock (objects + collections).
+    manifest = []
+    for coll, kind in ((bpy.data.objects, "Object"),
+                       (bpy.data.collections, "Collection"),
+                       (bpy.data.materials, "Material")):
+        for db in coll:
+            if getattr(db, "asset_data", None) is None:
                 continue
-            if struct.unpack(ptr_fmt, data[body + asset_off:
-                                           body + asset_off + ptr_size])[0]:
-                count += 1
-        return count
+            safe = re.sub(r"[^A-Za-z0-9_.-]", "_", db.name)[:80]
+            fname = "%s_%s.png" % (kind[:2].upper(), safe)
+            ok = export_preview(db, os.path.join(outdir, fname))
+            manifest.append({"name": db.name, "kind": kind,
+                             "file": fname if ok else None})
+
+    with open(os.path.join(outdir, "manifest.json"), "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh)
+    print("HANGAR_MARK_DONE: marked=%d assets=%d" % (marked, len(manifest)), flush=True)
+
+
+main()
+'''
+
+
+def mark_blend_assets(blend_path, target="objects"):
+    """Mark top-level objects (or collections) in a .blend as Asset-Browser
+    assets, generate previews, save the file in place, and export the previews
+    to this file's cache dir. Returns {"ok", "marked", "assets", "error"}.
+
+    Modifies the source .blend. Best-effort; on failure sets a human error and
+    writes Blender output to RENDER_LOG."""
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "error": "Blender wasn't found — set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "error": "File isn't accessible right now."}
+    return _run_blend_assets(blender, blend_path, "mark", target)
+
+
+def extract_blend_asset_previews(blend_path):
+    """Export previews for a .blend's already-marked datablocks (no marking, no
+    save). Returns the same shape as mark_blend_assets."""
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "error": "Blender wasn't found — set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "error": "File isn't accessible right now."}
+    return _run_blend_assets(blender, blend_path, "extract", "objects")
+
+
+def _run_blend_assets(blender, blend_path, action, target):
+    import subprocess
+    import tempfile
+    outdir = _blend_asset_dir(blend_path)
+    outdir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as td:
+        script = os.path.join(td, "hangar_mark_assets.py")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_MARK_ASSETS_SCRIPT)
+        try:
+            proc = subprocess.run(
+                [blender, "--background", "--factory-startup", "--disable-autoexec",
+                 blend_path, "-P", script, "--", str(outdir), action, target],
+                timeout=RENDER_TIMEOUT, capture_output=True, text=True,
+                env=_blender_env(), **_no_window(),
+            )
+        except subprocess.TimeoutExpired as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Timed out after {RENDER_TIMEOUT}s."}
+        except Exception as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
+    _record_render_log(blender, blend_path, proc)
+    if proc.returncode:
+        return {"ok": False, "error": _render_failure_summary(proc)}
+    marked = 0
+    m = re.search(r"HANGAR_MARK_DONE: marked=(\d+)", proc.stdout or "")
+    if m:
+        marked = int(m.group(1))
+    return {"ok": True, "marked": marked, "assets": blend_asset_previews(blend_path)}
+
+
+def blend_asset_previews(blend_path):
+    """Read the cached preview manifest for a .blend (if any). Returns a list of
+    {"name", "kind", "has_thumb"} — empty when no previews have been exported."""
+    manifest = _blend_asset_dir(blend_path) / "manifest.json"
+    try:
+        with open(manifest, "r", encoding="utf-8") as fh:
+            entries = json.load(fh)
+    except Exception:
+        return []
+    return [{"name": e.get("name"), "kind": e.get("kind"),
+             "has_thumb": bool(e.get("file"))} for e in entries]
+
+
+def blend_asset_thumb_path(blend_path, name):
+    """Absolute path to a single marked datablock's exported preview PNG, or None
+    if it hasn't been exported. Looks the name up in the manifest."""
+    d = _blend_asset_dir(blend_path)
+    try:
+        with open(d / "manifest.json", "r", encoding="utf-8") as fh:
+            entries = json.load(fh)
     except Exception:
         return None
+    for e in entries:
+        if e.get("name") == name and e.get("file"):
+            p = d / e["file"]
+            return p if p.exists() else None
+    return None
 
 
 def find_blender():
