@@ -1209,6 +1209,19 @@ function showCategoryMenu(x, y, a) {
       if (isDrawerOpen() && drawerAssetId === a.id) renderBlendInfo(a);
     };
     menu.appendChild(markCol);
+    const unmarkCol = document.createElement("button");
+    unmarkCol.className = "ctx-item";
+    unmarkCol.innerHTML = `<span class="ctx-ico">x</span><span class="ctx-name">Unmark collections as assets</span>`;
+    unmarkCol.onclick = async (e) => {
+      e.stopPropagation(); closeCtxMenu();
+      if (!confirm("Remove the Asset Browser mark from collections in this .blend file? The file will be saved.")) return;
+      toast("Unmarking collections - Blender is running, please wait...");
+      const r = await post(`assets/${a.id}/unmark-assets`, { target: "collections" });
+      if (r.ok) toast(`Unmarked ${r.unmarked || 0} collections.`, "success");
+      else toast(r.error || "Unmarking failed.", "error");
+      if (isDrawerOpen() && drawerAssetId === a.id) renderBlendInfo(a);
+    };
+    menu.appendChild(unmarkCol);
   }
 
   _mountCtxMenu(menu, x, y);
@@ -1243,15 +1256,27 @@ async function renderBlendInfo(a) {
       const thumbUrl = asset.has_thumb
         ? `/api/assets/${a.id}/blend-asset-thumb?name=${safe}`
         : null;
-      html += `<div class="d-asset-tile" title="${esc(asset.kind)}: ${esc(asset.name)}">`;
+      const source = asset.preview_source || (asset.has_thumb
+        ? "Hangar rendered asset preview cache"
+        : "No rendered asset preview; showing type badge");
+      html += `<div class="d-asset-tile" title="${esc(asset.kind)}: ${esc(asset.name)}\n${esc(source)}">`;
       if (thumbUrl) {
         html += `<img class="d-asset-img" src="${thumbUrl}" alt="${esc(asset.name)}" loading="lazy">`;
       } else {
         html += `<div class="d-asset-noimg"><span>${esc(asset.kind[0])}</span></div>`;
       }
       html += `<div class="d-asset-name">${esc(asset.name)}</div>`;
+      html += `<div class="d-asset-source">${asset.has_thumb ? "Rendered" : "Type badge"}</div>`;
       html += `</div>`;
     }
+    html += `</div>`;
+    const hasCollections = info.assets.some(x => x.kind === "Collection");
+    html += `<div class="d-mark-actions">`;
+    html += `<button class="d-mark-btn" id="dMarkObjects">Mark objects as assets</button>`;
+    if (hasCollections) {
+      html += `<button class="d-mark-btn d-danger-btn" id="dUnmarkCollections">Unmark collections as assets</button>`;
+    }
+    html += `<button class="d-mark-btn d-danger-btn" id="dUnmarkAll">Unmark all asset marks</button>`;
     html += `</div>`;
   } else if (info.count === 0) {
     html += `<div class="d-section-label">Marked assets</div>`;
@@ -1310,6 +1335,8 @@ async function renderBlendInfo(a) {
 
   const markBtnObj = $("#dMarkObjects");
   const markBtnCol = $("#dMarkCollections");
+  const unmarkBtnCol = $("#dUnmarkCollections");
+  const unmarkBtnAll = $("#dUnmarkAll");
   const runMark = async (target, verb) => {
     setBusy(true, verb);
     let r;
@@ -1323,8 +1350,24 @@ async function renderBlendInfo(a) {
       setDone((r && r.error) || "Marking failed — check last_render.log.", false);
     }
   };
+  const runUnmark = async (target, label) => {
+    if (!confirm(`Remove the Asset Browser mark from ${label} in this .blend file? The file will be saved.`)) return;
+    setBusy(true, `Unmarking ${label}`);
+    let r;
+    try { r = await post(`assets/${a.id}/unmark-assets`, { target }); }
+    catch (_) { r = null; }
+    if (r && r.ok) {
+      setDone(`Unmarked ${r.unmarked || 0} ${label}. Refreshing...`, true);
+      renderBlendInfo(a);
+    } else {
+      setBusy(false);
+      setDone((r && r.error) || "Unmarking failed - check last_render.log.", false);
+    }
+  };
   if (markBtnObj) markBtnObj.onclick = () => runMark("objects", "Marking objects");
   if (markBtnCol) markBtnCol.onclick = () => runMark("collections", "Marking collections");
+  if (unmarkBtnCol) unmarkBtnCol.onclick = () => runUnmark("collections", "collections");
+  if (unmarkBtnAll) unmarkBtnAll.onclick = () => runUnmark("all", "all asset marks");
 
   const genBtn = $("#dGenPreviews");
   if (genBtn) {

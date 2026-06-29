@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.82"
+__version__ = "0.13.83"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -665,11 +665,16 @@ def _blend_info(asset):
         return None
     info = thumbs.inspect_blend(asset["path"]) or {
         "count": 0, "assets": [], "missing_textures": []}
-    have = {p["name"]: p["has_thumb"]
-            for p in thumbs.blend_asset_previews(asset["path"])}
+    previews = {p["name"]: p
+                for p in thumbs.blend_asset_previews(asset["path"])}
     for a in info["assets"]:
-        a["has_thumb"] = have.get(a["name"], False)
-    info["previews_ready"] = any(have.values())
+        preview = previews.get(a["name"], {})
+        a["has_thumb"] = preview.get("has_thumb", False)
+        a["preview_source"] = preview.get(
+            "preview_source",
+            "No rendered asset preview; showing type badge",
+        )
+    info["previews_ready"] = any(p.get("has_thumb") for p in previews.values())
     return info
 
 
@@ -718,6 +723,29 @@ def mark_assets(asset_id):
     result = thumbs.mark_blend_assets(asset["path"], target)
     if result.get("ok"):
         # Refresh the cached marked-asset count so the drawer/grid badge updates.
+        n = thumbs.count_blend_marked_assets(asset["path"])
+        store.save_blend_asset_count(asset_id, n)
+        result["blend_assets"] = n
+    return jsonify(result), 200
+
+
+@app.post("/api/assets/<int:asset_id>/unmark-assets")
+def unmark_assets(asset_id):
+    """Clear Blender Asset-Browser marks from a .blend by datablock type.
+    Modifies the source .blend. `target`: objects | collections | materials | all."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["ext"] != ".blend":
+        return jsonify({"error": "Only .blend files can be unmarked."}), 400
+    if not thumbs.blender_available():
+        return jsonify({"ok": False, "blender": False,
+                        "error": "Blender wasn't found â€” set its path first."}), 200
+    target = (request.get_json(silent=True) or {}).get("target", "collections")
+    if target not in ("objects", "collections", "materials", "all"):
+        target = "collections"
+    result = thumbs.unmark_blend_assets(asset["path"], target)
+    if result.get("ok"):
         n = thumbs.count_blend_marked_assets(asset["path"])
         store.save_blend_asset_count(asset_id, n)
         result["blend_assets"] = n

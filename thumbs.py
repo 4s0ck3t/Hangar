@@ -797,8 +797,9 @@ def _blend_asset_dir(path):
 
 # Run with: blender -b <src.blend> -P <script> -- <outdir> <action> <target>
 #   action: "mark"    = mark top-level objects/collections, then export previews
+#           "unmark"  = clear asset marks from objects/collections/materials/all
 #           "extract" = export previews for already-marked datablocks only
-#   target: "objects" | "collections"  (only used by "mark")
+#   target: "objects" | "collections" | "materials" | "all"
 # Writes <outdir>/manifest.json = [{"name","kind","file"}] and one PNG per asset.
 _MARK_ASSETS_SCRIPT = r'''
 import bpy, sys, os, json, re
@@ -807,7 +808,7 @@ argv = sys.argv[sys.argv.index("--") + 1:]
 outdir, action, target = argv[0], argv[1], (argv[2] if len(argv) > 2 else "objects")
 os.makedirs(outdir, exist_ok=True)
 
-KIND = {"objects": "Object", "collections": "Collection"}
+KIND = {"objects": "Object", "collections": "Collection", "materials": "Material"}
 
 
 def gen_preview(db):
@@ -854,6 +855,7 @@ def export_preview(db, path):
 
 def main():
     marked = 0
+    unmarked = 0
     if action == "mark":
         if target == "collections":
             targets = list(bpy.data.collections)
@@ -875,6 +877,26 @@ def main():
         except Exception as e:
             print("HANGAR_MARK_SAVE_FAIL:", e, flush=True)
 
+    if action == "unmark":
+        targets = []
+        if target in ("objects", "all"):
+            targets.extend(bpy.data.objects)
+        if target in ("collections", "all"):
+            targets.extend(bpy.data.collections)
+        if target in ("materials", "all"):
+            targets.extend(bpy.data.materials)
+        for db in targets:
+            try:
+                if getattr(db, "asset_data", None) is not None:
+                    db.asset_clear()
+                    unmarked += 1
+            except Exception as e:
+                print("HANGAR_UNMARK_SKIP:", getattr(db, "name", "?"), e, flush=True)
+        try:
+            bpy.ops.wm.save_mainfile(compress=bpy.data.use_autopack)
+        except Exception as e:
+            print("HANGAR_UNMARK_SAVE_FAIL:", e, flush=True)
+
     # Write manifest of marked datablocks (names + kinds only; no preview export).
     manifest = []
     for coll, kind in ((bpy.data.objects, "Object"),
@@ -887,7 +909,8 @@ def main():
 
     with open(os.path.join(outdir, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(manifest, fh)
-    print("HANGAR_MARK_DONE: marked=%d assets=%d" % (marked, len(manifest)), flush=True)
+    print("HANGAR_MARK_DONE: marked=%d unmarked=%d assets=%d"
+          % (marked, unmarked, len(manifest)), flush=True)
 
 
 main()
@@ -907,6 +930,16 @@ def mark_blend_assets(blend_path, target="objects"):
     if not os.path.exists(blend_path):
         return {"ok": False, "error": "File isn't accessible right now."}
     return _run_blend_assets(blender, blend_path, "mark", target)
+
+
+def unmark_blend_assets(blend_path, target="collections"):
+    """Clear Blender Asset-Browser marks from a .blend and save it in place."""
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "error": "Blender wasn't found â€” set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "error": "File isn't accessible right now."}
+    return _run_blend_assets(blender, blend_path, "unmark", target)
 
 
 def extract_blend_asset_previews(blend_path):
@@ -943,12 +976,14 @@ def _run_blend_assets(blender, blend_path, action, target):
             _record_render_log(blender, blend_path, None, exc=e)
             return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
     _record_render_log(blender, blend_path, proc)
-    m = re.search(r"HANGAR_MARK_DONE: marked=(\d+)", proc.stdout or "")
+    m = re.search(r"HANGAR_MARK_DONE: marked=(\d+) unmarked=(\d+)", proc.stdout or "")
     if not m:
         # DONE line never printed — script failed before finishing
         return {"ok": False, "error": _render_failure_summary(proc)}
     marked = int(m.group(1))
-    return {"ok": True, "marked": marked, "assets": blend_asset_previews(blend_path)}
+    unmarked = int(m.group(2))
+    return {"ok": True, "marked": marked, "unmarked": unmarked,
+            "assets": blend_asset_previews(blend_path)}
 
 
 # Per-object EEVEE thumbnail render — opens the .blend, isolates each marked
@@ -1107,7 +1142,11 @@ def blend_asset_previews(blend_path):
     except Exception:
         return []
     return [{"name": e.get("name"), "kind": e.get("kind"),
-             "has_thumb": bool(e.get("file"))} for e in entries]
+             "has_thumb": bool(e.get("file")),
+             "preview_source": ("Hangar rendered asset preview cache"
+                                if e.get("file")
+                                else "No rendered asset preview; showing type badge")}
+            for e in entries]
 
 
 def blend_asset_thumb_path(blend_path, name):
