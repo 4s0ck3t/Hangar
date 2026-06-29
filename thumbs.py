@@ -788,13 +788,10 @@ BLEND_ASSET_DIR = store.DATA_DIR / "blend_assets"
 
 
 def _blend_asset_dir(path):
-    """Cache directory for one .blend's exported asset previews + manifest,
-    keyed by path+mtime so it self-invalidates when the file changes."""
-    try:
-        mtime = os.path.getmtime(path)
-    except OSError:
-        mtime = 0
-    digest = hashlib.sha1(f"{path}:{mtime}".encode("utf-8")).hexdigest()[:16]
+    """Cache directory for one .blend's exported asset previews + manifest.
+    Keyed by path only — mtime is intentionally excluded so the manifest
+    survives the save that Blender performs when marking assets."""
+    digest = hashlib.sha1(path.encode("utf-8")).hexdigest()[:16]
     return BLEND_ASSET_DIR / digest
 
 
@@ -952,6 +949,152 @@ def _run_blend_assets(blender, blend_path, action, target):
         return {"ok": False, "error": _render_failure_summary(proc)}
     marked = int(m.group(1))
     return {"ok": True, "marked": marked, "assets": blend_asset_previews(blend_path)}
+
+
+# Per-object EEVEE thumbnail render — opens the .blend, isolates each marked
+# mesh, renders 256×256 at 16 samples, writes PNGs + manifest.  Does NOT save
+# the .blend so it can never crash from a pending render / save collision.
+_PREVIEW_SCRIPT = r'''
+import bpy, sys, os, json, re
+from mathutils import Vector
+
+argv = sys.argv[sys.argv.index("--") + 1:]
+outdir = argv[0]
+os.makedirs(outdir, exist_ok=True)
+
+scene = bpy.context.scene
+
+for eng in ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE'):
+    try:
+        scene.render.engine = eng
+        break
+    except TypeError:
+        pass
+
+try: scene.eevee.taa_render_samples = 16
+except Exception: pass
+
+scene.render.resolution_x = 256
+scene.render.resolution_y = 256
+scene.render.resolution_percentage = 100
+scene.render.film_transparent = True
+scene.render.use_file_extension = False
+scene.render.image_settings.file_format = 'PNG'
+scene.render.image_settings.color_mode = 'RGBA'
+
+if scene.camera is None:
+    cd = bpy.data.cameras.new("_HCam")
+    co = bpy.data.objects.new("_HCam", cd)
+    scene.collection.objects.link(co)
+    scene.camera = co
+
+if not any(o.type == 'LIGHT' for o in scene.objects):
+    ld = bpy.data.lights.new("_HSun", 'SUN')
+    ld.energy = 3.5
+    lo = bpy.data.objects.new("_HSun", ld)
+    lo.rotation_euler = (0.9, 0.15, 0.8)
+    scene.collection.objects.link(lo)
+
+
+def frame_camera(pts):
+    mn = Vector((min(p.x for p in pts), min(p.y for p in pts), min(p.z for p in pts)))
+    mx = Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts)))
+    center = (mn + mx) / 2.0
+    radius = max((mx - mn).length / 2.0, 0.01)
+    d = Vector((1.0, -1.2, 0.8)).normalized()
+    scene.camera.location = center + d * (radius * 3.2)
+    look = center - scene.camera.location
+    scene.camera.rotation_euler = look.to_track_quat('-Z', 'Y').to_euler()
+
+
+scene_meshes = [o for o in scene.objects if o.type == 'MESH']
+manifest = []
+
+for ob in bpy.data.objects:
+    if ob.type != 'MESH' or getattr(ob, 'asset_data', None) is None:
+        continue
+    linked_now = False
+    if ob.name not in scene.objects:
+        try:
+            scene.collection.objects.link(ob)
+            linked_now = True
+        except Exception as ex:
+            print("HANGAR_PREVIEW_LINK_FAIL:", ob.name, ex, flush=True)
+            manifest.append({"name": ob.name, "kind": "Object", "file": None})
+            continue
+    for o in scene_meshes:
+        o.hide_render = (o.name != ob.name)
+    ob.hide_render = False
+    pts = [ob.matrix_world @ Vector(c[:]) for c in ob.bound_box]
+    safe = re.sub(r'[^A-Za-z0-9_.-]', '_', ob.name)[:80]
+    fname = 'OB_%s.png' % safe
+    frame_camera(pts)
+    scene.render.filepath = os.path.join(outdir, fname)
+    try:
+        bpy.ops.render.render(write_still=True)
+        manifest.append({"name": ob.name, "kind": "Object", "file": fname})
+    except Exception as ex:
+        print("HANGAR_PREVIEW_RENDER_FAIL:", ob.name, ex, flush=True)
+        manifest.append({"name": ob.name, "kind": "Object", "file": None})
+    for o in scene_meshes:
+        o.hide_render = False
+    if linked_now:
+        try: scene.collection.objects.unlink(ob)
+        except Exception: pass
+
+for ob in bpy.data.objects:
+    if ob.type == 'MESH' or getattr(ob, 'asset_data', None) is None:
+        continue
+    manifest.append({"name": ob.name, "kind": "Object", "file": None})
+
+for col in bpy.data.collections:
+    if getattr(col, 'asset_data', None) is not None:
+        manifest.append({"name": col.name, "kind": "Collection", "file": None})
+
+for mat in bpy.data.materials:
+    if getattr(mat, 'asset_data', None) is not None:
+        manifest.append({"name": mat.name, "kind": "Material", "file": None})
+
+with open(os.path.join(outdir, 'manifest.json'), 'w', encoding='utf-8') as fh:
+    json.dump(manifest, fh)
+print("HANGAR_PREVIEW_DONE: assets=%d" % len(manifest), flush=True)
+'''
+
+
+def generate_blend_asset_previews(blend_path):
+    """Render a 256×256 EEVEE thumbnail for each marked mesh object in a .blend
+    and write them + a manifest to the cache dir. Non-destructive (never saves
+    the .blend). Returns {"ok", "assets", "error"}."""
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "error": "Blender wasn't found — set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "error": "File isn't accessible right now."}
+    import subprocess, tempfile
+    outdir = _blend_asset_dir(blend_path)
+    outdir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as td:
+        script = os.path.join(td, "hangar_preview.py")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_PREVIEW_SCRIPT)
+        try:
+            proc = subprocess.run(
+                [blender, "--background", "--factory-startup", "--disable-autoexec",
+                 blend_path, "-P", script, "--", str(outdir)],
+                timeout=RENDER_TIMEOUT, capture_output=True, text=True,
+                env=_blender_env(), **_no_window(),
+            )
+        except subprocess.TimeoutExpired as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Timed out after {RENDER_TIMEOUT}s."}
+        except Exception as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
+    _record_render_log(blender, blend_path, proc)
+    m = re.search(r"HANGAR_PREVIEW_DONE: assets=(\d+)", proc.stdout or "")
+    if not m:
+        return {"ok": False, "error": _render_failure_summary(proc)}
+    return {"ok": True, "assets": blend_asset_previews(blend_path)}
 
 
 def blend_asset_previews(blend_path):

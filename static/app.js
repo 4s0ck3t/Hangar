@@ -1238,13 +1238,18 @@ async function renderBlendInfo(a) {
     html += `<div class="d-blend-note">None — right-click the tile to mark objects or collections as assets.</div>`;
   }
 
+  // ── Generate previews button ───────────────────────────────────────────────
+  if (info.assets && info.assets.length && !info.previews_ready) {
+    html += `<button class="d-gen-previews-btn" id="dGenPreviews">Generate previews</button>`;
+  }
+
   // ── Missing textures ───────────────────────────────────────────────────────
   if (info.missing_textures && info.missing_textures.length) {
-    html += `<div class="d-section-label d-missing-label">⚠ Missing textures (${info.missing_textures.length})</div>`;
+    html += `<div class="d-section-label d-missing-label">Missing textures (${info.missing_textures.length})</div>`;
     html += `<div class="d-missing-textures">`;
     for (const t of info.missing_textures) {
       html += `<div class="d-missing-tex" title="${esc(t.path)}">`;
-      html += `<span class="d-missing-ico">🟪</span>`;
+      html += `<span class="d-missing-ico">&#9724;</span>`;
       html += `<span class="d-missing-name">${esc(t.name)}</span>`;
       html += `<span class="d-missing-path">${esc(t.path)}</span>`;
       html += `</div>`;
@@ -1253,6 +1258,23 @@ async function renderBlendInfo(a) {
   }
 
   el.innerHTML = html;
+
+  const genBtn = $("#dGenPreviews");
+  if (genBtn) {
+    genBtn.onclick = async () => {
+      genBtn.disabled = true;
+      genBtn.textContent = "Rendering…";
+      let r;
+      try { r = await post(`assets/${a.id}/generate-asset-previews`); }
+      catch (_) { r = null; }
+      if (r && r.ok) {
+        renderBlendInfo(a);
+      } else {
+        genBtn.disabled = false;
+        genBtn.textContent = "Generate previews (failed — check last_render.log)";
+      }
+    };
+  }
 }
 
 // Launch Blender on this asset (.blend opens directly; other models import into

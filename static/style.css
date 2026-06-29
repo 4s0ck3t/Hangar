@@ -844,6 +844,16 @@ button, input, select { font-family: inherit; color: inherit; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* Generate-previews button */
+.d-gen-previews-btn {
+  display: block; width: 100%; margin: 6px 0;
+  padding: 7px 12px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--raised-hi); color: var(--ink); font-size: 12px;
+  cursor: pointer; text-align: center;
+}
+.d-gen-previews-btn:hover:not(:disabled) { background: var(--accent-dim); border-color: var(--accent); }
+.d-gen-previews-btn:disabled { opacity: .55; cursor: default; }
+
 /* Missing textures list */
 .d-missing-label { color: rgba(232,121,74,.9); }
 .d-missing-textures {
@@ -855,7 +865,11 @@ button, input, select { font-family: inherit; color: inherit; }
   background: rgba(232,121,74,.08); border: 1px solid rgba(232,121,74,.3);
   border-radius: 6px; overflow: hidden;
 }
-.d-missing-ico { grid-row: 1 / 3; font-size: 13px; line-height: 1.8; }
+.d-missing-ico {
+  grid-row: 1 / 3; width: 12px; height: 12px;
+  background: #b36dff; border-radius: 2px;
+  margin-top: 3px; align-self: start;
+}
 .d-missing-name { font-size: 12px; font-weight: 500; color: var(--ink); word-break: break-all; }
 .d-missing-path {
   font-family: var(--mono); font-size: 10px; color: var(--faint);

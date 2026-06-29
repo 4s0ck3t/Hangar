@@ -44,6 +44,7 @@ jobs:
           --add-data "thumbs.py;."
           --add-data "scanner.py;."
           --collect-all trimesh
+          --collect-all zstandard
           --hidden-import imageio
           --hidden-import numpy
           --hidden-import worker

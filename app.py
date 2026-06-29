@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.79"
+__version__ = "0.13.80"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -713,6 +713,22 @@ def mark_assets(asset_id):
         n = thumbs.count_blend_marked_assets(asset["path"])
         store.save_blend_asset_count(asset_id, n)
         result["blend_assets"] = n
+    return jsonify(result), 200
+
+
+@app.post("/api/assets/<int:asset_id>/generate-asset-previews")
+def generate_asset_previews(asset_id):
+    """Render a 256×256 EEVEE thumbnail for each marked mesh object in a .blend
+    and cache them. Non-destructive — never modifies the source file."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["ext"] != ".blend":
+        return jsonify({"error": "Only .blend files are supported."}), 400
+    if not thumbs.blender_available():
+        return jsonify({"ok": False, "blender": False,
+                        "error": "Blender wasn't found — set its path first."}), 200
+    result = thumbs.generate_blend_asset_previews(asset["path"])
     return jsonify(result), 200
 
 
