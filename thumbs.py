@@ -740,7 +740,7 @@ _ID_CODE_KIND = {
 # Bump when _inspect_blend_uncached's result schema changes, so on-disk caches
 # from older builds (e.g. ones predating missing_textures) are recomputed even
 # when the .blend file itself is unchanged.
-_INSPECT_CACHE_VERSION = 2
+_INSPECT_CACHE_VERSION = 3
 
 
 def inspect_blend(path):
@@ -841,7 +841,11 @@ def _inspect_blend_uncached(path):
                                    "kind": _ID_CODE_KIND.get(code, code or "?")})
 
             # --- missing textures (Image datablocks) ---
-            if (img_idx is not None and stype == img_idx
+            # Match on sdna_index (the block's struct-table index), which is the
+            # same namespace _struct_index() returns. `stype` is the struct's
+            # *type* index — a different table — so comparing it to img_idx never
+            # matched and no missing texture was ever reported.
+            if (img_idx is not None and sdna_index == img_idx
                     and img_path_off is not None
                     and img_path_off + 1024 <= length):
                 # Packed images carry their pixels inside the .blend — never missing.
