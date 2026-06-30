@@ -1303,7 +1303,9 @@ async function renderBlendInfo(a) {
     html += `<div class="d-section-label">Marked assets (${info.assets.length})</div>`;
     html += `<div class="d-asset-gallery">`;
     for (const asset of info.assets) {
-      const safe = encodeURIComponent(asset.name);
+      // Request the PNG by the exact manifest key (preview_name), which can differ
+      // from the display name when the server matched via the normalized fallback.
+      const safe = encodeURIComponent(asset.preview_name || asset.name);
       const thumbUrl = asset.has_thumb
         ? `/api/assets/${a.id}/blend-asset-thumb?name=${safe}&v=${asset.thumb_mtime || 0}`
         : null;

@@ -845,29 +845,36 @@ def _inspect_blend_uncached(path):
             # same namespace _struct_index() returns. `stype` is the struct's
             # *type* index — a different table — so comparing it to img_idx never
             # matched and no missing texture was ever reported.
+            #
+            # Isolated in its own try/except: a single odd image path (e.g. one
+            # that makes os.path.exists raise) must not abort the whole parse and
+            # take the marked-asset list down with it.
             if (img_idx is not None and sdna_index == img_idx
                     and img_path_off is not None
                     and img_path_off + 1024 <= length):
-                # Packed images carry their pixels inside the .blend — never missing.
-                if img_pack_off is not None and img_pack_off + ptr_size <= length:
-                    if struct.unpack(ptr_fmt, data[body + img_pack_off:
-                                                   body + img_pack_off + ptr_size])[0]:
+                try:
+                    # Packed images carry their pixels inside the .blend — never missing.
+                    if img_pack_off is not None and img_pack_off + ptr_size <= length:
+                        if struct.unpack(ptr_fmt, data[body + img_pack_off:
+                                                       body + img_pack_off + ptr_size])[0]:
+                            continue
+                    fp = _read_cstr(data, body + img_path_off, 1024).strip()
+                    # Skip empty (generated/viewer images) and UDIM/sequence tokens
+                    # whose on-disk name we can't resolve to one concrete file.
+                    if not fp or "<" in fp:
                         continue
-                fp = _read_cstr(data, body + img_path_off, 1024).strip()
-                # Skip empty (generated/viewer images) and UDIM/sequence tokens
-                # whose on-disk name we can't resolve to one concrete file.
-                if not fp or "<" in fp:
-                    continue
-                resolved = fp
-                if resolved.startswith("//"):        # Blender = relative to .blend
-                    resolved = os.path.join(base, resolved[2:].lstrip("/\\"))
-                resolved = os.path.normpath(resolved.replace("\\", os.sep))
-                if resolved in seen_paths:
-                    continue
-                seen_paths.add(resolved)
-                if not os.path.exists(resolved):
-                    nm = _read_cstr(data, body + name_off, 66)[2:]
-                    missing.append({"name": nm or os.path.basename(fp), "path": fp})
+                    resolved = fp
+                    if resolved.startswith("//"):    # Blender = relative to .blend
+                        resolved = os.path.join(base, resolved[2:].lstrip("/\\"))
+                    resolved = os.path.normpath(resolved.replace("\\", os.sep))
+                    if resolved in seen_paths:
+                        continue
+                    seen_paths.add(resolved)
+                    if not os.path.exists(resolved):
+                        nm = _read_cstr(data, body + name_off, 66)[2:]
+                        missing.append({"name": nm or os.path.basename(fp), "path": fp})
+                except Exception:
+                    log.exception("missing-texture check failed in %s", path)
 
         if asset_off is None:
             count = 0                                # file predates asset system

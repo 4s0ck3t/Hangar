@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import platform
+import re
 import subprocess
 import sys
 import threading
@@ -22,7 +23,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.88"
+__version__ = "0.13.89"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -704,16 +705,28 @@ def _blend_info(asset):
         return None
     info = thumbs.inspect_blend(asset["path"]) or {
         "count": 0, "assets": [], "missing_textures": []}
-    previews = {p["name"]: p
-                for p in thumbs.blend_asset_previews(asset["path"])}
+    preview_list = thumbs.blend_asset_previews(asset["path"])
+    previews = {p["name"]: p for p in preview_list}
+    # The render manifest keys previews on Blender's object name; the DNA parse
+    # derives names from the raw datablock. They usually agree, but a normalized
+    # (case/punctuation-insensitive) index is a safety net so a rendered preview
+    # is never hidden by a trivial name difference.
+    def _norm(s):
+        return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+    previews_norm = {_norm(p["name"]): p for p in preview_list}
+
     # Marked datablocks that have been extracted to their own .blend file get a
     # green tick in the drawer. We match on base name: "bed_01_01" is "owned" if
     # a "bed_01_01.blend" exists anywhere in the library (excluding self).
     self_name = asset["name"].lower()
     blend_names = store.existing_blend_names()
+    matched = set()
     for a in info["assets"]:
-        preview = previews.get(a["name"], {})
+        preview = previews.get(a["name"]) or previews_norm.get(_norm(a["name"]), {})
         a["has_thumb"] = preview.get("has_thumb", False)
+        # The exact manifest key to request the PNG with (may differ from the
+        # DNA-parsed display name when the normalized fallback matched).
+        a["preview_name"] = preview.get("name", a["name"])
         a["thumb_mtime"] = preview.get("mtime", 0)
         a["preview_source"] = preview.get(
             "preview_source",
@@ -721,7 +734,23 @@ def _blend_info(asset):
         )
         name_l = a["name"].lower()
         a["has_individual"] = name_l in blend_names and name_l != self_name
-    info["previews_ready"] = any(p.get("has_thumb") for p in previews.values())
+        if preview:
+            matched.add(_norm(preview.get("name", a["name"])))
+    # A successful render must never be hidden by a name-match miss (or by the DNA
+    # parse coming back empty): surface any manifest preview the loop above didn't
+    # already attach to an asset, so what Blender rendered always appears.
+    for p in preview_list:
+        if p.get("has_thumb") and _norm(p["name"]) not in matched:
+            info["assets"].append({
+                "name": p["name"], "kind": p.get("kind", "Object"),
+                "has_thumb": True, "preview_name": p["name"],
+                "thumb_mtime": p.get("mtime", 0),
+                "preview_source": p.get("preview_source", ""),
+                "has_individual": p["name"].lower() in blend_names
+                                  and p["name"].lower() != self_name,
+            })
+            matched.add(_norm(p["name"]))
+    info["previews_ready"] = any(p.get("has_thumb") for p in preview_list)
     # What the main tile preview for this .blend is currently sourced from
     # (embedded thumbnail vs a Hangar render, and which engine) so the drawer can
     # tell the user instead of leaving them guessing.
