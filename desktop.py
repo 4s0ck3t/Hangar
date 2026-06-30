@@ -357,6 +357,7 @@ def _launch_app_window(url):
         _log(f"launching Edge/Chrome --app window via {browser}")
         proc = subprocess.Popen(args)
         backend.WINDOW_PROC = proc  # let the updater close this window on handover
+        backend.WINDOW_PROFILE = profile
     except Exception:
         _log("couldn't launch --app window:\n" + traceback.format_exc())
         return False

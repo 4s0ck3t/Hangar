@@ -23,7 +23,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.91"
+__version__ = "0.13.92"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1750,16 +1750,51 @@ def update_launch():
 # used), so we can close the window on handover. None for the in-process
 # pywebview window (os._exit closes it) or a plain browser tab.
 WINDOW_PROC = None
+WINDOW_PROFILE = None
+
+
+def _terminate_window_processes():
+    """Best-effort close for the Chromium --app window used by frozen builds.
+
+    Chromium's launcher process often exits immediately after handing off to the
+    real browser process, so WINDOW_PROC alone is not enough. The app window uses
+    a unique user-data-dir per Hangar launch; matching that command-line flag lets
+    us close the old window during update handoff without touching other browser
+    windows.
+    """
+    try:
+        if WINDOW_PROC is not None and WINDOW_PROC.poll() is None:
+            WINDOW_PROC.terminate()
+    except Exception:
+        pass
+    profile = WINDOW_PROFILE
+    if not profile:
+        return
+    try:
+        if platform.system() == "Windows":
+            quoted = "'" + os.path.normpath(profile).replace("'", "''") + "'"
+            ps = (
+                "$profile = " + quoted + "; "
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) } | "
+                "ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }"
+            )
+            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                            "-Command", ps],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=False)
+        else:
+            subprocess.run(["pkill", "-f", profile], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           check=False)
+    except Exception:
+        pass
 
 
 def _schedule_self_shutdown(delay=0.8):
     def _bye():
         time.sleep(delay)
-        try:
-            if WINDOW_PROC is not None:
-                WINDOW_PROC.terminate()
-        except Exception:
-            pass
+        _terminate_window_processes()
         os._exit(0)
     threading.Thread(target=_bye, daemon=True).start()
 

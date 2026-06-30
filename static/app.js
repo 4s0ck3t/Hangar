@@ -746,6 +746,9 @@ async function refresh() {
   const folderGrouped = !!f.folder && !f.kind && !f.ext && !f.tag
     && !f.collection && !f.category && !f.favorite && !state.search
     && !f.subtype && !f.resolution;
+  const categoryFolderGrouped = !!f.category && !f.folder && !f.tag
+    && !f.collection && !f.favorite && !state.search
+    && !f.subtype && !f.resolution;
 
   const p = new URLSearchParams();
   if (f.kind) p.set("kind", f.kind);
@@ -765,10 +768,12 @@ async function refresh() {
   p.set("group", "set");
   if (grouped) { p.set("with_categories", "1"); p.set("limit", "2000"); }
   if (folderGrouped) { p.set("limit", "2000"); }
+  if (categoryFolderGrouped) { p.set("limit", "2000"); }
 
   const data = await api("assets?" + p.toString());
   recordThumbMtimes(data.assets);
   if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
+  else if (categoryFolderGrouped) renderGroupedByFolder(data.assets, "", { parentOnly: true });
   else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
   // The renderers build _currentAssets in display order (grouped views reorder
@@ -919,7 +924,7 @@ function renderGroupedGrid(assets, kind, total) {
 }
 
 // Grouped view for a library folder: one section per immediate parent directory.
-function renderGroupedByFolder(assets, libraryPath) {
+function renderGroupedByFolder(assets, libraryPath, opts = {}) {
   const grid = $("#grid"); const empty = $("#emptyState");
   _vAssets = []; _vRange = { start: -1, end: -1 };
   _currentAssets = assets;
@@ -936,10 +941,15 @@ function renderGroupedByFolder(assets, libraryPath) {
   for (const a of assets) {
     const parentDir = (a.path || "").replace(/[\\/][^\\/]+$/, "");
     let label = parentDir;
+    let subtitle = "";
+    if (opts.parentOnly) {
+      label = baseName(parentDir) || parentDir || "(root)";
+      subtitle = parentDir;
+    }
     if (libRoot && parentDir.toLowerCase().startsWith(libRoot.toLowerCase())) {
       label = parentDir.slice(libRoot.length).replace(/^[\\/]+/, "") || "(root)";
     }
-    if (!groups.has(parentDir)) groups.set(parentDir, { label, items: [] });
+    if (!groups.has(parentDir)) groups.set(parentDir, { label, subtitle, items: [] });
     groups.get(parentDir).items.push(a);
   }
 
@@ -958,6 +968,7 @@ function renderGroupedByFolder(assets, libraryPath) {
     head.innerHTML =
       `<span class="section-ico">📁</span>` +
       `<span class="section-name">${esc(s.label)}</span>` +
+      (s.subtitle ? `<span class="section-subtitle">${esc(s.subtitle)}</span>` : "") +
       `<span class="section-count">${s.items.length}</span>`;
     section.appendChild(head);
     const sgrid = document.createElement("div");
@@ -2640,8 +2651,10 @@ $("#updateDownloadBtn").onclick = startUpdateDownload;
 
 async function launchUpdate() {
   const r = await post("update/launch");
-  if (r.ok) toast("Restarting into the new version…", "success");  // this window closes itself
-  else toast((r && r.error) || "Couldn't launch — open “Hangar files” and run it.", "error");
+  if (r.ok) {
+    toast("Restarting into the new version...", "success");
+    setTimeout(() => { try { window.close(); } catch (_) {} }, 120);
+  } else toast((r && r.error) || "Couldn't launch - open Hangar files and run it.", "error");
 }
 // Manual "Check for updates" — explicit feedback for every outcome so it's
 // never a mystery whether a check ran (unlike the silent boot-time check).
