@@ -48,6 +48,57 @@ def has_cached_thumb(asset):
         return False
 
 
+# Human-readable labels for the preview source written alongside each thumbnail,
+# so the drawer can tell the user exactly what they're looking at.
+_PREVIEW_SOURCE_LABELS = {
+    "embedded": "Embedded .blend thumbnail (128 px, from the file)",
+    "render": "Hangar render",
+    "sibling": "Sibling preview image next to the file",
+    "image": "Source image",
+}
+
+
+def _thumb_meta_path(thumb_path):
+    p = Path(thumb_path)
+    return p.with_name(p.stem + ".meta.json")
+
+
+def _write_thumb_source(thumb_path, source, engine=None):
+    """Record how a cached thumbnail was produced (embedded vs Hangar render, and
+    the engine for a render) in a sidecar JSON, so the UI can show it. Best-effort."""
+    try:
+        meta = {"source": source}
+        if engine:
+            meta["engine"] = engine
+        with open(_thumb_meta_path(thumb_path), "w", encoding="utf-8") as fh:
+            json.dump(meta, fh)
+    except Exception:
+        pass
+
+
+def preview_source(asset):
+    """Describe the preview currently cached for an asset:
+    {"source", "engine", "label", "has_thumb"}. Reads the sidecar written when the
+    thumbnail was made; falls back to an unknown source if a thumb exists without
+    one (e.g. baked by an older build)."""
+    out = _thumb_path(asset)
+    if not out.exists():
+        return {"has_thumb": False, "source": None, "engine": None,
+                "label": "No preview cached yet"}
+    source = engine = None
+    try:
+        with open(_thumb_meta_path(out), "r", encoding="utf-8") as fh:
+            meta = json.load(fh)
+        source = meta.get("source")
+        engine = meta.get("engine")
+    except Exception:
+        pass
+    label = _PREVIEW_SOURCE_LABELS.get(source, "Cached preview")
+    if source == "render" and engine:
+        label = f"Hangar render · {engine}"
+    return {"has_thumb": True, "source": source, "engine": engine, "label": label}
+
+
 def delete_cached_thumb(asset):
     """Remove this asset's cached thumbnail JPEG, if present.
 
@@ -58,6 +109,7 @@ def delete_cached_thumb(asset):
         out = _thumb_path(asset)
         if out.exists():
             out.unlink()
+            _thumb_meta_path(out).unlink(missing_ok=True)
             return True
     except Exception:
         log.exception("delete_cached_thumb failed for %s", asset.get("path", "?"))
@@ -204,7 +256,10 @@ def _from_model(asset, out):
     if sibling:
         from PIL import Image
         with Image.open(sibling) as img:
-            return _save_downscaled(img, out)
+            if _save_downscaled(img, out):
+                _write_thumb_source(out, "sibling")
+                return True
+            return False
     if asset["ext"] == ".blend":
         # Most .blend files embed a viewport preview in the TEST block (what
         # Blender's file browser shows). Prefer that for speed; only fall
@@ -212,7 +267,9 @@ def _from_model(asset, out):
         img = extract_blend_thumbnail(asset["path"])
         if img is not None:
             img = _strip_light_bg(img)
-            return _save_downscaled(img, out, min_side=THUMB_SIZE[0])
+            if _save_downscaled(img, out, min_side=THUMB_SIZE[0]):
+                _write_thumb_source(out, "embedded")
+                return True
         return False
     return _render_model(asset, out)
 
@@ -680,6 +737,12 @@ _ID_CODE_KIND = {
 }
 
 
+# Bump when _inspect_blend_uncached's result schema changes, so on-disk caches
+# from older builds (e.g. ones predating missing_textures) are recomputed even
+# when the .blend file itself is unchanged.
+_INSPECT_CACHE_VERSION = 2
+
+
 def inspect_blend(path):
     """Pure-Python inspection of a .blend, cached on disk by (mtime, size).
 
@@ -695,7 +758,12 @@ def inspect_blend(path):
     try:
         with open(cache_file, "r", encoding="utf-8") as fh:
             cached = json.load(fh)
-        if (cached.get("mtime") == st.st_mtime
+        # The version guard matters as much as mtime/size: when the parse gains a
+        # new field (e.g. missing_textures), an unchanged file would otherwise
+        # keep serving the old dict that lacks it. Bumping _INSPECT_CACHE_VERSION
+        # forces a recompute so new fields actually surface.
+        if (cached.get("version") == _INSPECT_CACHE_VERSION
+                and cached.get("mtime") == st.st_mtime
                 and cached.get("size") == st.st_size):
             return cached["result"]                  # fresh objects from JSON
     except Exception:
@@ -705,7 +773,8 @@ def inspect_blend(path):
         try:
             _blend_asset_dir(path).mkdir(parents=True, exist_ok=True)
             with open(cache_file, "w", encoding="utf-8") as fh:
-                json.dump({"mtime": st.st_mtime, "size": st.st_size,
+                json.dump({"version": _INSPECT_CACHE_VERSION,
+                           "mtime": st.st_mtime, "size": st.st_size,
                            "result": result}, fh)
         except Exception:
             log.exception("inspect_blend cache write failed for %s", path)
@@ -1638,6 +1707,17 @@ def _parse_render_gpu(proc):
         LAST_RENDER_GPU = f"{eng or '?'} · {gpu or '?'}"
 
 
+def _render_engine(proc):
+    """The engine Blender actually rendered with, from its HANGAR_ENGINE line
+    (e.g. BLENDER_EEVEE_NEXT, or CYCLES after a CPU fallback). None if absent."""
+    if not proc or not proc.stdout:
+        return None
+    for line in proc.stdout.splitlines():
+        if line.startswith("HANGAR_ENGINE:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
 def _render_failure_summary(proc=None, exc=None):
     if exc is not None:
         if isinstance(exc, subprocess.TimeoutExpired):
@@ -1790,6 +1870,7 @@ def render_model(model_path, out_jpg):
                     with Image.open(sib) as im:
                         if _save_downscaled(im, out_jpg):
                             LAST_RENDER_ERROR = None
+                            _write_thumb_source(out_jpg, "sibling")
                             _record_render_log(blender, model_path, proc)
                             return True
                 except Exception:
@@ -1816,6 +1897,7 @@ def render_model(model_path, out_jpg):
                 if ok:
                     LAST_RENDER_ERROR = None
                     _parse_render_gpu(proc)
+                    _write_thumb_source(out_jpg, "render", _render_engine(proc))
                     _record_render_log(blender, model_path, proc)
                     return True
             except Exception as e:

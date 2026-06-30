@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.86"
+__version__ = "0.13.87"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -722,6 +722,10 @@ def _blend_info(asset):
         name_l = a["name"].lower()
         a["has_individual"] = name_l in blend_names and name_l != self_name
     info["previews_ready"] = any(p.get("has_thumb") for p in previews.values())
+    # What the main tile preview for this .blend is currently sourced from
+    # (embedded thumbnail vs a Hangar render, and which engine) so the drawer can
+    # tell the user instead of leaving them guessing.
+    info["preview"] = thumbs.preview_source(asset)
     return info
 
 

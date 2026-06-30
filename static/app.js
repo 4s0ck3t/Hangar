@@ -1286,6 +1286,18 @@ async function renderBlendInfo(a) {
 
   let html = "";
 
+  // ── Preview source ─────────────────────────────────────────────────────────
+  // Tell the user what the big preview is sourced from: the .blend's own 128px
+  // embedded thumbnail, or a full Hangar render (and which engine — EEVEE, or
+  // CYCLES after a GPU-crash CPU fallback).
+  if (info.preview && info.preview.label) {
+    const isRender = info.preview.source === "render";
+    html += `<div class="d-preview-source" title="What this tile's image was generated from">`;
+    html += `<span class="d-preview-source-ico">${isRender ? "🎬" : "🖼"}</span>`;
+    html += `<span class="d-preview-source-label">Preview: ${esc(info.preview.label)}</span>`;
+    html += `</div>`;
+  }
+
   // ── Marked assets gallery ──────────────────────────────────────────────────
   if (info.assets && info.assets.length) {
     html += `<div class="d-section-label">Marked assets (${info.assets.length})</div>`;
@@ -1348,17 +1360,25 @@ async function renderBlendInfo(a) {
   html += `<div class="d-blend-status" id="dBlendStatus" hidden></div>`;
 
   // ── Missing textures ───────────────────────────────────────────────────────
-  if (info.missing_textures && info.missing_textures.length) {
-    html += `<div class="d-section-label d-missing-label">Missing textures (${info.missing_textures.length})</div>`;
-    html += `<div class="d-missing-textures">`;
-    for (const t of info.missing_textures) {
-      html += `<div class="d-missing-tex" title="${esc(t.path)}">`;
-      html += `<span class="d-missing-ico">&#9724;</span>`;
-      html += `<span class="d-missing-name">${esc(t.name)}</span>`;
-      html += `<span class="d-missing-path">${esc(t.path)}</span>`;
+  // `missing_textures` is an array whenever the .blend parsed; show the empty
+  // case explicitly ("all found") so the panel never just silently omits the
+  // section and leaves the user unsure whether it ran.
+  if (Array.isArray(info.missing_textures)) {
+    if (info.missing_textures.length) {
+      html += `<div class="d-section-label d-missing-label">Missing textures (${info.missing_textures.length})</div>`;
+      html += `<div class="d-missing-textures">`;
+      for (const t of info.missing_textures) {
+        html += `<div class="d-missing-tex" title="${esc(t.path)}">`;
+        html += `<span class="d-missing-ico">&#9724;</span>`;
+        html += `<span class="d-missing-name">${esc(t.name)}</span>`;
+        html += `<span class="d-missing-path">${esc(t.path)}</span>`;
+        html += `</div>`;
+      }
       html += `</div>`;
+    } else {
+      html += `<div class="d-section-label">Textures</div>`;
+      html += `<div class="d-blend-note">✓ All referenced textures found on disk.</div>`;
     }
-    html += `</div>`;
   }
 
   el.innerHTML = html;
@@ -1874,6 +1894,7 @@ async function _upgradeBlendPreview(a) {
       loadPreview(a);
       const cardImg = $(`#grid .card[data-id="${a.id}"] img`);
       if (cardImg) cardImg.src = thumbUrl(a.id);
+      if (a.ext === ".blend") renderBlendInfo(a);  // refresh the "Preview:" source line
     }
   } catch (_) {}
 }
