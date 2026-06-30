@@ -354,32 +354,18 @@ function buildCategoryItem(c, nested) {
       await loadState(); refresh();
     };
 
-    // Reorder source: drag this category to re-sort the sidebar.
-    li.draggable = true;
+    // Drop target: a dragged asset card gets filed into this category. (The
+    // sidebar is sorted alphabetically now, so categories aren't drag-reordered.)
     li.dataset.catId = c.id;
     li.dataset.catKind = c.kind || "";
-    li.addEventListener("dragstart", (e) => {
-      e.dataTransfer.setData("text/x-hangar-cat-id", String(c.id));
-      e.dataTransfer.effectAllowed = "move";
-      li.classList.add("dragging-cat");
-    });
-    li.addEventListener("dragend", () => li.classList.remove("dragging-cat"));
-
-    // Drop target: a dragged category reorders the list; a dragged asset card
-    // gets filed into this category. Distinguished by the dataTransfer type.
     li.addEventListener("dragover", (e) => {
       e.preventDefault();
-      if (Array.from(e.dataTransfer.types || []).includes("text/x-hangar-cat-id"))
-        li.classList.add("cat-reorder-over");
-      else
-        li.classList.add("drop-over");
+      li.classList.add("drop-over");
     });
-    li.addEventListener("dragleave", () => li.classList.remove("drop-over", "cat-reorder-over"));
+    li.addEventListener("dragleave", () => li.classList.remove("drop-over"));
     li.addEventListener("drop", async (e) => {
       e.preventDefault();
-      li.classList.remove("drop-over", "cat-reorder-over");
-      const dragCatId = e.dataTransfer.getData("text/x-hangar-cat-id");
-      if (dragCatId) { await reorderCategory(parseInt(dragCatId, 10), c); return; }
+      li.classList.remove("drop-over");
       const assetId = e.dataTransfer.getData("text/x-hangar-asset-id");
       if (!assetId) return;
       await post(`assets/${assetId}/category`, { category: c.name, add: true });
@@ -393,7 +379,7 @@ function buildCategoryItem(c, nested) {
 function foldersForCategory(c) {
   return (categoryFolders || [])
     .filter((f) => f.category === c.name && (f.kind || "") === (c.kind || ""))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
 function buildCategoryFolderItem(c, f) {
@@ -1254,6 +1240,20 @@ function showCategoryMenu(x, y, a) {
       await moveAssetToCategory(a, c.name);
     };
     menu.appendChild(item);
+    // Folders already represented in this category — picking one files the asset
+    // there AND moves its file into that folder on disk.
+    for (const f of foldersForCategory(c)) {
+      const fitem = document.createElement("button");
+      fitem.className = "ctx-item ctx-subitem";
+      fitem.title = `Move the file into ${f.path}`;
+      fitem.innerHTML =
+        `<span class="ctx-ico">📁</span><span class="ctx-name">${esc(f.name)}</span>`;
+      fitem.onclick = async (e) => {
+        e.stopPropagation(); closeCtxMenu();
+        await moveAssetToFolder(a, c, f);
+      };
+      menu.appendChild(fitem);
+    }
   }
 
   const sep = document.createElement("div"); sep.className = "ctx-sep";
@@ -1784,6 +1784,23 @@ async function moveAssetToCategory(a, name) {
   toast(`Moved to ${name}`, "success");
   if (drawerAssetId === a.id) renderDrawerCategoryEditor(a);
   refresh(); loadState();
+}
+
+// Physically move the asset's file into one of a category's folders, then file
+// it under that category. Confirms first because it relocates a file on disk.
+async function moveAssetToFolder(a, c, f) {
+  const warn = a.ext === ".blend"
+    ? "\n\n⚠ This is a .blend — if it references textures by relative path, moving it may break those links."
+    : "";
+  if (!confirm(`Move "${a.name}${a.ext}" into:\n${f.path}\n\nThis relocates the file on disk and files it under "${c.name}".${warn}`))
+    return;
+  let r;
+  try { r = await post(`assets/${a.id}/move-to-folder`, { folder: f.path }); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) { toast((r && r.error) || "Couldn't move the file.", "error"); return; }
+  a.path = r.path;
+  await moveAssetToCategory(a, c.name);   // file under the category (also refreshes)
+  toast(`Moved into ${f.name}`, "success");
 }
 
 async function uncategorizeAsset(a) {

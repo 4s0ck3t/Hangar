@@ -800,7 +800,7 @@ def list_categories():
             "SELECT cat.id, cat.name, cat.icon, cat.keywords, cat.kind, "
             "COUNT(ac.asset_id) c FROM categories cat "
             "LEFT JOIN asset_categories ac ON ac.category_id=cat.id "
-            "GROUP BY cat.id ORDER BY cat.sort, cat.name COLLATE NOCASE"
+            "GROUP BY cat.id ORDER BY cat.name COLLATE NOCASE"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -836,7 +836,7 @@ def category_folder_counts():
         })
         item["count"] += 1
     out = list(by_key.values())
-    out.sort(key=lambda x: (x["category"].lower(), -x["count"], x["name"].lower()))
+    out.sort(key=lambda x: (x["category"].lower(), x["name"].lower()))
     return out
 
 

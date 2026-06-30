@@ -9,6 +9,7 @@ import mimetypes
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -23,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.94"
+__version__ = "0.13.95"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -673,6 +674,35 @@ def rename_asset(asset_id):
         return jsonify({"error": f"Couldn't rename the file: {e}"}), 500
     store.rename_asset(asset_id, new_path, new_base)
     return jsonify({"ok": True, "name": new_base, "path": new_path})
+
+
+@app.post("/api/assets/<int:asset_id>/move-to-folder")
+def move_to_folder(asset_id):
+    """Physically move the asset's file into an existing folder (keeping its
+    name) and update the library row. Body: {"folder": "<destination dir>"}.
+
+    Used by the right-click "Move to category → folder" action, so a file can be
+    filed into one of the folders already represented in that category."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    dest_dir = str((request.get_json(silent=True) or {}).get("folder", "")).strip()
+    if not dest_dir or not os.path.isdir(dest_dir):
+        return jsonify({"error": "That folder isn't accessible."}), 400
+    old_path = asset["path"]
+    if not os.path.exists(old_path):
+        return jsonify({"error": "File isn't accessible right now."}), 400
+    new_path = os.path.join(dest_dir, os.path.basename(old_path))
+    if os.path.normcase(os.path.normpath(new_path)) == os.path.normcase(os.path.normpath(old_path)):
+        return jsonify({"ok": True, "path": old_path, "unchanged": True})
+    if os.path.exists(new_path):
+        return jsonify({"error": "A file with that name already exists in that folder."}), 409
+    try:
+        shutil.move(old_path, new_path)          # handles cross-drive moves
+    except OSError as e:
+        return jsonify({"error": f"Couldn't move the file: {e}"}), 500
+    store.rename_asset(asset_id, new_path, asset["name"])
+    return jsonify({"ok": True, "path": new_path})
 
 
 @app.post("/api/assets/<int:asset_id>/open-file")
