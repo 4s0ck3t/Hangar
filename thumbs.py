@@ -1647,6 +1647,37 @@ def _scene_points(scene):
     return pts
 
 
+def _link_blend_fallback_geometry(scene):
+    """If a .blend opens to an empty scene, link loose object datablocks so an
+    asset-file/object-library .blend can still render a preview."""
+    geom = {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT'}
+    linked = 0
+    for ob in bpy.data.objects:
+        if ob.type not in geom:
+            continue
+        try:
+            ob.hide_render = False
+            ob.hide_viewport = False
+        except Exception:
+            pass
+        if ob.name in scene.objects:
+            continue
+        try:
+            scene.collection.objects.link(ob)
+            linked += 1
+        except RuntimeError:
+            pass
+        except Exception as ex:
+            print("HANGAR_LINK_SKIP:", ob.name, ex, flush=True)
+    if linked:
+        print("HANGAR_LINKED_LOOSE_GEOMETRY:", linked, flush=True)
+        try:
+            bpy.context.view_layer.update()
+        except Exception:
+            pass
+    return linked
+
+
 def _set_cpu_cycles(scene):
     """Use CPU Cycles for authored .blend scenes."""
     try:
@@ -1733,6 +1764,9 @@ def frame_and_render(out, ext, mode):
     # definition (a Megascans texture set), not a model. Don't render a blank;
     # signal it so Hangar can fall back to the set's colour map instead.
     pts = _scene_points(scene)
+    if not pts and ext == ".blend":
+        _link_blend_fallback_geometry(scene)
+        pts = _scene_points(scene)
     if not pts:
         print("HANGAR_NO_GEOMETRY", flush=True)
         return

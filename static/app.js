@@ -114,6 +114,7 @@ function toast(msg, type) {
 async function loadState() {
   const s = await api("state");
   allCategories = s.categories || [];
+  categoryFolders = s.category_folders || [];
   appCaps.blenderReady = !!s.blender_render;
   appCaps.renderExts = s.blender_render_exts || [];
   renderKindFilters(s.counts, allCategories);
@@ -249,8 +250,12 @@ function renderKindFilters(counts, cats) {
 
     if (collapsed) continue;  // children hidden
 
-    // Categories nested under their type.
-    for (const c of kindCats) ul.appendChild(buildCategoryItem(c, true));
+    // Categories nested under their type, with their represented folders under
+    // each category (e.g. Furniture > Beds).
+    for (const c of kindCats) {
+      ul.appendChild(buildCategoryItem(c, true));
+      for (const f of foldersForCategory(c)) ul.appendChild(buildCategoryFolderItem(c, f));
+    }
 
     // Model file-format subcategories, under Models below its categories.
     if (kind === "model" && count > 0) {
@@ -383,6 +388,31 @@ function buildCategoryItem(c, nested) {
     });
 
     return li;
+}
+
+function foldersForCategory(c) {
+  return (categoryFolders || [])
+    .filter((f) => f.category === c.name && (f.kind || "") === (c.kind || ""))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+function buildCategoryFolderItem(c, f) {
+  const li = document.createElement("li");
+  li.className = "cat-folder-item";
+  if (state.filter.category === c.name && state.filter.folder === f.path) li.classList.add("active");
+  li.title = f.path;
+  li.innerHTML =
+    `<span class="folder-dot"></span>` +
+    `<span class="cat-folder-name">${esc(f.name)}</span><span class="count">${f.count}</span>`;
+  li.onclick = (e) => {
+    e.stopPropagation();
+    resetFilter();
+    state.filter.kind = c.kind || "";
+    state.filter.category = c.name;
+    state.filter.folder = f.path;
+    refresh();
+  };
+  return li;
 }
 
 function renderCollectionFilters(cols) {
@@ -566,6 +596,7 @@ function updateBatchBar() {
     ${blendBtn}
     <button class="batch-coll-btn" id="batchCollBtn">+ Collection</button>
     <button class="batch-cat-btn" id="batchCatBtn">+ Category</button>
+    <button class="batch-cat-btn" id="batchCatRemoveBtn">- Category</button>
     <button class="batch-del-btn" id="batchDelBtn">Remove from Hangar</button>
     <button class="batch-clear" id="batchClearBtn">✕</button>`;
 
@@ -584,15 +615,9 @@ function updateBatchBar() {
     refresh(); loadState();
   };
   $("#batchCatBtn").onclick = async () => {
-    const cats = allCategories.length
-      ? allCategories.map(c => `${c.icon || ""}${c.name}`).join(", ")
-      : "";
-    const hint = cats ? ` (existing: ${cats})` : "";
-    const name = prompt(`Add to category${hint}:`); if (!name) return;
-    await post("assets/batch/category", { ids: [...selection], category: name });
-    toast(`Categorised ${selection.size} asset${selection.size > 1 ? "s" : ""} as "${name}"`, "success");
-    refresh(); loadState();
+    await batchCategory(true);
   };
+  $("#batchCatRemoveBtn").onclick = async () => { await batchCategory(false); };
   $("#batchDelBtn").onclick = async () => {
     if (!confirm(`Remove ${selection.size} asset${selection.size > 1 ? "s" : ""} from Hangar? Files stay on disk.`)) return;
     await post("assets/batch/remove", { ids: [...selection] });
@@ -618,6 +643,29 @@ function updateBatchBar() {
       toast((r && r.error) || "Couldn't queue for Blender. Is the bridge connected?", "error");
     }
   };
+}
+
+function selectedAssets() {
+  return [...selection]
+    .map((id) => _currentAssets.find((a) => a.id === id) || currentAssets.find((a) => a.id === id))
+    .filter(Boolean);
+}
+
+function categoryPrompt(action) {
+  const kinds = new Set(selectedAssets().map((a) => a.kind));
+  const cats = (allCategories || []).filter((c) => !c.kind || !kinds.size || kinds.has(c.kind));
+  const hint = cats.length
+    ? `\n\nExisting categories:\n${cats.map((c) => `${c.icon || ""}${c.name}`).join(", ")}`
+    : "";
+  return (prompt(`${action} category:${hint}`) || "").trim();
+}
+
+async function batchCategory(add) {
+  const name = categoryPrompt(add ? "Add to" : "Remove from");
+  if (!name) return;
+  await post("assets/batch/category", { ids: [...selection], category: name, add });
+  toast(`${add ? "Added" : "Removed"} ${selection.size} asset${selection.size > 1 ? "s" : ""} ${add ? "to" : "from"} "${name}"`, "success");
+  refresh(); loadState();
 }
 
 function clearSelection() {
@@ -1579,6 +1627,19 @@ function showBatchMenu(x, y) {
     menu.appendChild(regen);
   }
 
+  const sep = document.createElement("div"); sep.className = "ctx-sep";
+  menu.appendChild(sep);
+  const addCat = document.createElement("button");
+  addCat.className = "ctx-item";
+  addCat.innerHTML = `<span class="ctx-ico">+</span><span class="ctx-name">Add to category</span>`;
+  addCat.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await batchCategory(true); };
+  menu.appendChild(addCat);
+  const removeCat = document.createElement("button");
+  removeCat.className = "ctx-item ctx-danger";
+  removeCat.innerHTML = `<span class="ctx-ico">-</span><span class="ctx-name">Remove from category</span>`;
+  removeCat.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await batchCategory(false); };
+  menu.appendChild(removeCat);
+
   _mountCtxMenu(menu, x, y);
 }
 
@@ -2251,6 +2312,7 @@ function renderTagEditor(a) {
 }
 
 let allCategories = [];
+let categoryFolders = [];
 
 function renderDrawerCategoryEditor(a) {
   const row = $("#dCatRow");

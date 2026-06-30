@@ -805,6 +805,41 @@ def list_categories():
     return [dict(r) for r in rows]
 
 
+def category_folder_counts():
+    """Immediate parent folders represented inside each category.
+
+    The sidebar uses this to show e.g. Furniture > Beds, while keeping the
+    existing category membership model unchanged. Counts are by indexed asset
+    row, not by physical directory size.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT cat.name category, cat.kind, a.path "
+            "FROM categories cat "
+            "JOIN asset_categories ac ON ac.category_id=cat.id "
+            "JOIN assets a ON a.id=ac.asset_id "
+            "WHERE a.missing=0 "
+            "ORDER BY cat.sort, cat.name COLLATE NOCASE, a.path"
+        ).fetchall()
+    by_key = {}
+    for r in rows:
+        folder = os.path.dirname(r["path"])
+        if not folder:
+            continue
+        key = (r["category"], r["kind"] or "", folder)
+        item = by_key.setdefault(key, {
+            "category": r["category"],
+            "kind": r["kind"] or "",
+            "path": folder,
+            "name": os.path.basename(folder) or folder,
+            "count": 0,
+        })
+        item["count"] += 1
+    out = list(by_key.values())
+    out.sort(key=lambda x: (x["category"].lower(), -x["count"], x["name"].lower()))
+    return out
+
+
 def create_category(name, icon="", keywords="", kind=""):
     name = (name or "").strip()
     if not name:

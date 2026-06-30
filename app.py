@@ -23,7 +23,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.92"
+__version__ = "0.13.93"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -213,6 +213,7 @@ def state():
         "tags": store.list_tags(),
         "collections": store.list_collections(),
         "categories": store.list_categories(),
+        "category_folders": store.category_folder_counts(),
         "counts": store.kind_counts(),
         "blender_queue": str(BLENDER_QUEUE),
         "blender_render": thumbs.blender_available(),
@@ -548,10 +549,11 @@ def batch_category():
     data = request.get_json(force=True)
     ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
     category = (data.get("category") or "").strip()
+    add = data.get("add", True)
     if not ids or not category:
         return jsonify({"error": "ids and category required"}), 400
     for aid in ids:
-        store.set_category_membership(category, aid, add=True)
+        store.set_category_membership(category, aid, add=add)
     return jsonify({"ok": True, "count": len(ids)})
 
 

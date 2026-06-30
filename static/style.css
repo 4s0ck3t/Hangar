@@ -208,6 +208,18 @@ button, input, select { font-family: inherit; color: inherit; }
 }
 .filter-list li.cat-item.cat-sub .cat-ico { font-size: 12px; }
 .filter-list li.cat-item.cat-sub .dot { width: 6px; height: 6px; }
+.filter-list li.cat-folder-item {
+  padding: 4px 8px 4px 42px;
+  font-size: 11.5px;
+}
+.filter-list li.cat-folder-item.active .folder-dot { background: var(--select); }
+.folder-dot {
+  width: 5px; height: 5px; border-radius: 1px; flex: none;
+  background: var(--faint); opacity: .75;
+}
+.cat-folder-name {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* A touch more breathing room before the next top-level type */
 .filter-list li.kind-item { margin-top: 2px; }
 .filter-list li.kind-item:first-child { margin-top: 0; }
