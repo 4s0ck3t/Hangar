@@ -68,8 +68,20 @@ function toggleCollapse(kind) {
   loadState();  // re-render the sidebar
 }
 const thumbBust = {};
+const thumbMtime = {};   // id -> asset mtime, so the URL changes when the file does
+// Record each asset's mtime so thumbUrl() can stamp it into the query string.
+// The stamp makes the tile URL content-addressed: it stays identical while the
+// source file is unchanged (so the browser serves it straight from cache — see
+// the long max-age on /api/thumb), and changes the moment a rescan picks up an
+// edit, refetching without a manual bust.
+function recordThumbMtimes(assets) {
+  for (const a of assets || []) if (a && a.id != null) thumbMtime[a.id] = a.mtime;
+}
 function thumbUrl(id) {
-  return `/api/thumb/${id}` + (thumbBust[id] ? `?t=${thumbBust[id]}` : "");
+  const parts = [];
+  if (thumbMtime[id] != null) parts.push(`v=${thumbMtime[id]}`);
+  if (thumbBust[id]) parts.push(`t=${thumbBust[id]}`);   // explicit rebake override
+  return `/api/thumb/${id}` + (parts.length ? `?${parts.join("&")}` : "");
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -755,6 +767,7 @@ async function refresh() {
   if (folderGrouped) { p.set("limit", "2000"); }
 
   const data = await api("assets?" + p.toString());
+  recordThumbMtimes(data.assets);
   if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
   else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
@@ -1280,7 +1293,7 @@ async function renderBlendInfo(a) {
     for (const asset of info.assets) {
       const safe = encodeURIComponent(asset.name);
       const thumbUrl = asset.has_thumb
-        ? `/api/assets/${a.id}/blend-asset-thumb?name=${safe}`
+        ? `/api/assets/${a.id}/blend-asset-thumb?name=${safe}&v=${asset.thumb_mtime || 0}`
         : null;
       const source = asset.preview_source || (asset.has_thumb
         ? "Hangar rendered asset preview cache"
@@ -1936,6 +1949,7 @@ async function openDrawer(id, idx) {
   drawerIdx = idx;
   drawerAssetId = id;
   const a = await api(`assets/${id}`);
+  if (a && a.id != null) thumbMtime[a.id] = a.mtime;
   const st = await api("state");
   allTags = st.tags;
   allCategories = st.categories || [];
@@ -2248,6 +2262,7 @@ async function renderTextureMaps(a) {
   if (!host) return;
   const r = await api(`assets/${a.id}/set`);
   const members = r.members || [];
+  recordThumbMtimes(members);
   if (members.length <= 1) return;  // a lone texture isn't a set — nothing to show
   host.innerHTML =
     `<div class="d-section-label">Maps · ${members.length}</div>` +

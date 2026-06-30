@@ -1083,16 +1083,28 @@ from mathutils import Vector
 
 argv = sys.argv[sys.argv.index("--") + 1:]
 outdir = argv[0]
+mode = argv[1] if len(argv) > 1 else "auto"
 os.makedirs(outdir, exist_ok=True)
 
 scene = bpy.context.scene
 
-for eng in ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE'):
+# "cpu" forces CPU Cycles (no GPU) — the fallback when an EEVEE/GPU pass crashed
+# the whole batch on a flaky/underpowered card; otherwise use fast EEVEE.
+if mode == "cpu":
     try:
-        scene.render.engine = eng
-        break
-    except TypeError:
+        scene.render.engine = 'CYCLES'
+        scene.cycles.device = 'CPU'
+        scene.cycles.samples = 16
+        scene.cycles.use_denoising = False
+    except Exception:
         pass
+else:
+    for eng in ('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE'):
+        try:
+            scene.render.engine = eng
+            break
+        except TypeError:
+            pass
 
 try: scene.eevee.taa_render_samples = 16
 except Exception: pass
@@ -1200,13 +1212,27 @@ def generate_blend_asset_previews(blend_path):
         script = os.path.join(td, "hangar_preview.py")
         with open(script, "w", encoding="utf-8") as fh:
             fh.write(_PREVIEW_SCRIPT)
-        try:
-            proc = subprocess.run(
+
+        def _run(mode):
+            return subprocess.run(
                 [blender, "--background", "--factory-startup", "--disable-autoexec",
-                 blend_path, "-P", script, "--", str(outdir)],
+                 blend_path, "-P", script, "--", str(outdir), mode],
                 timeout=RENDER_TIMEOUT, capture_output=True, text=True,
                 env=_blender_env(), **_no_window(),
             )
+
+        try:
+            proc = _run("auto")
+            # A whole-batch EEVEE/GPU crash (no manifest written) — fall back to
+            # CPU Cycles, same as the single-model render path does.
+            if ("HANGAR_PREVIEW_DONE" not in (proc.stdout or "")
+                    and _should_retry_cpu(proc)):
+                first = proc
+                proc = _run("cpu")
+                proc.stdout = ((first.stdout or "") + "\n--- CPU retry stdout ---\n"
+                               + (proc.stdout or ""))
+                proc.stderr = ((first.stderr or "") + "\n--- CPU retry stderr ---\n"
+                               + (proc.stderr or ""))
         except subprocess.TimeoutExpired as e:
             _record_render_log(blender, blend_path, None, exc=e)
             return {"ok": False, "error": f"Timed out after {RENDER_TIMEOUT}s."}
@@ -1223,14 +1249,24 @@ def generate_blend_asset_previews(blend_path):
 def blend_asset_previews(blend_path):
     """Read the cached preview manifest for a .blend (if any). Returns a list of
     {"name", "kind", "has_thumb"} — empty when no previews have been exported."""
-    manifest = _blend_asset_dir(blend_path) / "manifest.json"
+    d = _blend_asset_dir(blend_path)
     try:
-        with open(manifest, "r", encoding="utf-8") as fh:
+        with open(d / "manifest.json", "r", encoding="utf-8") as fh:
             entries = json.load(fh)
     except Exception:
         return []
+
+    def _mtime(file):
+        try:
+            return int((d / file).stat().st_mtime) if file else 0
+        except OSError:
+            return 0
+
     return [{"name": e.get("name"), "kind": e.get("kind"),
              "has_thumb": bool(e.get("file")),
+             # mtime of the exported PNG so the drawer can bust its cached <img>
+             # when previews are regenerated (the URL is otherwise stable).
+             "mtime": _mtime(e.get("file")),
              "preview_source": ("Hangar rendered asset preview cache"
                                 if e.get("file")
                                 else "No rendered asset preview; showing type badge")}
@@ -1635,9 +1671,24 @@ def _render_failure_summary(proc=None, exc=None):
     return tail or "Blender ran but produced no image."
 
 
+def _is_crash_returncode(rc):
+    """True when Blender died on an unhandled exception rather than exiting with a
+    clean status. Windows surfaces the NTSTATUS code as a large unsigned int with
+    the high bit set (e.g. 0xC0000409 STACK_BUFFER_OVERRUN = 3221226505, or
+    0xC0000005 ACCESS_VIOLATION); POSIX reports a fatal signal as a negative code.
+    A clean Blender error exit is a small positive code (usually 1)."""
+    return rc is not None and (rc < 0 or rc >= 0xC0000000)
+
+
 def _should_retry_cpu(proc):
     if proc is None:
         return False
+    # A hard process crash on a .blend almost always means the GPU/EEVEE path
+    # blew up (the MX130 here dies with 0xC0000409 mid-render, usually after a
+    # run of "GPUTexture: Blender Texture Not Loaded!"). Retrying on CPU Cycles
+    # sidesteps the GPU entirely, so treat any crash code as retry-worthy.
+    if _is_crash_returncode(proc.returncode):
+        return True
     text = ((proc.stderr or "") + "\n" + (proc.stdout or "")).lower()
     return any(s in text for s in (
         "out of memory",
@@ -1645,6 +1696,8 @@ def _should_retry_cpu(proc):
         "exception_access_violation",
         "gpu_material_compile",
         "internal malloc failed",
+        "gputexture",
+        "blender texture not loaded",
     ))
 
 

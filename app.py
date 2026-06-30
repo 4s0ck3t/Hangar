@@ -22,7 +22,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.85"
+__version__ = "0.13.86"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -416,7 +416,11 @@ def thumb(asset_id):
     path = thumbs.get_or_make(asset)
     if not path:
         return "", 404, _NO_CACHE
-    return send_file(path, mimetype="image/jpeg")
+    # The tile URL carries the asset's mtime (?v=) and an explicit rebake bust
+    # (?t=), so its content never changes under a given URL — let the browser
+    # keep it for a week instead of revalidating every JPEG on each grid load,
+    # which is what made a big library feel slow to open.
+    return send_file(path, mimetype="image/jpeg", max_age=604800)
 
 
 @app.post("/api/assets/<int:asset_id>/favorite")
@@ -710,6 +714,7 @@ def _blend_info(asset):
     for a in info["assets"]:
         preview = previews.get(a["name"], {})
         a["has_thumb"] = preview.get("has_thumb", False)
+        a["thumb_mtime"] = preview.get("mtime", 0)
         a["preview_source"] = preview.get(
             "preview_source",
             "No rendered asset preview; showing type badge",
@@ -743,7 +748,9 @@ def blend_asset_thumb(asset_id):
     p = thumbs.blend_asset_thumb_path(asset["path"], name) if name else None
     if not p:
         return "", 404, _NO_CACHE
-    return send_file(str(p), mimetype="image/png")
+    # URL carries the preview's mtime (?v=), so it's safe to cache for a week and
+    # skip the per-image revalidation when reopening a .blend's asset gallery.
+    return send_file(str(p), mimetype="image/png", max_age=604800)
 
 
 @app.post("/api/assets/<int:asset_id>/mark-assets")
