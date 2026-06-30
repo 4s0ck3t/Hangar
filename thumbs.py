@@ -1158,7 +1158,7 @@ def _run_blend_assets(blender, blend_path, action, target):
 # mesh, renders 256×256 at 16 samples, writes PNGs + manifest.  Does NOT save
 # the .blend so it can never crash from a pending render / save collision.
 _PREVIEW_SCRIPT = r'''
-import bpy, sys, os, json, re
+import bpy, sys, os, json, re, math
 from mathutils import Vector
 
 argv = sys.argv[sys.argv.index("--") + 1:]
@@ -1268,6 +1268,34 @@ def target_meshes(ob):
     return uniq
 
 
+def make_preview_sphere():
+    rings, segments = 18, 36
+    verts = []
+    faces = []
+    for r in range(rings + 1):
+        theta = math.pi * r / rings
+        z = math.cos(theta)
+        radius = math.sin(theta)
+        for s in range(segments):
+            phi = 2.0 * math.pi * s / segments
+            verts.append((radius * math.cos(phi), radius * math.sin(phi), z))
+    for r in range(rings):
+        for s in range(segments):
+            a = r * segments + s
+            b = r * segments + ((s + 1) % segments)
+            c = (r + 1) * segments + ((s + 1) % segments)
+            d = (r + 1) * segments + s
+            faces.append((a, b, c, d))
+    mesh = bpy.data.meshes.new("_HangarMaterialPreviewMesh")
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+    for poly in mesh.polygons:
+        poly.use_smooth = True
+    obj = bpy.data.objects.new("_HangarMaterialPreview", mesh)
+    scene.collection.objects.link(obj)
+    return obj
+
+
 for ob in bpy.data.objects:
     if getattr(ob, 'asset_data', None) is None:
         continue
@@ -1320,13 +1348,43 @@ for ob in bpy.data.objects:
         try: scene.collection.objects.unlink(mesh)
         except Exception: pass
 
+for mat in bpy.data.materials:
+    if getattr(mat, 'asset_data', None) is None:
+        continue
+    for o in scene_meshes:
+        o.hide_render = True
+    safe = re.sub(r'[^A-Za-z0-9_.-]', '_', mat.name)[:80]
+    fname = 'MA_%s.png' % safe
+    sphere = None
+    try:
+        sphere = make_preview_sphere()
+        sphere.data.materials.append(mat)
+        sphere.hide_render = False
+        pts = [sphere.matrix_world @ Vector(c[:]) for c in sphere.bound_box]
+        frame_camera(pts)
+        scene.render.filepath = os.path.join(outdir, fname)
+        bpy.ops.render.render(write_still=True)
+        manifest.append({"name": mat.name, "kind": "Material", "file": fname})
+    except Exception as ex:
+        print("HANGAR_PREVIEW_MATERIAL_FAIL:", mat.name, ex, flush=True)
+        manifest.append({"name": mat.name, "kind": "Material", "file": None})
+    finally:
+        if sphere is not None:
+            mesh = sphere.data
+            try:
+                bpy.data.objects.remove(sphere, do_unlink=True)
+            except Exception:
+                pass
+            try:
+                bpy.data.meshes.remove(mesh)
+            except Exception:
+                pass
+        for o in scene_meshes:
+            o.hide_render = False
+
 for col in bpy.data.collections:
     if getattr(col, 'asset_data', None) is not None:
         manifest.append({"name": col.name, "kind": "Collection", "file": None})
-
-for mat in bpy.data.materials:
-    if getattr(mat, 'asset_data', None) is not None:
-        manifest.append({"name": mat.name, "kind": "Material", "file": None})
 
 with open(os.path.join(outdir, 'manifest.json'), 'w', encoding='utf-8') as fh:
     json.dump(manifest, fh)
@@ -1842,6 +1900,9 @@ def _should_retry_cpu(proc):
     return any(s in text for s in (
         "out of memory",
         "malloc returns null",
+        "unknown exception",
+        "writing:",
+        ".crash.txt",
         "exception_access_violation",
         "gpu_material_compile",
         "internal malloc failed",
