@@ -614,10 +614,8 @@ function updateBatchBar() {
     toast(`Added ${selection.size} asset${selection.size > 1 ? "s" : ""} to "${name}"`, "success");
     refresh(); loadState();
   };
-  $("#batchCatBtn").onclick = async () => {
-    await batchCategory(true);
-  };
-  $("#batchCatRemoveBtn").onclick = async () => { await batchCategory(false); };
+  $("#batchCatBtn").onclick = (e) => _openBatchCatMenu(true, e);
+  $("#batchCatRemoveBtn").onclick = (e) => _openBatchCatMenu(false, e);
   $("#batchDelBtn").onclick = async () => {
     if (!confirm(`Remove ${selection.size} asset${selection.size > 1 ? "s" : ""} from Hangar? Files stay on disk.`)) return;
     await post("assets/batch/remove", { ids: [...selection] });
@@ -651,21 +649,81 @@ function selectedAssets() {
     .filter(Boolean);
 }
 
-function categoryPrompt(action) {
+// Auto-filled category picker for the multi-select batch action. Instead of a
+// blank prompt where you retype a name, this lists the existing categories to
+// click: for "Add", every category that fits the selected assets' kinds (plus a
+// New category… escape hatch); for "Remove", only the categories the selection
+// is actually in. Anchored at (x, y) and dismissed like any context menu.
+function showBatchCategoryMenu(add, x, y) {
+  closeCtxMenu();
   const kinds = new Set(selectedAssets().map((a) => a.kind));
-  const cats = (allCategories || []).filter((c) => !c.kind || !kinds.size || kinds.has(c.kind));
-  const hint = cats.length
-    ? `\n\nExisting categories:\n${cats.map((c) => `${c.icon || ""}${c.name}`).join(", ")}`
-    : "";
-  return (prompt(`${action} category:${hint}`) || "").trim();
+  let cats = (allCategories || []).filter((c) => !c.kind || !kinds.size || kinds.has(c.kind));
+  if (!add) {
+    // Remove mode: offer the categories the selection actually belongs to. Asset
+    // rows only carry `.categories` in the grouped view, so also fold in the
+    // category currently being browsed; if we still know nothing, fall back to
+    // every applicable category rather than showing an empty menu.
+    const inUse = new Set();
+    for (const a of selectedAssets()) for (const cn of (a.categories || [])) inUse.add(cn);
+    if (state.filter.category) inUse.add(state.filter.category);
+    if (inUse.size) cats = cats.filter((c) => inUse.has(c.name));
+  }
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  const title = document.createElement("div");
+  title.className = "ctx-title";
+  title.textContent = add ? `Add ${selection.size} to…` : `Remove ${selection.size} from…`;
+  menu.appendChild(title);
+
+  if (!cats.length) {
+    const none = document.createElement("div");
+    none.className = "ctx-empty";
+    none.textContent = add ? "No categories yet — create one below"
+                           : "Selection isn't in any category";
+    menu.appendChild(none);
+  }
+  for (const c of cats) {
+    const item = document.createElement("button");
+    item.className = "ctx-item" + (add ? "" : " ctx-danger");
+    item.innerHTML =
+      `<span class="ctx-ico">${esc(c.icon || "📂")}</span>` +
+      `<span class="ctx-name">${esc(c.name)}</span>`;
+    item.onclick = async (e) => {
+      e.stopPropagation(); closeCtxMenu(); await batchCategoryApply(add, c.name);
+    };
+    menu.appendChild(item);
+  }
+  if (add) {
+    const sep = document.createElement("div"); sep.className = "ctx-sep"; menu.appendChild(sep);
+    const mk = document.createElement("button");
+    mk.className = "ctx-item";
+    mk.innerHTML = `<span class="ctx-ico">＋</span><span class="ctx-name">New category…</span>`;
+    mk.onclick = async (e) => {
+      e.stopPropagation(); closeCtxMenu();
+      const name = (prompt("New category name:") || "").trim();
+      if (!name) return;
+      const icon = prompt("Icon (emoji, optional — Cancel to skip):") || "";
+      const kind = kinds.size === 1 ? [...kinds][0] : "";
+      await post("categories", { name, icon, kind });
+      await batchCategoryApply(true, name);
+    };
+    menu.appendChild(mk);
+  }
+  _mountCtxMenu(menu, x, y);
 }
 
-async function batchCategory(add) {
-  const name = categoryPrompt(add ? "Add to" : "Remove from");
+async function batchCategoryApply(add, name) {
   if (!name) return;
   await post("assets/batch/category", { ids: [...selection], category: name, add });
   toast(`${add ? "Added" : "Removed"} ${selection.size} asset${selection.size > 1 ? "s" : ""} ${add ? "to" : "from"} "${name}"`, "success");
   refresh(); loadState();
+}
+
+// Anchor the picker just above a batch-bar button (the bar sits at the bottom,
+// so _mountCtxMenu's clamp lifts the menu on-screen).
+function _openBatchCatMenu(add, ev) {
+  const r = ev.currentTarget.getBoundingClientRect();
+  showBatchCategoryMenu(add, r.left, r.top - 6);
 }
 
 function clearSelection() {
@@ -1631,13 +1689,13 @@ function showBatchMenu(x, y) {
   menu.appendChild(sep);
   const addCat = document.createElement("button");
   addCat.className = "ctx-item";
-  addCat.innerHTML = `<span class="ctx-ico">+</span><span class="ctx-name">Add to category</span>`;
-  addCat.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await batchCategory(true); };
+  addCat.innerHTML = `<span class="ctx-ico">+</span><span class="ctx-name">Add to category…</span>`;
+  addCat.onclick = (e) => { e.stopPropagation(); closeCtxMenu(); showBatchCategoryMenu(true, x, y); };
   menu.appendChild(addCat);
   const removeCat = document.createElement("button");
   removeCat.className = "ctx-item ctx-danger";
-  removeCat.innerHTML = `<span class="ctx-ico">-</span><span class="ctx-name">Remove from category</span>`;
-  removeCat.onclick = async (e) => { e.stopPropagation(); closeCtxMenu(); await batchCategory(false); };
+  removeCat.innerHTML = `<span class="ctx-ico">-</span><span class="ctx-name">Remove from category…</span>`;
+  removeCat.onclick = (e) => { e.stopPropagation(); closeCtxMenu(); showBatchCategoryMenu(false, x, y); };
   menu.appendChild(removeCat);
 
   _mountCtxMenu(menu, x, y);
