@@ -1225,22 +1225,85 @@ def frame_camera(pts):
 scene_meshes = [o for o in scene.objects if o.type == 'MESH']
 manifest = []
 
+def is_descendant(child, parent):
+    p = child.parent
+    while p is not None:
+        if p == parent:
+            return True
+        p = p.parent
+    return False
+
+
+def collection_meshes(collection, seen=None):
+    seen = seen or set()
+    meshes = []
+    if collection is None or collection.name in seen:
+        return meshes
+    seen.add(collection.name)
+    for o in collection.objects:
+        if o.type == 'MESH':
+            meshes.append(o)
+        if getattr(o, "instance_collection", None) is not None:
+            meshes.extend(collection_meshes(o.instance_collection, seen))
+    for child in collection.children:
+        meshes.extend(collection_meshes(child, seen))
+    return meshes
+
+
+def target_meshes(ob):
+    meshes = []
+    if ob.type == 'MESH':
+        meshes.append(ob)
+    meshes.extend([o for o in bpy.data.objects
+                   if o.type == 'MESH' and is_descendant(o, ob)])
+    inst = getattr(ob, "instance_collection", None)
+    if inst is not None:
+        meshes.extend(collection_meshes(inst))
+    uniq = []
+    seen = set()
+    for mesh in meshes:
+        if mesh.name not in seen:
+            uniq.append(mesh)
+            seen.add(mesh.name)
+    return uniq
+
+
 for ob in bpy.data.objects:
-    if ob.type != 'MESH' or getattr(ob, 'asset_data', None) is None:
+    if getattr(ob, 'asset_data', None) is None:
         continue
-    linked_now = False
-    if ob.name not in scene.objects:
-        try:
-            scene.collection.objects.link(ob)
-            linked_now = True
-        except Exception as ex:
-            print("HANGAR_PREVIEW_LINK_FAIL:", ob.name, ex, flush=True)
-            manifest.append({"name": ob.name, "kind": "Object", "file": None})
-            continue
+    meshes = target_meshes(ob)
+    if not meshes:
+        manifest.append({"name": ob.name, "kind": "Object", "file": None})
+        continue
+    linked_now = []
+    for mesh in meshes:
+        if mesh.name not in scene.objects:
+            try:
+                scene.collection.objects.link(mesh)
+                linked_now.append(mesh)
+                if mesh not in scene_meshes:
+                    scene_meshes.append(mesh)
+            except Exception as ex:
+                print("HANGAR_PREVIEW_LINK_FAIL:", ob.name, mesh.name, ex, flush=True)
+    render_names = {mesh.name for mesh in meshes}
     for o in scene_meshes:
-        o.hide_render = (o.name != ob.name)
-    ob.hide_render = False
-    pts = [ob.matrix_world @ Vector(c[:]) for c in ob.bound_box]
+        o.hide_render = (o.name not in render_names)
+    for mesh in meshes:
+        mesh.hide_render = False
+    pts = []
+    for mesh in meshes:
+        try:
+            pts.extend([mesh.matrix_world @ Vector(c[:]) for c in mesh.bound_box])
+        except Exception:
+            pass
+    if not pts:
+        manifest.append({"name": ob.name, "kind": "Object", "file": None})
+        for o in scene_meshes:
+            o.hide_render = False
+        for mesh in linked_now:
+            try: scene.collection.objects.unlink(mesh)
+            except Exception: pass
+        continue
     safe = re.sub(r'[^A-Za-z0-9_.-]', '_', ob.name)[:80]
     fname = 'OB_%s.png' % safe
     frame_camera(pts)
@@ -1253,14 +1316,9 @@ for ob in bpy.data.objects:
         manifest.append({"name": ob.name, "kind": "Object", "file": None})
     for o in scene_meshes:
         o.hide_render = False
-    if linked_now:
-        try: scene.collection.objects.unlink(ob)
+    for mesh in linked_now:
+        try: scene.collection.objects.unlink(mesh)
         except Exception: pass
-
-for ob in bpy.data.objects:
-    if ob.type == 'MESH' or getattr(ob, 'asset_data', None) is None:
-        continue
-    manifest.append({"name": ob.name, "kind": "Object", "file": None})
 
 for col in bpy.data.collections:
     if getattr(col, 'asset_data', None) is not None:
