@@ -187,6 +187,14 @@ button, input, select { font-family: inherit; color: inherit; }
 
 /* ---- categories ---- */
 .filter-list li.cat-item { cursor: pointer; }
+.cat-folder-toggle {
+  width: 14px; height: 18px; flex: none; display: inline-flex;
+  align-items: center; justify-content: center; margin-right: -3px;
+  border: none; background: transparent; color: var(--faint);
+  font-size: 9px; cursor: pointer; padding: 0;
+}
+.cat-folder-toggle:hover { color: var(--ink); }
+.cat-folder-spacer { width: 14px; flex: none; margin-right: -3px; }
 .cat-ico { font-size: 13px; line-height: 1; }
 .cat-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cat-remove {

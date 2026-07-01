@@ -60,6 +60,26 @@ function persistCollapsed() {
   catch (_) { /* ignore */ }
 }
 
+function loadCatFolderCollapsed() {
+  try { return new Set(JSON.parse(localStorage.getItem("hangar_cat_folder_collapsed") || "[]")); }
+  catch (_) { return new Set(); }
+}
+let catFolderCollapsed = loadCatFolderCollapsed();
+function persistCatFolderCollapsed() {
+  try { localStorage.setItem("hangar_cat_folder_collapsed", JSON.stringify([...catFolderCollapsed])); }
+  catch (_) { /* ignore */ }
+}
+function catFolderKey(c) {
+  return `${c.kind || ""}:${c.name}`;
+}
+function toggleCatFolderCollapse(c) {
+  const key = catFolderKey(c);
+  if (catFolderCollapsed.has(key)) catFolderCollapsed.delete(key);
+  else catFolderCollapsed.add(key);
+  persistCatFolderCollapsed();
+  loadState();
+}
+
 // Collapse/expand a Library type's nested categories + formats, and persist it.
 function toggleCollapse(kind) {
   if (state.collapsed.has(kind)) state.collapsed.delete(kind);
@@ -253,8 +273,11 @@ function renderKindFilters(counts, cats) {
     // Categories nested under their type, with their represented folders under
     // each category (e.g. Furniture > Beds).
     for (const c of kindCats) {
-      ul.appendChild(buildCategoryItem(c, true));
-      for (const f of foldersForCategory(c)) ul.appendChild(buildCategoryFolderItem(c, f));
+      const folders = foldersForCategory(c);
+      ul.appendChild(buildCategoryItem(c, true, folders));
+      if (!catFolderCollapsed.has(catFolderKey(c))) {
+        for (const f of folders) ul.appendChild(buildCategoryFolderItem(c, f));
+      }
     }
 
     // Model file-format subcategories, under Models below its categories.
@@ -309,15 +332,22 @@ function renderKindFilters(counts, cats) {
 // Haven–style): shared categories under "All assets", scoped ones under their
 // own type. See renderKindFilters. `kind` scope: "model"/"hdri"/"texture"/
 // "material", or "" = shared.
-function buildCategoryItem(c, nested) {
+function buildCategoryItem(c, nested, folders) {
     const li = document.createElement("li");
     li.className = "cat-item" + (nested ? " cat-sub" : "");
     if (state.filter.category === c.name) li.classList.add("active");
+    folders = folders || foldersForCategory(c);
+    const hasFolders = folders.length > 0;
+    const folderCollapsed = catFolderCollapsed.has(catFolderKey(c));
+    const folderToggle = hasFolders
+      ? `<button class="cat-folder-toggle" title="${folderCollapsed ? "Show" : "Hide"} folders">${folderCollapsed ? "▸" : "▾"}</button>`
+      : `<span class="cat-folder-spacer"></span>`;
     const icon = c.icon ? `<span class="cat-ico">${esc(c.icon)}</span>` : `<span class="dot" style="background:var(--k-model)"></span>`;
     const kwTitle = c.keywords
       ? `Auto-match keywords: ${c.keywords}\nClick to edit`
       : "No auto-match keywords yet — click to add";
     li.innerHTML =
+      folderToggle +
       icon +
       `<span class="cat-name">${esc(c.name)}</span><span class="count">${c.c}</span>` +
       `<button class="cat-kw" title="${esc(kwTitle)}">✎</button>` +
@@ -331,6 +361,14 @@ function buildCategoryItem(c, nested) {
       state.filter.category = c.name;
       refresh();
     };
+
+    const toggle = li.querySelector(".cat-folder-toggle");
+    if (toggle) {
+      toggle.onclick = (e) => {
+        e.stopPropagation();
+        toggleCatFolderCollapse(c);
+      };
+    }
 
     li.querySelector(".cat-kw").onclick = async (e) => {
       e.stopPropagation();

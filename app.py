@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.96"
+__version__ = "0.13.97"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -201,7 +201,12 @@ def _start_warm():
 
 @app.get("/")
 def index():
-    return send_from_directory(app.static_folder, "index.html")
+    path = os.path.join(app.static_folder, "index.html")
+    with open(path, "r", encoding="utf-8") as fh:
+        html = fh.read()
+    html = html.replace('href="style.css"', f'href="style.css?v={__version__}"')
+    html = html.replace('src="app.js"', f'src="app.js?v={__version__}"')
+    return html, 200, {"Cache-Control": "no-store"}
 
 
 # ---- state / dashboard ----------------------------------------------------
