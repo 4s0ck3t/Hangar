@@ -132,6 +132,21 @@ MAX_STATS_BYTES = 250 * 1024 * 1024  # skip mesh-stat parsing above this size
 UPSERT_BATCH_SIZE = 500
 
 
+def classify_kind(ext, folder, name_noext):
+    """Choose an asset kind for extensions that can be ambiguous.
+
+    Radiance .hdr files are environment images. EXR is messier: true HDRIs exist,
+    but most EXRs inside model/texture packs are normal/roughness/displacement
+    maps. Treat obvious map-role EXRs as textures so they leave the HDRI bucket
+    and can join their material set.
+    """
+    if ext == ".exr":
+        _, role, _ = texture_set_info(folder, name_noext)
+        if role:
+            return "texture"
+    return EXT_KIND[ext]
+
+
 def count_files(library_path):
     """Fast pre-pass: how many indexable files live under this root.
 
@@ -184,7 +199,7 @@ def scan_library(library_path, on_file=None):
             except OSError:
                 continue
             name_noext = os.path.splitext(fname)[0]
-            kind = EXT_KIND[ext]
+            kind = classify_kind(ext, root, name_noext)
             meta = {
                 "path": full,
                 "name": name_noext,

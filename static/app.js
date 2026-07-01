@@ -60,23 +60,30 @@ function persistCollapsed() {
   catch (_) { /* ignore */ }
 }
 
-function loadCatFolderCollapsed() {
-  try { return new Set(JSON.parse(localStorage.getItem("hangar_cat_folder_collapsed") || "[]")); }
+function loadCatFolderExpanded() {
+  try { return new Set(JSON.parse(localStorage.getItem("hangar_cat_folder_expanded") || "[]")); }
   catch (_) { return new Set(); }
 }
-let catFolderCollapsed = loadCatFolderCollapsed();
-function persistCatFolderCollapsed() {
-  try { localStorage.setItem("hangar_cat_folder_collapsed", JSON.stringify([...catFolderCollapsed])); }
+let catFolderExpanded = loadCatFolderExpanded();
+function persistCatFolderExpanded() {
+  try { localStorage.setItem("hangar_cat_folder_expanded", JSON.stringify([...catFolderExpanded])); }
   catch (_) { /* ignore */ }
 }
 function catFolderKey(c) {
   return `${c.kind || ""}:${c.name}`;
 }
+function catFoldersExpanded(c) {
+  return catFolderExpanded.has(catFolderKey(c));
+}
+function expandCatFolders(c) {
+  catFolderExpanded.add(catFolderKey(c));
+  persistCatFolderExpanded();
+}
 function toggleCatFolderCollapse(c) {
   const key = catFolderKey(c);
-  if (catFolderCollapsed.has(key)) catFolderCollapsed.delete(key);
-  else catFolderCollapsed.add(key);
-  persistCatFolderCollapsed();
+  if (catFolderExpanded.has(key)) catFolderExpanded.delete(key);
+  else catFolderExpanded.add(key);
+  persistCatFolderExpanded();
   loadState();
 }
 
@@ -275,7 +282,7 @@ function renderKindFilters(counts, cats) {
     for (const c of kindCats) {
       const folders = foldersForCategory(c);
       ul.appendChild(buildCategoryItem(c, true, folders));
-      if (!catFolderCollapsed.has(catFolderKey(c))) {
+      if (catFoldersExpanded(c)) {
         for (const f of folders) ul.appendChild(buildCategoryFolderItem(c, f));
       }
     }
@@ -338,7 +345,7 @@ function buildCategoryItem(c, nested, folders) {
     if (state.filter.category === c.name) li.classList.add("active");
     folders = folders || foldersForCategory(c);
     const hasFolders = folders.length > 0;
-    const folderCollapsed = catFolderCollapsed.has(catFolderKey(c));
+    const folderCollapsed = !catFoldersExpanded(c);
     const folderToggle = hasFolders
       ? `<button class="cat-folder-toggle" title="${folderCollapsed ? "Show" : "Hide"} folders">${folderCollapsed ? "▸" : "▾"}</button>`
       : `<span class="cat-folder-spacer"></span>`;
@@ -359,6 +366,7 @@ function buildCategoryItem(c, nested, folders) {
       resetFilter();
       state.filter.kind = (c.kind && c.kind === k) ? k : (c.kind || "");
       state.filter.category = c.name;
+      if (hasFolders) expandCatFolders(c);
       refresh();
     };
 

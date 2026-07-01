@@ -156,6 +156,7 @@ def save_thumbnail_bytes(asset, data):
 
 def _save_downscaled(img, out, min_side=0):
     from PIL import Image
+    THUMB_DIR.mkdir(parents=True, exist_ok=True)
     # Composite transparent images onto a dark background so JPEG is clean.
     if img.mode in ("RGBA", "LA"):
         bg = Image.new("RGB", img.size, (40, 40, 44))

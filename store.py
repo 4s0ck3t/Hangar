@@ -503,13 +503,16 @@ def model_ext_counts():
 
 def iter_thumb_targets():
     """Minimal rows for background thumbnail warming: id, path, ext, kind, mtime
-    for every present (non-missing) asset. Non-model kinds (textures, HDRIs —
-    cheap image downscales) sort first so the grid fills before the slower model
-    renders run; models are warmed last."""
+    for every present (non-missing) asset. HDRIs sort first so environment
+    previews appear quickly; models are warmed last because Blender renders are
+    the slow path."""
     with connect() as conn:
         rows = conn.execute(
             "SELECT id, path, ext, kind, mtime FROM assets WHERE missing=0 "
-            "ORDER BY CASE kind WHEN 'model' THEN 1 ELSE 0 END, id"
+            "ORDER BY CASE kind "
+            "WHEN 'hdri' THEN 0 WHEN 'texture' THEN 1 "
+            "WHEN 'material' THEN 2 WHEN 'model' THEN 3 ELSE 4 END, "
+            "CASE ext WHEN '.hdr' THEN 0 WHEN '.exr' THEN 2 ELSE 1 END, id"
         ).fetchall()
     return [dict(r) for r in rows]
 

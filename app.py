@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.98"
+__version__ = "0.13.99"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -263,6 +263,23 @@ def diagnostics():
         f"preview warm: {'running' if w['running'] else 'idle'} "
         f"{w['done']}/{w['total']} baked, {w['rendered']} rendered, "
         f"{w['failed']} failed (blender={w['blender']})")
+    try:
+        with store.connect() as conn:
+            rows = conn.execute(
+                "SELECT id, path, ext, kind, mtime FROM assets "
+                "WHERE missing=0 AND kind='hdri'").fetchall()
+        hdri_counts = {}
+        for r in rows:
+            a = dict(r)
+            s = hdri_counts.setdefault(a["ext"], {"n": 0, "cached": 0})
+            s["n"] += 1
+            if thumbs.has_cached_thumb(a):
+                s["cached"] += 1
+        for ext in sorted(hdri_counts):
+            s = hdri_counts[ext]
+            info.append(f"  hdri cache {ext}: {s['cached']}/{s['n']} cached")
+    except Exception as e:
+        info.append(f"hdri cache diagnostics failed: {e!r}")
     # Per-extension outcome — shows e.g. whether .usd got previews or not.
     for ext in sorted(w.get("by_ext", {})):
         s = w["by_ext"][ext]
