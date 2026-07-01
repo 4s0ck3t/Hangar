@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.5"
+__version__ = "0.14.6"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -96,6 +96,7 @@ def _run_scan(libs):
     # Pre-bake thumbnails in the background so the first browse is instant
     # (the Connecter trick — generate once up front, not lazily on scroll).
     _start_warm()
+    _start_meta_index()   # index .blend asset metadata for search
 
 
 def _start_scan(libs):
@@ -826,7 +827,64 @@ def _blend_info(asset):
     # (embedded thumbnail vs a Hangar render, and which engine) so the drawer can
     # tell the user instead of leaving them guessing.
     info["preview"] = thumbs.preview_source(asset)
+    # Keep the file's searchable metadata blob current whenever we inspect it.
+    try:
+        store.set_blend_meta(asset["id"], _blend_search_text(info))
+    except Exception:
+        pass
     return info
+
+
+def _blend_search_text(info):
+    """Flatten a .blend's marked-asset metadata into one searchable string
+    (asset names, tags, authors, catalogs, descriptions) for the search index."""
+    parts = []
+    for a in (info.get("assets") or []):
+        for key in ("name", "author", "catalog", "description"):
+            v = a.get(key)
+            if v:
+                parts.append(str(v))
+        for t in (a.get("tags") or []):
+            parts.append(str(t))
+    # De-dup while preserving order, cap length so a huge scene can't bloat the row.
+    seen, out = set(), []
+    for p in parts:
+        k = p.lower()
+        if k not in seen:
+            seen.add(k); out.append(p)
+    return " ".join(out)[:4000]
+
+
+# ---- background: index .blend metadata for search -------------------------
+_META_LOCK = threading.Lock()
+_META_GEN = 0
+
+
+def _run_meta_index(generation):
+    """Inspect every indexed .blend (cheap once inspect_blend is cached) and store
+    its aggregated metadata so search reaches inside files the user hasn't opened."""
+    try:
+        targets = store.blend_meta_targets()
+    except Exception:
+        return
+    for t in targets:
+        if generation != _META_GEN:
+            return                                   # a newer scan superseded us
+        try:
+            info = thumbs.inspect_blend(t["path"])
+            if info is not None:
+                store.set_blend_meta(t["id"], _blend_search_text(info))
+        except Exception:
+            pass
+        time.sleep(0.02)                             # stay low-priority
+
+
+def _start_meta_index():
+    global _META_GEN
+    with _META_LOCK:
+        _META_GEN += 1
+        gen = _META_GEN
+    threading.Thread(target=_run_meta_index, args=(gen,), daemon=True).start()
 
 
 @app.get("/api/assets/<int:asset_id>/blend-info")
@@ -1882,6 +1940,7 @@ def run_server(open_browser=False):
     # before pre-baking existed, or new files added while Hangar was closed).
     # has_cached_thumb makes this a cheap no-op once everything is baked.
     _start_warm()
+    _start_meta_index()   # index .blend asset metadata for search
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
 
 

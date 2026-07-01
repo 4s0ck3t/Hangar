@@ -192,6 +192,9 @@ def init_db():
             ("blend_assets", "ALTER TABLE assets ADD COLUMN blend_assets INTEGER"),
             ("subtype",    "ALTER TABLE assets ADD COLUMN subtype TEXT NOT NULL DEFAULT ''"),
             ("resolution", "ALTER TABLE assets ADD COLUMN resolution TEXT NOT NULL DEFAULT ''"),
+            # Aggregated searchable text from a .blend's marked-asset metadata
+            # (asset names + tags + author + catalog), so search can reach inside.
+            ("blend_meta", "ALTER TABLE assets ADD COLUMN blend_meta TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in asset_cols:
                 conn.execute(ddl)
@@ -444,6 +447,21 @@ def rename_asset(asset_id, new_path, new_name):
         )
 
 
+def set_blend_meta(asset_id, text):
+    """Store the aggregated searchable metadata text for a .blend (see search)."""
+    with connect() as conn:
+        conn.execute("UPDATE assets SET blend_meta=? WHERE id=?", (text or "", asset_id))
+
+
+def blend_meta_targets():
+    """(id, path, mtime) for every indexed .blend — for the metadata-index pass."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path, mtime FROM assets WHERE missing=0 AND ext='.blend'"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def existing_blend_names():
     """Set of lowercased base names (no extension) of every .blend asset in the
     library. Used to tell whether a marked datablock has its own .blend file."""
@@ -543,7 +561,10 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
         where_params.append(set_key)
         group = ""
     if search:
-        clauses.append("a.name LIKE ?")
+        # Match the file name OR the aggregated .blend metadata (marked-asset
+        # names, tags, author, catalog), so a search reaches assets inside a file.
+        clauses.append("(a.name LIKE ? OR a.blend_meta LIKE ?)")
+        where_params.append(f"%{search}%")
         where_params.append(f"%{search}%")
     if kind:
         clauses.append("a.kind=?")
