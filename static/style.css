@@ -275,6 +275,10 @@ button, input, select { font-family: inherit; color: inherit; }
 }
 .rescan:hover { color: var(--ink); border-color: #3a3e49; }
 .rescan:disabled { opacity: .5; cursor: default; }
+.rescan.active {
+  color: var(--signal); border-color: var(--signal);
+  background: rgba(232,176,75,.10);
+}
 
 /* ---- main ---- */
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -334,7 +338,21 @@ button, input, select { font-family: inherit; color: inherit; }
   grid-template-columns: repeat(auto-fill, minmax(192px, 1fr));
   grid-auto-rows: 272px;
   align-content: start;
+  /* Same discreet, hover-revealed scrollbar as the sidebar (.nav) so both rails
+     match instead of the grid showing the OS default bar. */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
 }
+.grid:hover { scrollbar-color: var(--line) transparent; }
+.grid::-webkit-scrollbar { width: 8px; }
+.grid::-webkit-scrollbar-track { background: transparent; }
+.grid::-webkit-scrollbar-thumb {
+  background: transparent; border-radius: 8px;
+  border: 2px solid transparent; background-clip: content-box;
+  transition: background .2s;
+}
+.grid:hover::-webkit-scrollbar-thumb { background: var(--line); background-clip: content-box; }
+.grid::-webkit-scrollbar-thumb:hover { background: var(--raised-hi); background-clip: content-box; }
 .card {
   background: var(--raised); border: 1px solid var(--line);
   border-radius: var(--radius); overflow: hidden; cursor: pointer;

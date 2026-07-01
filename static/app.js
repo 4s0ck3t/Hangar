@@ -32,7 +32,7 @@ function loadCollapsed() {
   catch (_) { return new Set(DEFAULT); }
 }
 const state = {
-  filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "", favorite: false },
+  filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "", favorite: false, duplicates: false },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
@@ -552,7 +552,7 @@ let _facetKindCache = {};  // kind → { subtypes, resolutions }, invalidated on
 
 function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
-                   favorite: false, subtype: "", resolution: "", missing: false };
+                   favorite: false, subtype: "", resolution: "", missing: false, duplicates: false };
   _facetKindCache = {};
 }
 
@@ -561,7 +561,7 @@ function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
     || state.filter.collection || state.filter.category || state.filter.folder
     || state.filter.favorite || state.filter.missing || state.filter.subtype
-    || state.filter.resolution || state.search;
+    || state.filter.resolution || state.filter.duplicates || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
@@ -923,16 +923,19 @@ function sectionCollapseButton(key, label) {
 
 async function refresh() {
   const f = state.filter;
+  // Duplicates view: every file whose name is shared by more than one file,
+  // grouped by name. It's its own mode, so it overrides the auto-groupings below.
+  const dupes = f.duplicates;
   // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
   // with no other filter splits the grid into category sections.
-  const grouped = (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
+  const grouped = !dupes && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
     && !f.collection && !f.category && !f.folder && !f.favorite && !state.search
     && !f.subtype && !f.resolution;
   // Folder-grouped view: a library folder with no sub-filters groups by subfolder.
-  const folderGrouped = !!f.folder && !f.kind && !f.ext && !f.tag
+  const folderGrouped = !dupes && !!f.folder && !f.kind && !f.ext && !f.tag
     && !f.collection && !f.category && !f.favorite && !state.search
     && !f.subtype && !f.resolution;
-  const categoryFolderGrouped = !!f.category && !f.folder && !f.tag
+  const categoryFolderGrouped = !dupes && !!f.category && !f.folder && !f.tag
     && !f.collection && !f.favorite && !state.search
     && !f.subtype && !f.resolution;
 
@@ -949,16 +952,18 @@ async function refresh() {
   if (f.resolution) p.set("resolution", f.resolution);
   if (state.search) p.set("search", state.search);
   p.set("sort", state.sort);
-  // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each.
-  // Non-texture kinds have a unique set_key, so they pass through untouched.
-  p.set("group", "set");
+  if (dupes) { p.set("duplicates", "1"); p.set("limit", "2000"); }
+  // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each —
+  // but NOT in the duplicates view, where every individual copy must show.
+  else p.set("group", "set");
   if (grouped) { p.set("with_categories", "1"); p.set("limit", "2000"); }
   if (folderGrouped) { p.set("limit", "2000"); }
   if (categoryFolderGrouped) { p.set("limit", "2000"); }
 
   const data = await api("assets?" + p.toString());
   recordThumbMtimes(data.assets);
-  if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
+  if (dupes) renderGroupedByName(data.assets);
+  else if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
   else if (categoryFolderGrouped) renderGroupedByFolder(data.assets, "", { parentOnly: true });
   else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
@@ -970,6 +975,7 @@ async function refresh() {
   enqueueMissingThumbs(data.assets);   // fill in USD/Alembic tiles in the background
   updateActiveLabel(data.total);
   updateClearBtn();
+  updateDupBtn();
   updateFacetStrip();
 }
 
@@ -1186,8 +1192,69 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
   grid.scrollTop = 0;
 }
 
+// Duplicates view: one section per shared file name, each holding every copy so
+// you can compare and clean them up. Backend already limits the set to names
+// that occur more than once.
+function renderGroupedByName(assets) {
+  const grid = $("#grid"); const empty = $("#emptyState");
+  _vAssets = []; _vRange = { start: -1, end: -1 };
+  _currentAssets = assets;
+  grid.classList.remove("grouped");
+  if (!assets.length) { renderGrid(assets, 0); return; }
+  empty.classList.add("hidden");
+  grid.classList.add("grouped");
+  bindGridDragScroll();
+
+  const groups = new Map();  // lowercased file name → {label, key, items[]}
+  for (const a of assets) {
+    const fname = `${a.name}${a.ext}`;
+    const key = fname.toLowerCase();
+    if (!groups.has(key)) groups.set(key, { label: fname, key: `dup:${key}`, items: [] });
+    groups.get(key).items.push(a);
+  }
+
+  const sections = [...groups.values()]
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+
+  const ordered = [];
+  const secOf = [];
+  let secKey = 0;
+  const frag = document.createDocumentFragment();
+  for (const s of sections) {
+    const section = document.createElement("div");
+    const collapsed = sectionIsCollapsed(s.key);
+    section.className = "grid-section" + (collapsed ? " collapsed" : "");
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.innerHTML =
+      `<span class="section-ico">⧉</span>` +
+      `<span class="section-name">${esc(s.label)}</span>` +
+      `<span class="section-count">${s.items.length}</span>`;
+    head.prepend(sectionCollapseButton(s.key, s.label));
+    section.appendChild(head);
+    const sgrid = document.createElement("div");
+    sgrid.className = "section-grid";
+    if (!collapsed) {
+      for (const a of s.items) {
+        const di = ordered.length;
+        ordered.push(a); secOf.push(secKey);
+        sgrid.appendChild(buildCard(a, di));
+      }
+    }
+    section.appendChild(sgrid);
+    frag.appendChild(section);
+    secKey++;
+  }
+
+  _currentAssets = ordered;
+  _displaySections = secOf;
+  grid.replaceChildren(frag);
+  grid.scrollTop = 0;
+}
+
 function updateActiveLabel(total) {
-  let label = state.filter.favorite ? "Favorites"
+  let label = state.filter.duplicates ? "⧉ Duplicates"
+    : state.filter.favorite ? "Favorites"
     : state.filter.tag ? `#${state.filter.tag}`
     : state.filter.category ? state.filter.category
     : state.filter.folder ? `📁 ${baseName(state.filter.folder)}`
@@ -2922,6 +2989,18 @@ async function manualCheckUpdate() {
   }
 }
 $("#checkUpdateBtn").onclick = manualCheckUpdate;
+function updateDupBtn() {
+  const b = $("#dupBtn");
+  if (b) b.classList.toggle("active", state.filter.duplicates);
+}
+$("#dupBtn").onclick = () => {
+  const on = !state.filter.duplicates;
+  resetFilter();                 // duplicates is a standalone view
+  state.filter.duplicates = on;
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  updateDupBtn();
+  refresh();
+};
 
 $("#updateLaunchBtn").onclick = async () => {
   const btn = $("#updateLaunchBtn");

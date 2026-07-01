@@ -520,8 +520,16 @@ def iter_thumb_targets():
 def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
                  group="", set_key="", with_categories=False,
-                 subtype="", resolution="", missing=False):
+                 subtype="", resolution="", missing=False, duplicates=False):
     clauses = ["a.missing=1"] if missing else ["a.missing=0"]
+    if duplicates:
+        # Only assets whose file name (name+ext, case-insensitive) is shared by
+        # more than one indexed file — i.e. duplicate file names across folders.
+        clauses.append(
+            "LOWER(a.name || a.ext) IN ("
+            "SELECT LOWER(name || ext) FROM assets WHERE missing=0 "
+            "GROUP BY LOWER(name || ext) HAVING COUNT(*) > 1)"
+        )
     joins = ""
     # Placeholders in the final SQL appear JOINs-first (text precedes WHERE), so
     # params must be ordered the same way. Keep join params and where-clause

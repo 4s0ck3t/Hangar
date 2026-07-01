@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.2"
+__version__ = "0.14.3"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -397,6 +397,7 @@ def list_assets():
         subtype=q.get("subtype", "").strip(),
         resolution=q.get("resolution", "").strip(),
         missing=q.get("missing") == "1",
+        duplicates=q.get("duplicates") == "1",
     )
     return jsonify({"assets": assets, "total": total})
 
@@ -642,13 +643,16 @@ def reveal(asset_id):
     path = asset["path"]
     sysname = platform.system()
     devnull = subprocess.DEVNULL
-    nw = thumbs._no_window()
     try:
         if sysname == "Darwin":
             subprocess.Popen(["open", "-R", path], stdin=devnull, stdout=devnull, stderr=devnull)
         elif sysname == "Windows":
+            # NOTE: do NOT pass _no_window() here — its STARTUPINFO carries
+            # SW_HIDE, which Explorer honours by opening its own window hidden, so
+            # the reveal appears to do nothing. Explorer is a GUI app with no
+            # console to suppress, so a plain launch is correct.
             subprocess.Popen(["explorer", "/select,", os.path.normpath(path)],
-                             stdin=devnull, stdout=devnull, stderr=devnull, **nw)
+                             stdin=devnull, stdout=devnull, stderr=devnull)
         else:
             import shutil as _shutil
             fm = (["nautilus", "--select", path] if _shutil.which("nautilus") else
