@@ -182,6 +182,12 @@ def _hdri_backends():
     """Return a list of available HDR/EXR decoding backends (for diagnostics)."""
     backs = ["radiance-hdr"]
     try:
+        import OpenEXR as _OpenEXR  # noqa: F401
+        import Imath as _Imath  # noqa: F401
+        backs.append("openexr")
+    except ImportError:
+        pass
+    try:
         import cv2 as _cv2  # noqa: F401
         backs.append("cv2")
     except ImportError:
@@ -196,6 +202,8 @@ def _hdri_backends():
 
 def _from_image(asset, out):
     path = asset["path"]
+    if asset["ext"] == ".exr":
+        return _from_openexr(path, out) or _from_hdri(path, out)
     if asset["ext"] in (".hdr", ".exr"):
         return _from_hdri(path, out)
     from PIL import Image
@@ -229,6 +237,55 @@ def _read_hdri_array(path):
     except Exception:
         pass
     return None
+
+
+def _from_openexr(path, out):
+    """Decode OpenEXR files via the lightweight OpenEXR bindings.
+
+    Most EXRs in asset packs are texture maps rather than lat-long worlds. We
+    still preview them by reading RGB/Y as float, sampling down to thumbnail
+    size, and using the same gentle gamma curve as ordinary image maps.
+    """
+    try:
+        import OpenEXR
+        import Imath
+        import numpy as np
+        from PIL import Image
+
+        exr = OpenEXR.InputFile(str(path))
+        header = exr.header()
+        dw = header["dataWindow"]
+        width = dw.max.x - dw.min.x + 1
+        height = dw.max.y - dw.min.y + 1
+        channels = header.get("channels", {})
+        names = set(channels.keys())
+        pixel_type = Imath.PixelType(Imath.PixelType.FLOAT)
+
+        def read_channel(name):
+            raw = exr.channel(name, pixel_type)
+            return np.frombuffer(raw, dtype=np.float32).reshape(height, width)
+
+        if {"R", "G", "B"}.issubset(names):
+            planes = [read_channel("R"), read_channel("G"), read_channel("B")]
+        elif "Y" in names:
+            y = read_channel("Y")
+            planes = [y, y, y]
+        elif names:
+            first = read_channel(sorted(names)[0])
+            planes = [first, first, first]
+        else:
+            return False
+
+        step = max(1, int(np.ceil(max(width, height) / THUMB_SIZE[0])))
+        arr = np.stack([p[::step, ::step] for p in planes], axis=-1)
+        arr = np.nan_to_num(arr, posinf=1.0, neginf=0.0)
+        arr = np.clip(arr, 0.0, None)
+        if float(arr.max(initial=0.0)) > 1.0:
+            arr = arr / (1.0 + arr)
+        arr = np.clip(arr ** (1 / 2.2) * 255.0, 0, 255).astype("uint8")
+        return _save_downscaled(Image.fromarray(arr), out)
+    except Exception:
+        return False
 
 
 def _read_radiance_header(fh):
@@ -327,6 +384,20 @@ def _from_radiance_hdr(path, out):
     out_h = math.ceil(height / step)
     rgb = bytearray(out_w * out_h * 3)
     gamma = 1 / 2.2
+    tone_lut = {}
+
+    def tone(e, v):
+        table = tone_lut.get(e)
+        if table is None:
+            scale = math.ldexp(1.0, e - (128 + 8))
+            table = bytearray(256)
+            for raw in range(256):
+                linear = max(0.0, raw * scale)
+                mapped = linear / (1.0 + linear)
+                table[raw] = max(0, min(255, round((mapped ** gamma) * 255)))
+            tone_lut[e] = table
+        return table[v]
+
     for y in range(out_h):
         src_y = min(height - 1, y * step)
         sy = height - 1 - src_y if parts[0] == "+Y" else src_y
@@ -338,11 +409,9 @@ def _from_radiance_hdr(path, out):
             e = rgbe[si + 3]
             if not e:
                 continue
-            scale = math.ldexp(1.0, e - (128 + 8))
-            for c in range(3):
-                linear = max(0.0, rgbe[si + c] * scale)
-                mapped = linear / (1.0 + linear)
-                rgb[di + c] = max(0, min(255, round((mapped ** gamma) * 255)))
+            rgb[di] = tone(e, rgbe[si])
+            rgb[di + 1] = tone(e, rgbe[si + 1])
+            rgb[di + 2] = tone(e, rgbe[si + 2])
     return _save_downscaled(Image.frombytes("RGB", (out_w, out_h), bytes(rgb)), out)
 
 

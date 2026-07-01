@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.1"
+__version__ = "0.14.2"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -160,6 +160,9 @@ def _run_warm(generation):
         done += 1
         ext = asset["ext"]
         try:
+            with WARM_LOCK:
+                WARM.update(done=done - 1, current=asset["path"],
+                            last_error=last_error, by_ext=dict(by_ext))
             if thumbs.has_cached_thumb(asset):
                 tally(ext, "thumb")
             elif thumbs.get_or_make(asset) is not None:
