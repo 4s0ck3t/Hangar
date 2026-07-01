@@ -1470,6 +1470,12 @@ function showCategoryMenu(x, y, a) {
     menu.appendChild(regen);
   }
 
+  const customPrev = document.createElement("button");
+  customPrev.className = "ctx-item";
+  customPrev.innerHTML = `<span class="ctx-ico">🖌</span><span class="ctx-name">Set custom preview…</span>`;
+  customPrev.onclick = (e) => { e.stopPropagation(); closeCtxMenu(); setCustomPreview(a); };
+  menu.appendChild(customPrev);
+
   const delPrev = document.createElement("button");
   delPrev.className = "ctx-item";
   delPrev.innerHTML = `<span class="ctx-ico">🗑</span><span class="ctx-name">Delete preview</span>`;
@@ -1821,6 +1827,41 @@ async function clearAssetPreview(a) {
     }
   }
   toast(r.rebaked ? "Preview refreshed from source." : "Preview deleted.", "success");
+}
+
+// Let the user pick any image file to use as this asset's thumbnail (Blender's
+// "custom preview"). Reads it in the browser and posts the data URL to the
+// existing /thumb endpoint, then repaints the tile. "Delete preview" reverts it.
+function setCustomPreview(a) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.style.display = "none";
+  input.onchange = async () => {
+    const file = input.files && input.files[0];
+    input.remove();
+    if (!file) return;
+    const dataUrl = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(fr.result);
+      fr.onerror = reject;
+      fr.readAsDataURL(file);
+    }).catch(() => null);
+    if (!dataUrl) { toast("Couldn't read that image.", "error"); return; }
+    let r;
+    try { r = await post(`assets/${a.id}/thumb`, { image: dataUrl }); }
+    catch (_) { r = null; }
+    if (!r || !r.ok) { toast((r && r.error) || "Couldn't set the preview.", "error"); return; }
+    thumbBust[a.id] = Date.now();
+    const ca = currentAssets.find((x) => x.id === a.id);
+    if (ca) ca.has_thumb = true;
+    const cardImg = $(`#grid .card[data-id="${a.id}"] img`);
+    if (cardImg) cardImg.src = thumbUrl(a.id);
+    if (drawerAssetId === a.id) loadPreview(a);
+    toast("Custom preview set.", "success");
+  };
+  document.body.appendChild(input);
+  input.click();
 }
 
 // ---- right-click batch menu (shown when a multi-selection is active) -------
