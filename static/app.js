@@ -428,6 +428,22 @@ function foldersForCategory(c) {
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
+function destinationFolderForCategory(a, c) {
+  const folders = foldersForCategory(c);
+  if (folders.length) {
+    const exact = folders.find((f) => f.name.localeCompare(c.name, undefined, { sensitivity: "base" }) === 0);
+    if (exact) return exact;
+    return [...folders].sort((x, y) => (y.count || 0) - (x.count || 0))[0];
+  }
+  const parts = (a.path || "").replace(/[\\/]+$/, "").split(/[\\/]/);
+  if (parts.length < 3) return null;
+  const currentFolder = parts.slice(0, -1).join("\\");
+  const parentFolder = parts.slice(0, -2).join("\\");
+  const sibling = parentFolder ? `${parentFolder}\\${c.name}` : "";
+  if (!sibling || sibling.toLowerCase() === currentFolder.toLowerCase()) return null;
+  return { name: c.name, path: sibling, inferred: true };
+}
+
 function buildCategoryFolderItem(c, f) {
   const li = document.createElement("li");
   li.className = "cat-folder-item";
@@ -1326,23 +1342,9 @@ function showCategoryMenu(x, y, a) {
       (current.has(c.name) ? `<span class="ctx-check">✓</span>` : "");
     item.onclick = async (e) => {
       e.stopPropagation(); closeCtxMenu();
-      await moveAssetToCategory(a, c.name);
+      await moveAssetToCategory(a, c.name, c);
     };
     menu.appendChild(item);
-    // Folders already represented in this category — picking one files the asset
-    // there AND moves its file into that folder on disk.
-    for (const f of foldersForCategory(c)) {
-      const fitem = document.createElement("button");
-      fitem.className = "ctx-item ctx-subitem";
-      fitem.title = `Move the file into ${f.path}`;
-      fitem.innerHTML =
-        `<span class="ctx-ico">📁</span><span class="ctx-name">${esc(f.name)}</span>`;
-      fitem.onclick = async (e) => {
-        e.stopPropagation(); closeCtxMenu();
-        await moveAssetToFolder(a, c, f);
-      };
-      menu.appendChild(fitem);
-    }
   }
 
   const sep = document.createElement("div"); sep.className = "ctx-sep";
@@ -1861,16 +1863,28 @@ function startRegenPolling() {
 
 // Move semantics: the asset ends up in exactly `name` among the categories that
 // apply to its type — added to the target, removed from any sibling categories.
-async function moveAssetToCategory(a, name) {
+async function moveAssetToCategory(a, name, category = null) {
   const applicable = new Set(
     allCategories.filter((c) => !c.kind || c.kind === a.kind).map((c) => c.name));
+  const targetCategory = category || allCategories.find((c) => c.name === name && (!c.kind || c.kind === a.kind));
+  const dest = targetCategory ? destinationFolderForCategory(a, targetCategory) : null;
+  if (dest) {
+    let r;
+    try { r = await post(`assets/${a.id}/move-to-folder`, { folder: dest.path }); }
+    catch (_) { r = null; }
+    if (!r || !r.ok) {
+      toast((r && r.error) || `Couldn't move the file into ${dest.name}.`, "error");
+      return;
+    }
+    a.path = r.path;
+  }
   await post(`assets/${a.id}/category`, { category: name, add: true });
   for (const other of (a.categories || [])) {
     if (other !== name && applicable.has(other))
       await post(`assets/${a.id}/category`, { category: other, add: false });
   }
   a.categories = [name];
-  toast(`Moved to ${name}`, "success");
+  toast(dest ? `Moved to ${name} folder` : `Moved to ${name}`, "success");
   if (drawerAssetId === a.id) renderDrawerCategoryEditor(a);
   refresh(); loadState();
 }
