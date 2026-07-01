@@ -919,6 +919,22 @@ button, input, select { font-family: inherit; color: inherit; }
   max-width: 76px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .d-asset-have { font-size: 9px; color: #2ecc71; font-weight: 600; text-align: center; }
+/* Blender asset metadata shown on a gallery tile */
+.d-asset-cat, .d-asset-author, .d-asset-desc {
+  font-size: 9px; color: var(--faint); text-align: center;
+  max-width: 84px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.d-asset-cat { color: var(--mute); }
+.d-asset-author { font-style: italic; }
+.d-asset-tags {
+  display: flex; flex-wrap: wrap; gap: 3px; justify-content: center;
+  max-width: 84px; margin-top: 1px;
+}
+.d-asset-tag {
+  font-size: 8px; line-height: 1.4; padding: 0 4px; border-radius: 4px;
+  background: var(--raised-hi); color: var(--mute);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 80px;
+}
 .d-extract-btn {
   font-size: 9px; padding: 2px 7px; border-radius: 4px; cursor: pointer;
   border: 1px solid var(--line); background: var(--raised-hi); color: var(--mute);

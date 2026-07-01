@@ -1587,10 +1587,18 @@ async function renderBlendInfo(a) {
       const source = asset.preview_source || (asset.has_thumb
         ? "Hangar rendered asset preview cache"
         : "No rendered asset preview; showing type badge");
-      const ownTip = asset.has_individual
-        ? `\nHas its own ${esc(asset.name)}.blend in the library`
-        : "";
-      html += `<div class="d-asset-tile" title="${esc(asset.kind)}: ${esc(asset.name)}\n${esc(source)}${ownTip}">`;
+      // Blender asset metadata (author/description/license/copyright/tags/
+      // catalog) read straight from the .blend — surfaced in the tooltip and, for
+      // the useful bits, shown on the tile.
+      const tip = [`${asset.kind}: ${asset.name}`, source];
+      if (asset.author) tip.push(`Author: ${asset.author}`);
+      if (asset.description) tip.push(asset.description);
+      if (asset.license) tip.push(`License: ${asset.license}`);
+      if (asset.copyright) tip.push(`© ${asset.copyright}`);
+      if (asset.catalog) tip.push(`Catalog: ${asset.catalog}`);
+      if (asset.tags && asset.tags.length) tip.push(`Tags: ${asset.tags.join(", ")}`);
+      if (asset.has_individual) tip.push(`Has its own ${asset.name}.blend in the library`);
+      html += `<div class="d-asset-tile" title="${esc(tip.join("\n"))}">`;
       if (asset.has_individual) {
         html += `<span class="d-asset-tick" title="Saved as its own .blend file">✓</span>`;
       }
@@ -1600,6 +1608,14 @@ async function renderBlendInfo(a) {
         html += `<div class="d-asset-noimg"><span>${esc(asset.kind[0])}</span></div>`;
       }
       html += `<div class="d-asset-name">${esc(asset.name)}</div>`;
+      if (asset.catalog) html += `<div class="d-asset-cat" title="Catalog">📁 ${esc(asset.catalog)}</div>`;
+      if (asset.author) html += `<div class="d-asset-author">by ${esc(asset.author)}</div>`;
+      if (asset.description) html += `<div class="d-asset-desc">${esc(asset.description)}</div>`;
+      if (asset.tags && asset.tags.length) {
+        html += `<div class="d-asset-tags">` +
+          asset.tags.slice(0, 8).map((t) => `<span class="d-asset-tag">${esc(t)}</span>`).join("") +
+          `</div>`;
+      }
       if (asset.has_individual) {
         html += `<div class="d-asset-have">Own .blend ✓</div>`;
       } else {

@@ -866,16 +866,20 @@ def _blend_decompress(path):
 
 def _blend_index(data):
     """Parse a decompressed .blend into (blocks, structs, types, type_lengths,
-    endian, ptr_size), where blocks = [(sdna_index, body_offset, length), ...].
+    endian, ptr_size, by_addr), where blocks = [(sdna_index, body_offset,
+    length), ...] and by_addr maps a block's original memory address → (body,
+    length) so char*/ListBase pointers can be followed to the block they name.
     Returns None if the DNA1 block can't be found or parsed."""
     ptr_size = 8 if data[7:8] == b"-" else 4
     endian = "<" if data[8:9] == b"v" else ">"
+    ptr_fmt = endian + ("Q" if ptr_size == 8 else "I")
     bhead = 16 + ptr_size
-    blocks, dna = [], None
+    blocks, dna, by_addr = [], None, {}
     pos, n = 12, len(data)
     while pos + bhead <= n:
         code = data[pos:pos + 4]
         length = struct.unpack(endian + "i", data[pos + 4:pos + 8])[0]
+        old_addr = struct.unpack(ptr_fmt, data[pos + 8:pos + 8 + ptr_size])[0]
         sdna_index = struct.unpack(
             endian + "i", data[pos + 8 + ptr_size:pos + 12 + ptr_size])[0]
         body = pos + bhead
@@ -884,11 +888,13 @@ def _blend_index(data):
         if code[:4] == b"ENDB":
             break
         blocks.append((sdna_index, body, length))
+        if old_addr:
+            by_addr[old_addr] = (body, length)
         pos = body + length
     if dna is None:
         return None
     structs, types, type_lengths = _parse_blend_sdna(dna, endian, ptr_size)
-    return blocks, structs, types, type_lengths, endian, ptr_size
+    return blocks, structs, types, type_lengths, endian, ptr_size, by_addr
 
 
 def _struct_index(structs, types, name):
@@ -917,6 +923,56 @@ def _read_cstr(data, start, limit):
     return data[start:end].decode("utf-8", "replace")
 
 
+def _follow_str(data, ptr, by_addr):
+    """Read the NUL-terminated string a char* points at (its own data block)."""
+    if not ptr or ptr not in by_addr:
+        return ""
+    body, length = by_addr[ptr]
+    return _read_cstr(data, body, length).strip()
+
+
+def _read_asset_meta(data, meta_ptr, by_addr, endian, ptr_size, meta_offs, tag_name_off):
+    """Read one marked datablock's AssetMetaData — author, description, copyright,
+    license, tags, and catalog name — by following pointers out of the metadata
+    block. Blender stores each text field as a char* to its own block and the
+    tags as a ListBase of AssetTag; catalog_simple_name is inline. Best-effort:
+    returns whatever it can, empty strings/list for anything absent."""
+    out = {"author": "", "description": "", "copyright": "", "license": "",
+           "tags": [], "catalog": ""}
+    if not meta_ptr or meta_ptr not in by_addr:
+        return out
+    body, length = by_addr[meta_ptr]
+    ptr_fmt = endian + ("Q" if ptr_size == 8 else "I")
+
+    def follow_field(fld):
+        off = meta_offs.get(fld)
+        if off is None or off + ptr_size > length:
+            return ""
+        p = struct.unpack(ptr_fmt, data[body + off:body + off + ptr_size])[0]
+        return _follow_str(data, p, by_addr)
+
+    for fld in ("author", "description", "copyright", "license"):
+        out[fld] = follow_field(fld)
+
+    coff = meta_offs.get("catalog_simple_name")
+    if coff is not None and coff < length:
+        out["catalog"] = _read_cstr(data, body + coff, 64).strip()
+
+    # tags: ListBase {void *first, *last} — walk the AssetTag.next chain.
+    toff = meta_offs.get("tags")
+    if toff is not None and tag_name_off is not None and toff + ptr_size <= length:
+        cur = struct.unpack(ptr_fmt, data[body + toff:body + toff + ptr_size])[0]
+        seen = set()
+        while cur and cur in by_addr and cur not in seen and len(out["tags"]) < 64:
+            seen.add(cur)
+            tbody, tlen = by_addr[cur]
+            nm = _read_cstr(data, tbody + tag_name_off, 64).strip()
+            if nm:
+                out["tags"].append(nm)
+            cur = struct.unpack(ptr_fmt, data[tbody:tbody + ptr_size])[0]  # AssetTag.next
+    return out
+
+
 # ID-name 2-char type prefixes → friendly kind, for "Mark as Asset" datablocks.
 _ID_CODE_KIND = {
     "OB": "Object", "GR": "Collection", "MA": "Material", "ME": "Mesh",
@@ -928,7 +984,7 @@ _ID_CODE_KIND = {
 # Bump when _inspect_blend_uncached's result schema changes, so on-disk caches
 # from older builds (e.g. ones predating missing_textures) are recomputed even
 # when the .blend file itself is unchanged.
-_INSPECT_CACHE_VERSION = 3
+_INSPECT_CACHE_VERSION = 4
 
 
 def inspect_blend(path):
@@ -986,7 +1042,7 @@ def _inspect_blend_uncached(path):
         idx = _blend_index(data)
         if idx is None:
             return None
-        blocks, structs, types, type_lengths, endian, ptr_size = idx
+        blocks, structs, types, type_lengths, endian, ptr_size, by_addr = idx
         ptr_fmt = endian + ("Q" if ptr_size == 8 else "I")
 
         id_idx = _struct_index(structs, types, "ID")
@@ -996,6 +1052,20 @@ def _inspect_blend_uncached(path):
         name_off = _field_offset(structs, type_lengths, ptr_size, id_idx, "name")
         if name_off is None:
             return None
+
+        # AssetMetaData / AssetTag field offsets, for reading per-asset metadata
+        # (author, description, license, tags, catalog) — resolved by name so the
+        # layout stays version-robust.
+        meta_idx = _struct_index(structs, types, "AssetMetaData")
+        meta_offs = {}
+        if meta_idx is not None:
+            for fld in ("author", "description", "copyright", "license",
+                        "tags", "catalog_simple_name"):
+                meta_offs[fld] = _field_offset(structs, type_lengths, ptr_size,
+                                               meta_idx, fld)
+        tag_idx = _struct_index(structs, types, "AssetTag")
+        tag_name_off = (_field_offset(structs, type_lengths, ptr_size, tag_idx, "name")
+                        if tag_idx is not None else None)
 
         # Image-struct field offsets, for missing-texture detection.
         img_idx = _struct_index(structs, types, "Image")
@@ -1020,13 +1090,21 @@ def _inspect_blend_uncached(path):
 
             # --- "Mark as Asset" datablocks (named) ---
             if asset_off is not None and asset_off + ptr_size <= length:
-                if struct.unpack(ptr_fmt,
-                                 data[body + asset_off:body + asset_off + ptr_size])[0]:
+                meta_ptr = struct.unpack(
+                    ptr_fmt, data[body + asset_off:body + asset_off + ptr_size])[0]
+                if meta_ptr:
                     count += 1
                     raw = _read_cstr(data, body + name_off, 66)  # MAX_ID_NAME
                     code, nm = raw[:2], raw[2:]
-                    assets.append({"name": nm or raw,
-                                   "kind": _ID_CODE_KIND.get(code, code or "?")})
+                    entry = {"name": nm or raw,
+                             "kind": _ID_CODE_KIND.get(code, code or "?")}
+                    try:
+                        entry.update(_read_asset_meta(
+                            data, meta_ptr, by_addr, endian, ptr_size,
+                            meta_offs, tag_name_off))
+                    except Exception:
+                        log.exception("asset-metadata read failed in %s", path)
+                    assets.append(entry)
 
             # --- missing textures (Image datablocks) ---
             # Match on sdna_index (the block's struct-table index), which is the
