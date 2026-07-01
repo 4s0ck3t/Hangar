@@ -827,6 +827,38 @@ let currentAssets = [];  // last fetched asset list for drawer prev/next
 let drawerIdx = -1;      // position of the open drawer asset in currentAssets
 let drawerAssetId = null; // id of the asset currently shown in the drawer
 
+function loadSectionCollapsed() {
+  try { return new Set(JSON.parse(localStorage.getItem("hangar_section_collapsed") || "[]")); }
+  catch (_) { return new Set(); }
+}
+let sectionCollapsed = loadSectionCollapsed();
+function persistSectionCollapsed() {
+  try { localStorage.setItem("hangar_section_collapsed", JSON.stringify([...sectionCollapsed])); }
+  catch (_) {}
+}
+function sectionIsCollapsed(key) {
+  return sectionCollapsed.has(key);
+}
+function toggleSectionCollapsed(key) {
+  if (sectionCollapsed.has(key)) sectionCollapsed.delete(key);
+  else sectionCollapsed.add(key);
+  persistSectionCollapsed();
+}
+function sectionCollapseButton(key, label) {
+  const collapsed = sectionIsCollapsed(key);
+  const btn = document.createElement("button");
+  btn.className = "section-toggle";
+  btn.type = "button";
+  btn.title = collapsed ? `Expand ${label}` : `Collapse ${label}`;
+  btn.textContent = collapsed ? "▸" : "▾";
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    toggleSectionCollapsed(key);
+    refresh();
+  };
+  return btn;
+}
+
 async function refresh() {
   const f = state.filter;
   // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
@@ -925,8 +957,12 @@ function renderGroupedGrid(assets, kind, total) {
     // can be dragged into a category that has no assets yet. (Uncategorized is
     // only ever added when it has items, so it's never shown empty.)
     const section = document.createElement("div");
+    const sectionKey = s.typeKind
+      ? `type:${s.typeKind}`
+      : `cat:${kind || "all"}:${s.uncat ? "__uncat__" : s.cat.name}`;
+    const collapsed = sectionIsCollapsed(sectionKey);
     section.className = "grid-section" + (s.items.length ? "" : " is-empty")
-      + (s.typeKind ? " type-section" : "");
+      + (s.typeKind ? " type-section" : "") + (collapsed ? " collapsed" : "");
     const head = document.createElement("div");
     head.className = "section-head" + (s.uncat ? " uncat" : "") + (s.typeKind ? " type-head" : "");
     const ico = s.typeKind
@@ -936,6 +972,7 @@ function renderGroupedGrid(assets, kind, total) {
       ico +
       `<span class="section-name">${esc(s.cat.name)}</span>` +
       `<span class="section-count">${s.items.length}</span>`;
+    head.prepend(sectionCollapseButton(sectionKey, s.cat.name));
     // In "All assets", a type header drills into that type's category view.
     if (s.typeKind) {
       head.title = `Open ${s.cat.name}`;
@@ -950,7 +987,7 @@ function renderGroupedGrid(assets, kind, total) {
     section.appendChild(head);
     const sgrid = document.createElement("div");
     sgrid.className = "section-grid";
-    if (s.items.length) {
+    if (!collapsed && s.items.length) {
       for (const a of s.items) {
         const di = ordered.length;
         ordered.push(a); secOf.push(secKey);
@@ -959,7 +996,7 @@ function renderGroupedGrid(assets, kind, total) {
         card.dataset.srcCat = (s.uncat || s.typeKind) ? "" : s.cat.name;
         sgrid.appendChild(card);
       }
-    } else {
+    } else if (!collapsed) {
       const hint = document.createElement("div");
       hint.className = "section-empty";
       hint.textContent = "Drag or right-click a tile here to add it";
@@ -1041,7 +1078,9 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
     if (libRoot && parentDir.toLowerCase().startsWith(libRoot.toLowerCase())) {
       label = parentDir.slice(libRoot.length).replace(/^[\\/]+/, "") || "(root)";
     }
-    if (!groups.has(parentDir)) groups.set(parentDir, { label, subtitle, items: [] });
+    if (!groups.has(parentDir)) groups.set(parentDir, {
+      label, subtitle, key: `folder:${parentDir}`, items: []
+    });
     groups.get(parentDir).items.push(a);
   }
 
@@ -1054,7 +1093,8 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
   const frag = document.createDocumentFragment();
   for (const s of sections) {
     const section = document.createElement("div");
-    section.className = "grid-section";
+    const collapsed = sectionIsCollapsed(s.key);
+    section.className = "grid-section" + (collapsed ? " collapsed" : "");
     const head = document.createElement("div");
     head.className = "section-head";
     head.innerHTML =
@@ -1062,13 +1102,16 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
       `<span class="section-name">${esc(s.label)}</span>` +
       (s.subtitle ? `<span class="section-subtitle">${esc(s.subtitle)}</span>` : "") +
       `<span class="section-count">${s.items.length}</span>`;
+    head.prepend(sectionCollapseButton(s.key, s.label));
     section.appendChild(head);
     const sgrid = document.createElement("div");
     sgrid.className = "section-grid";
-    for (const a of s.items) {
-      const di = ordered.length;
-      ordered.push(a); secOf.push(secKey);
-      sgrid.appendChild(buildCard(a, di));
+    if (!collapsed) {
+      for (const a of s.items) {
+        const di = ordered.length;
+        ordered.push(a); secOf.push(secKey);
+        sgrid.appendChild(buildCard(a, di));
+      }
     }
     section.appendChild(sgrid);
     frag.appendChild(section);

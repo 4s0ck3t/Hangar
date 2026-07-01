@@ -179,7 +179,7 @@ def _save_downscaled(img, out, min_side=0):
 
 def _hdri_backends():
     """Return a list of available HDR/EXR decoding backends (for diagnostics)."""
-    backs = []
+    backs = ["radiance-hdr"]
     try:
         import cv2 as _cv2  # noqa: F401
         backs.append("cv2")
@@ -226,7 +226,92 @@ def _read_hdri_array(path):
         import imageio.v3 as iio
         return iio.imread(path)
     except Exception:
-        return None
+        pass
+    if str(path).lower().endswith(".hdr"):
+        return _read_radiance_hdr(path)
+    return None
+
+
+def _read_radiance_hdr(path):
+    """Small dependency-free Radiance RGBE reader for packaged Windows builds."""
+    import numpy as np
+
+    def _readline(fh):
+        line = fh.readline()
+        if not line:
+            return ""
+        return line.decode("ascii", "ignore").strip()
+
+    with open(path, "rb") as fh:
+        resolution = ""
+        while True:
+            line = _readline(fh)
+            if not line:
+                break
+            if line.startswith(("-Y ", "+Y ")):
+                resolution = line
+                break
+        if not resolution:
+            return None
+        parts = resolution.split()
+        if len(parts) != 4 or parts[0] not in ("-Y", "+Y") or parts[2] not in ("+X", "-X"):
+            return None
+        height = int(parts[1])
+        width = int(parts[3])
+        if width <= 0 or height <= 0:
+            return None
+
+        rgbe = np.empty((height, width, 4), dtype=np.uint8)
+        for y in range(height):
+            head = fh.read(4)
+            if len(head) < 4:
+                return None
+            if width >= 8 and width <= 0x7fff and head[0] == 2 and head[1] == 2:
+                scan_width = (head[2] << 8) | head[3]
+                if scan_width != width:
+                    return None
+                scan = np.empty((4, width), dtype=np.uint8)
+                for channel in range(4):
+                    x = 0
+                    while x < width:
+                        b = fh.read(1)
+                        if not b:
+                            return None
+                        code = b[0]
+                        if code > 128:
+                            count = code - 128
+                            val = fh.read(1)
+                            if not val or x + count > width:
+                                return None
+                            scan[channel, x:x + count] = val[0]
+                            x += count
+                        else:
+                            count = code
+                            vals = fh.read(count)
+                            if len(vals) != count or x + count > width:
+                                return None
+                            scan[channel, x:x + count] = np.frombuffer(vals, dtype=np.uint8)
+                            x += count
+                rgbe[y, :, :] = scan.T
+            else:
+                rest = fh.read(width * 4 - 4)
+                if len(rest) != width * 4 - 4:
+                    return None
+                rgbe[y, :, :] = np.frombuffer(head + rest, dtype=np.uint8).reshape(width, 4)
+
+    rgb = rgbe[..., :3].astype("float32")
+    exp = rgbe[..., 3].astype("int16")
+    scale = np.zeros(exp.shape, dtype="float32")
+    mask = exp > 0
+    if np.any(mask):
+        scale[mask] = np.ldexp(np.ones(np.count_nonzero(mask), dtype="float32"),
+                               exp[mask] - (128 + 8))
+    rgb *= scale[..., None]
+    if parts[0] == "+Y":
+        rgb = np.flipud(rgb)
+    if parts[2] == "-X":
+        rgb = np.fliplr(rgb)
+    return rgb
 
 
 def _from_hdri(path, out):
