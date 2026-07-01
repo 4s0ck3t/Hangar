@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.99"
+__version__ = "0.14.0"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -182,6 +182,7 @@ def _run_warm(generation):
                           f"{thumbs.LAST_RENDER_ERROR}")
                 time.sleep(0.15)          # keep the render pass low-priority
             else:
+                failed += 1
                 tally(ext, "fail")        # no preview path for this kind/ext
         except Exception as e:
             failed += 1; tally(ext, "fail")

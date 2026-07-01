@@ -228,41 +228,45 @@ def _read_hdri_array(path):
         return iio.imread(path)
     except Exception:
         pass
-    if str(path).lower().endswith(".hdr"):
-        return _read_radiance_hdr(path)
     return None
 
 
-def _read_radiance_hdr(path):
-    """Small dependency-free Radiance RGBE reader for packaged Windows builds."""
-    import numpy as np
-
+def _read_radiance_header(fh):
     def _readline(fh):
         line = fh.readline()
         if not line:
-            return ""
+            return None
         return line.decode("ascii", "ignore").strip()
 
-    with open(path, "rb") as fh:
-        resolution = ""
-        while True:
-            line = _readline(fh)
-            if not line:
-                break
-            if line.startswith(("-Y ", "+Y ")):
-                resolution = line
-                break
-        if not resolution:
-            return None
-        parts = resolution.split()
-        if len(parts) != 4 or parts[0] not in ("-Y", "+Y") or parts[2] not in ("+X", "-X"):
-            return None
-        height = int(parts[1])
-        width = int(parts[3])
-        if width <= 0 or height <= 0:
-            return None
+    resolution = ""
+    while True:
+        line = _readline(fh)
+        if line is None:
+            break
+        if line.startswith(("-Y ", "+Y ")):
+            resolution = line
+            break
+    if not resolution:
+        return None
+    parts = resolution.split()
+    if len(parts) != 4 or parts[0] not in ("-Y", "+Y") or parts[2] not in ("+X", "-X"):
+        return None
+    height = int(parts[1])
+    width = int(parts[3])
+    if width <= 0 or height <= 0:
+        return None
+    return width, height, parts
 
-        rgbe = np.empty((height, width, 4), dtype=np.uint8)
+
+def _read_radiance_rgbe(path):
+    """Read Radiance RGBE pixels as bytes, without numpy/cv2/imageio."""
+    with open(path, "rb") as fh:
+        header = _read_radiance_header(fh)
+        if not header:
+            return None
+        width, height, parts = header
+
+        rgbe = bytearray(width * height * 4)
         for y in range(height):
             head = fh.read(4)
             if len(head) < 4:
@@ -271,7 +275,7 @@ def _read_radiance_hdr(path):
                 scan_width = (head[2] << 8) | head[3]
                 if scan_width != width:
                     return None
-                scan = np.empty((4, width), dtype=np.uint8)
+                scan = [bytearray(width), bytearray(width), bytearray(width), bytearray(width)]
                 for channel in range(4):
                     x = 0
                     while x < width:
@@ -284,41 +288,70 @@ def _read_radiance_hdr(path):
                             val = fh.read(1)
                             if not val or x + count > width:
                                 return None
-                            scan[channel, x:x + count] = val[0]
+                            scan[channel][x:x + count] = bytes([val[0]]) * count
                             x += count
                         else:
                             count = code
                             vals = fh.read(count)
                             if len(vals) != count or x + count > width:
                                 return None
-                            scan[channel, x:x + count] = np.frombuffer(vals, dtype=np.uint8)
+                            scan[channel][x:x + count] = vals
                             x += count
-                rgbe[y, :, :] = scan.T
+                row = y * width * 4
+                for x in range(width):
+                    i = row + x * 4
+                    rgbe[i] = scan[0][x]
+                    rgbe[i + 1] = scan[1][x]
+                    rgbe[i + 2] = scan[2][x]
+                    rgbe[i + 3] = scan[3][x]
             else:
                 rest = fh.read(width * 4 - 4)
                 if len(rest) != width * 4 - 4:
                     return None
-                rgbe[y, :, :] = np.frombuffer(head + rest, dtype=np.uint8).reshape(width, 4)
+                row = y * width * 4
+                rgbe[row:row + width * 4] = head + rest
+    return width, height, parts, rgbe
 
-    rgb = rgbe[..., :3].astype("float32")
-    exp = rgbe[..., 3].astype("int16")
-    scale = np.zeros(exp.shape, dtype="float32")
-    mask = exp > 0
-    if np.any(mask):
-        scale[mask] = np.ldexp(np.ones(np.count_nonzero(mask), dtype="float32"),
-                               exp[mask] - (128 + 8))
-    rgb *= scale[..., None]
-    if parts[0] == "+Y":
-        rgb = np.flipud(rgb)
-    if parts[2] == "-X":
-        rgb = np.fliplr(rgb)
-    return rgb
+
+def _from_radiance_hdr(path, out):
+    """Tone-map a Radiance .hdr file using only the standard library + Pillow."""
+    import math
+    from PIL import Image
+
+    decoded = _read_radiance_rgbe(path)
+    if not decoded:
+        return False
+    width, height, parts, rgbe = decoded
+    step = max(1, math.ceil(max(width, height) / THUMB_SIZE[0]))
+    out_w = math.ceil(width / step)
+    out_h = math.ceil(height / step)
+    rgb = bytearray(out_w * out_h * 3)
+    gamma = 1 / 2.2
+    for y in range(out_h):
+        src_y = min(height - 1, y * step)
+        sy = height - 1 - src_y if parts[0] == "+Y" else src_y
+        for x in range(out_w):
+            src_x = min(width - 1, x * step)
+            sx = width - 1 - src_x if parts[2] == "-X" else src_x
+            si = (sy * width + sx) * 4
+            di = (y * out_w + x) * 3
+            e = rgbe[si + 3]
+            if not e:
+                continue
+            scale = math.ldexp(1.0, e - (128 + 8))
+            for c in range(3):
+                linear = max(0.0, rgbe[si + c] * scale)
+                mapped = linear / (1.0 + linear)
+                rgb[di + c] = max(0, min(255, round((mapped ** gamma) * 255)))
+    return _save_downscaled(Image.frombytes("RGB", (out_w, out_h), bytes(rgb)), out)
 
 
 def _from_hdri(path, out):
     """Tone-map a high-dynamic-range image down to a clean LDR JPEG preview."""
     arr = _read_hdri_array(path)
     if arr is None:
+        if str(path).lower().endswith(".hdr"):
+            return _from_radiance_hdr(path, out)
         return False
     import numpy as np
     from PIL import Image
