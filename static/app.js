@@ -1555,6 +1555,60 @@ async function renameAsset(a, idx) {
   refresh();                                       // reflect the new name in the grid
 }
 
+// Small modal to edit a marked datablock's Blender metadata (author, description,
+// license, copyright, tags) and write it back into the .blend (#5).
+function openMetaEditor(blendAsset, asset) {
+  document.querySelector(".meta-overlay")?.remove();
+  const ov = document.createElement("div");
+  ov.className = "meta-overlay";
+  ov.innerHTML =
+    `<div class="meta-card">
+       <div class="meta-title">Edit metadata — ${esc(asset.name)} <span class="meta-kind">${esc(asset.kind || "")}</span></div>
+       <label class="meta-field"><span>Author</span><input class="meta-in" id="mAuthor" type="text"></label>
+       <label class="meta-field"><span>Description</span><textarea class="meta-in" id="mDesc" rows="2"></textarea></label>
+       <label class="meta-field"><span>License</span><input class="meta-in" id="mLicense" type="text"></label>
+       <label class="meta-field"><span>Copyright</span><input class="meta-in" id="mCopyright" type="text"></label>
+       <label class="meta-field"><span>Tags <em>(comma-separated)</em></span><input class="meta-in" id="mTags" type="text"></label>
+       <div class="meta-actions">
+         <button class="meta-btn" id="mCancel">Cancel</button>
+         <button class="meta-btn meta-save" id="mSave">Save to .blend</button>
+       </div>
+       <div class="meta-note">Writing runs Blender and re-saves the file — can take a moment.</div>
+     </div>`;
+  document.body.appendChild(ov);
+  ov.querySelector("#mAuthor").value = asset.author || "";
+  ov.querySelector("#mDesc").value = asset.description || "";
+  ov.querySelector("#mLicense").value = asset.license || "";
+  ov.querySelector("#mCopyright").value = asset.copyright || "";
+  ov.querySelector("#mTags").value = (asset.tags || []).join(", ");
+  const close = () => ov.remove();
+  ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(); });
+  ov.querySelector("#mCancel").onclick = close;
+  ov.querySelector("#mSave").onclick = async () => {
+    const save = ov.querySelector("#mSave");
+    save.disabled = true; save.textContent = "Saving…";
+    const payload = {
+      name: asset.name, kind: asset.kind || "Object",
+      author: ov.querySelector("#mAuthor").value.trim(),
+      description: ov.querySelector("#mDesc").value.trim(),
+      license: ov.querySelector("#mLicense").value.trim(),
+      copyright: ov.querySelector("#mCopyright").value.trim(),
+      tags: ov.querySelector("#mTags").value.split(",").map(t => t.trim()).filter(Boolean),
+    };
+    let r;
+    try { r = await post(`assets/${blendAsset.id}/asset-meta`, payload); }
+    catch (_) { r = null; }
+    if (!r || !r.ok) {
+      save.disabled = false; save.textContent = "Save to .blend";
+      toast((r && r.error) || "Couldn't save metadata.", "error");
+      return;
+    }
+    close();
+    toast("Metadata saved to the .blend.", "success");
+    if (isDrawerOpen() && drawerAssetId === blendAsset.id) renderBlendInfo(blendAsset);
+  };
+}
+
 // Fetch + render the .blend info panel: marked-asset gallery and missing textures.
 async function renderBlendInfo(a) {
   const el = $("#dBlend");
@@ -1622,6 +1676,7 @@ async function renderBlendInfo(a) {
           asset.tags.slice(0, 8).map((t) => `<span class="d-asset-tag">${esc(t)}</span>`).join("") +
           `</div>`;
       }
+      html += `<button class="d-meta-btn" data-name="${esc(asset.name)}" data-kind="${esc(asset.kind)}" title="Edit metadata — author, description, license, tags">✎ Metadata</button>`;
       if (asset.has_individual) {
         html += `<div class="d-asset-have">Own .blend ✓</div>`;
       } else {
@@ -1754,6 +1809,15 @@ async function renderBlendInfo(a) {
         setBusy(false);
         setDone((r && r.error) || "Extract failed — check last_render.log.", false);
       }
+    };
+  });
+
+  el.querySelectorAll(".d-meta-btn").forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const name = btn.dataset.name, kind = btn.dataset.kind;
+      const asset = (info.assets || []).find(x => x.name === name && x.kind === kind) || { name, kind };
+      openMetaEditor(a, asset);
     };
   });
 

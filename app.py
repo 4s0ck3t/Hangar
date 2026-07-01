@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.6"
+__version__ = "0.14.7"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -960,6 +960,38 @@ def unmark_assets(asset_id):
         n = thumbs.count_blend_marked_assets(asset["path"])
         store.save_blend_asset_count(asset_id, n)
         result["blend_assets"] = n
+    return jsonify(result), 200
+
+
+@app.post("/api/assets/<int:asset_id>/asset-meta")
+def set_asset_meta(asset_id):
+    """Write Asset-Browser metadata (author/description/license/copyright/tags)
+    onto one marked datablock in a .blend and save in place. Body: {name, kind,
+    author?, description?, license?, copyright?, tags?[]}. Modifies the source."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["ext"] != ".blend":
+        return jsonify({"error": "Only .blend assets carry metadata."}), 400
+    if not thumbs.blender_available():
+        return jsonify({"ok": False, "blender": False,
+                        "error": "Blender wasn't found — set its path first."}), 200
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    kind = (body.get("kind") or "Object").strip()
+    if not name:
+        return jsonify({"error": "Which asset? (missing name)"}), 400
+    meta = {k: body.get(k, "") for k in ("author", "description", "license", "copyright")}
+    tags = body.get("tags")
+    if isinstance(tags, list):
+        meta["tags"] = [str(t).strip() for t in tags if str(t).strip()]
+    result = thumbs.write_blend_asset_meta(asset["path"], name, kind, meta)
+    if result.get("ok"):
+        # Saving the .blend bumps its mtime, so inspect_blend re-parses; refresh the
+        # search index and hand back the updated per-asset info.
+        info = _blend_info(asset)
+        if info is not None:
+            result["assets"] = info.get("assets", [])
     return jsonify(result), 200
 
 

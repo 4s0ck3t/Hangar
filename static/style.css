@@ -919,6 +919,45 @@ button, input, select { font-family: inherit; color: inherit; }
   max-width: 76px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .d-asset-have { font-size: 9px; color: #2ecc71; font-weight: 600; text-align: center; }
+.d-meta-btn {
+  font-size: 9px; padding: 2px 7px; border-radius: 4px; cursor: pointer;
+  background: none; border: 1px solid var(--line); color: var(--mute);
+}
+.d-meta-btn:hover { color: var(--ink); border-color: var(--select); }
+
+/* Metadata editor modal (#5) */
+.meta-overlay {
+  position: fixed; inset: 0; z-index: 1200; display: flex;
+  align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55);
+}
+.meta-card {
+  width: min(440px, 92vw); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+.meta-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.meta-kind { font-size: 11px; color: var(--faint); font-weight: 400; }
+.meta-field { display: block; margin-bottom: 10px; }
+.meta-field > span { display: block; font-size: 11px; color: var(--mute); margin-bottom: 4px; }
+.meta-field em { color: var(--faint); font-style: normal; }
+.meta-in {
+  width: 100%; background: var(--void); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--ink); padding: 6px 8px; font-size: 13px;
+  font-family: var(--ui); resize: vertical;
+}
+.meta-in:focus { outline: none; border-color: var(--select); }
+.meta-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.meta-btn {
+  padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  background: none; border: 1px solid var(--line); color: var(--mute);
+}
+.meta-btn:hover { color: var(--ink); border-color: #3a3e49; }
+.meta-save { background: var(--select); border-color: var(--select); color: #fff; }
+.meta-save:hover { color: #fff; opacity: .92; }
+.meta-save:disabled { opacity: .6; cursor: default; }
+.meta-note { font-size: 10px; color: var(--faint); margin-top: 8px; text-align: right; }
+
 /* Blender asset metadata shown on a gallery tile */
 .d-asset-cat, .d-asset-author, .d-asset-desc {
   font-size: 9px; color: var(--faint); text-align: center;

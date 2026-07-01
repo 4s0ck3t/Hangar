@@ -1320,6 +1320,85 @@ def unmark_blend_assets(blend_path, target="collections"):
     return _run_blend_assets(blender, blend_path, "unmark", target)
 
 
+# Write Asset-Browser metadata (author/description/license/copyright/tags) onto a
+# named datablock and save the .blend in place. Marks it as an asset first if it
+# isn't already. Reads the field values from a JSON file (avoids argv limits /
+# quoting for long descriptions).
+_WRITE_META_SCRIPT = r'''
+import bpy, sys, json
+argv = sys.argv[sys.argv.index("--") + 1:]
+kind, name, metafile = argv[0], argv[1], argv[2]
+with open(metafile, "r", encoding="utf-8") as fh:
+    meta = json.load(fh)
+db = (bpy.data.collections.get(name) if kind == "Collection"
+      else bpy.data.materials.get(name) if kind == "Material"
+      else bpy.data.objects.get(name))
+if db is None:
+    print("HANGAR_META_FAIL: datablock not found:", name)
+    sys.exit(0)
+if db.asset_data is None:
+    db.asset_mark()
+ad = db.asset_data
+for f in ("author", "description", "license", "copyright"):
+    if f in meta and hasattr(ad, f):
+        try:
+            setattr(ad, f, meta[f] or "")
+        except Exception as e:
+            print("HANGAR_META_WARN: set %s failed: %s" % (f, e))
+if "tags" in meta and meta["tags"] is not None:
+    while len(ad.tags):
+        ad.tags.remove(ad.tags[0])
+    for t in meta["tags"]:
+        t = (t or "").strip()
+        if t:
+            ad.tags.new(t)
+try:
+    bpy.ops.wm.save_mainfile()
+    print("HANGAR_META_DONE:", name)
+except Exception as e:
+    print("HANGAR_META_FAIL:", e)
+'''
+
+
+def write_blend_asset_meta(blend_path, name, kind, meta):
+    """Set Asset-Browser metadata on one datablock in a .blend and save in place.
+    `meta` may carry author/description/license/copyright/tags. Returns
+    {"ok", "error"}. Modifies the source file (via Blender)."""
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "error": "Blender wasn't found — set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "error": "File isn't accessible right now."}
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        script = os.path.join(td, "hangar_write_meta.py")
+        metafile = os.path.join(td, "meta.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_WRITE_META_SCRIPT)
+        with open(metafile, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh)
+        try:
+            proc = subprocess.run(
+                [blender, "--background", "--factory-startup", "--disable-autoexec",
+                 blend_path, "-P", script, "--", kind, name, metafile],
+                timeout=RENDER_TIMEOUT, capture_output=True, text=True,
+                env=_blender_env(), **_no_window(),
+            )
+        except subprocess.TimeoutExpired as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Timed out after {RENDER_TIMEOUT}s."}
+        except Exception as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
+    _record_render_log(blender, blend_path, proc)
+    if "HANGAR_META_DONE" in (proc.stdout or ""):
+        return {"ok": True}
+    if "not found" in (proc.stdout or ""):
+        return {"ok": False, "error": f"Couldn't find “{name}” in the file."}
+    return {"ok": False, "error": _render_failure_summary(proc)}
+
+
 # Extract one marked datablock into its own .blend. bpy.data.libraries.write
 # writes the named object/collection plus every datablock it depends on (mesh,
 # materials, textures), leaving the source file untouched.
