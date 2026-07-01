@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.7"
+__version__ = "0.14.8"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1081,9 +1081,14 @@ def _queue_blender(entry):
         fh.write(json.dumps(entry) + "\n")
 
 
-def _import_entry(asset, place_at_cursor=False):
+def _import_entry(asset, place_at_cursor=False, mode="append"):
+    # "mode" only matters for .blend (Append copies the datablock in; Link keeps
+    # a live reference to the source file, like Blender's own Asset Browser
+    # drag-drop) — the bridge ignores it for every other format.
+    if mode not in ("append", "link"):
+        mode = "append"
     return {"action": "import", "path": asset["path"], "ext": asset["ext"],
-            "place_at_cursor": bool(place_at_cursor)}
+            "place_at_cursor": bool(place_at_cursor), "mode": mode}
 
 
 def _material_entry(asset, to_selection=True):
@@ -1115,7 +1120,8 @@ def send_blender(asset_id):
     if asset["kind"] != "model":
         return jsonify({"error": "Only model files can be sent to Blender."}), 400
     data = request.get_json(silent=True) or {}
-    _queue_blender(_import_entry(asset, data.get("place_at_cursor", False)))
+    _queue_blender(_import_entry(asset, data.get("place_at_cursor", False),
+                                 data.get("mode", "append")))
     return jsonify({"ok": True, "queued": asset["name"]})
 
 

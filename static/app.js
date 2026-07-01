@@ -2475,6 +2475,8 @@ async function openDrawer(id, idx) {
           <span class="act-ico">⤴</span> <span class="act-label">Send to Blender</span></button>` : ""}
         ${canBlender ? `<button class="act" id="blenderCursorAct">
           <span class="act-ico">✛</span> <span class="act-label">Send at 3D cursor</span></button>` : ""}
+        ${canBlender && a.ext === ".blend" ? `<button class="act" id="blenderLinkAct" title="Keep a live reference to this file instead of copying its data in — edits to the source .blend show up automatically">
+          <span class="act-ico">🔗</span> <span class="act-label">Send to Blender (Linked)</span></button>` : ""}
         ${canMaterial ? `<button class="act primary" id="materialAct">
           <span class="act-ico">⬢</span> <span class="act-label">Build material in Blender</span></button>` : ""}
         ${canWorld ? `<button class="act primary" id="worldAct">
@@ -2558,6 +2560,11 @@ async function openDrawer(id, idx) {
       "Queued — the Blender bridge will import it.");
     wireSend("blenderCursorAct", "send-blender", { place_at_cursor: true },
       "Sending…", "Send at 3D cursor", "Queued — imports at the 3D cursor.");
+    if (a.ext === ".blend") {
+      wireSend("blenderLinkAct", "send-blender", { mode: "link" },
+        "Sending…", "Send to Blender (Linked)",
+        "Queued as a Link — the bridge will keep it referencing this file.");
+    }
   }
   if (canMaterial) {
     wireSend("materialAct", "send-material", { to_selection: true },

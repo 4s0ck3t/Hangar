@@ -157,7 +157,7 @@ def _set_world_hdri(path, strength=1.0):
     print(f"[Hangar] World HDRI set to {os.path.basename(path)}")
 
 
-def _import_file(path, ext, place_at_cursor=False):
+def _import_file(path, ext, place_at_cursor=False, mode="append"):
     ext = ext.lower()
     before = {o.name for o in bpy.context.scene.objects}
     try:
@@ -188,8 +188,11 @@ def _import_file(path, ext, place_at_cursor=False):
         elif ext == ".dae":
             bpy.ops.wm.collada_import(filepath=path)
         elif ext == ".blend":
-            # Append every object from the .blend file's Object directory.
-            with bpy.data.libraries.load(path, link=False) as (src, dst):
+            # Append (copy into this file) or Link (keep a live reference to the
+            # source .blend, like Blender's own Asset Browser drag-drop) every
+            # object from the file's Object directory.
+            link = (mode == "link")
+            with bpy.data.libraries.load(path, link=link) as (src, dst):
                 dst.objects = list(src.objects)
             for obj in dst.objects:
                 if obj is not None:
@@ -209,7 +212,8 @@ def _dispatch(entry):
     action = entry.get("action", "import")
     if action == "import":
         _import_file(entry["path"], entry.get("ext", ""),
-                     place_at_cursor=entry.get("place_at_cursor", False))
+                     place_at_cursor=entry.get("place_at_cursor", False),
+                     mode=entry.get("mode", "append"))
     elif action == "apply_material":
         _apply_material(entry.get("maps", {}), entry.get("name", ""),
                         entry.get("to_selection", True))
