@@ -2621,12 +2621,12 @@ async function pollScan() {
     // bar up so the user sees thumbnails filling in rather than a frozen grid.
     if (state.wasScanning) {
       state.wasScanning = false;
-      toast(`Indexed ${s.indexed.toLocaleString()} assets — generating previews…`, "success");
+      toast(`Indexed ${s.indexed.toLocaleString()} assets — checking previews…`, "success");
       refresh();
     }
     const scanText = $("#scanText");
     scanText.textContent =
-      `Generating previews — ${warm.done.toLocaleString()}/${warm.total.toLocaleString()}`;
+      `Generating missing previews — ${warm.done.toLocaleString()}/${warm.total.toLocaleString()}`;
     if (warm.current) {
       const fname = warm.current.replace(/.*[\\/]/, "");
       $("#scanFile").textContent = fname;

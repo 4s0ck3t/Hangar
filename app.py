@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.13.97"
+__version__ = "0.13.98"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -122,12 +122,21 @@ WARM_GEN = 0  # bumped on each new scan so an in-flight warm pass bows out
 
 def _run_warm(generation):
     try:
-        targets = store.iter_thumb_targets()
+        all_targets = store.iter_thumb_targets()
     except Exception as e:
         print(f"[Hangar] warm: could not list assets: {e}")
         with WARM_LOCK:
             WARM.update(running=False, finished_at=time.time())
         return
+    targets = []
+    for asset in all_targets:
+        if generation != WARM_GEN:
+            return
+        try:
+            if not thumbs.has_cached_thumb(asset):
+                targets.append(asset)
+        except Exception:
+            targets.append(asset)
     blender_ok = thumbs.blender_available()
     with WARM_LOCK:
         WARM.update(running=True, done=0, total=len(targets), rendered=0,
