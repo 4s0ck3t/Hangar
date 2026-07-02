@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.16"
+__version__ = "0.14.17"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -44,10 +44,9 @@ def _accessible(path):
         return True
     if os.name == "nt":
         try:
-            p = os.path.abspath(path)
-            if not p.startswith("\\\\?\\"):
-                p = "\\\\?\\" + p
-            return os.path.exists(p)
+            # thumbs._fs builds the correct extended-length form, including the
+            # \\?\UNC\ prefix for network shares (plain \\?\ is wrong for UNC).
+            return os.path.exists(thumbs._fs(path))
         except OSError:
             pass
     return False

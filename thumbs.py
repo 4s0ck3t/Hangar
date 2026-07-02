@@ -847,15 +847,22 @@ def _zstd_decompress(path):
 
 
 def _fs(path):
-    """Long-path-safe filesystem path. On Windows, open()/gzip choke on paths over
-    260 chars unless prefixed with the \\?\ extended-length marker — deeply-nested
-    asset packs hit this, so a .blend that's actually present fails to read."""
-    if os.name == "nt" and path and not str(path).startswith("\\\\?\\"):
-        try:
-            return "\\\\?\\" + os.path.abspath(path)
-        except OSError:
-            return path
-    return path
+    """Long-path-safe filesystem path. On Windows, open()/gzip/exists choke on
+    paths over 260 chars unless prefixed with the extended-length marker — and a
+    UNC share (\\\\server\\share\\...) needs the \\\\?\\UNC\\ form, NOT plain
+    \\\\?\\. Deeply-nested packs on a network share hit both, so a file that's
+    actually present reads as missing without this."""
+    if os.name != "nt" or not path:
+        return path
+    try:
+        p = os.path.abspath(path)
+    except OSError:
+        return path
+    if p.startswith("\\\\?\\"):
+        return p
+    if p.startswith("\\\\"):                      # UNC: \\server\share\...
+        return "\\\\?\\UNC\\" + p[2:]
+    return "\\\\?\\" + p
 
 
 def _blend_decompress(path):
