@@ -100,9 +100,26 @@ jobs:
             Write-Host "no selftest file produced (exe may have crashed before writing it)"
           }
 
-      - name: Zip the build folder
-        run: Compress-Archive -Path dist/Hangar/* -DestinationPath dist/Hangar-windows.zip
+      - name: Zip the build folder (clean forward-slash paths for the in-app updater)
         shell: pwsh
+        run: |
+          # PowerShell's Compress-Archive writes non-standard zip entries (backslash
+          # separators / odd paths) that the in-app updater's safe-extract guard can
+          # reject with "unsafe path". Build the zip with Python's zipfile instead so
+          # every entry is a clean forward-slash path relative to the Hangar folder.
+          $py = @(
+            "import os, zipfile",
+            "root = 'dist/Hangar'",
+            "z = zipfile.ZipFile('dist/Hangar-windows.zip', 'w', zipfile.ZIP_DEFLATED)",
+            "for dp, _, files in os.walk(root):",
+            "    for f in files:",
+            "        full = os.path.join(dp, f)",
+            "        z.write(full, os.path.relpath(full, root).replace(os.sep, '/'))",
+            "z.close()",
+            "print('zipped', os.path.getsize('dist/Hangar-windows.zip'), 'bytes')"
+          )
+          Set-Content -Path zipit.py -Value $py -Encoding ascii
+          python zipit.py
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4

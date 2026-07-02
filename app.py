@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.30"
+__version__ = "0.14.31"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1937,25 +1937,56 @@ def _is_within_dir(base, candidate):
         return False
 
 
+def _safe_member_name(name):
+    """Normalized relative path for an archive entry, or None if it's unsafe
+    (absolute, drive-lettered, or escaping via ..). Tolerates the backslash
+    separators that Windows-produced zips (Compress-Archive) can carry."""
+    n = (name or "").replace("\\", "/")
+    if not n or n.startswith("/"):
+        return None
+    if len(n) >= 2 and n[1] == ":":                  # drive letter, e.g. C:...
+        return None
+    parts = [p for p in n.split("/") if p not in ("", ".")]
+    if any(p == ".." for p in parts):
+        return None
+    return parts                                     # list of clean components
+
+
 def _safe_extract_tar(archive, folder):
     import tarfile
+    os.makedirs(folder, exist_ok=True)
     with tarfile.open(archive, "r:gz") as t:
         for member in t.getmembers():
-            target = os.path.join(folder, member.name)
-            if (member.name.startswith(("/", "\\")) or member.issym()
-                    or member.islnk() or not _is_within_dir(folder, target)):
-                raise RuntimeError(f"Unsafe path in update archive: {member.name}")
-        t.extractall(folder)
+            parts = _safe_member_name(member.name)
+            if parts is None or member.issym() or member.islnk() \
+                    or not _is_within_dir(folder, os.path.join(folder, *parts)):
+                raise RuntimeError(f"Unsafe path in update archive: {member.name!r}")
+            if member.isdir():
+                continue
+            target = os.path.join(folder, *parts)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            src = t.extractfile(member)
+            if src is None:
+                continue
+            with src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 def _safe_extract_zip(archive, folder):
+    os.makedirs(folder, exist_ok=True)
     with zipfile.ZipFile(archive) as z:
         for member in z.infolist():
-            target = os.path.join(folder, member.filename)
-            if (member.filename.startswith(("/", "\\")) or
-                    not _is_within_dir(folder, target)):
-                raise RuntimeError(f"Unsafe path in update archive: {member.filename}")
-        z.extractall(folder)
+            parts = _safe_member_name(member.filename)
+            if parts is None or not _is_within_dir(folder, os.path.join(folder, *parts)):
+                raise RuntimeError(f"Unsafe path in update archive: {member.filename!r}")
+            if member.is_dir() or not parts:
+                continue
+            # Extract by the sanitized relative path, so a backslash-separated entry
+            # still lands in the right nested folder (not one flat weird filename).
+            target = os.path.join(folder, *parts)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with z.open(member) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 @app.post("/api/update/download")
