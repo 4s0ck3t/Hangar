@@ -3315,6 +3315,9 @@ $("#diagModal").onclick = (e) => { if (e.target.id === "diagModal") $("#diagModa
     if (!r || !r.ok) { toast((r && r.error) || "Couldn't set authors.", "error"); return; }
     toast(`Set Author on ${r.count} file${r.count === 1 ? "" : "s"} from their source folder.`, "success");
     refresh();
+    // Refresh an open drawer so its Details section shows the new Author now.
+    if (drawerAssetId != null) openDrawer(drawerAssetId, drawerIdx);
+    if (r.count === 0) toast("No files were updated — Authors may already be set, or paths aren't under a library root. Tell Nyx your library path if so.", "error");
   };
 }
 $("#diagCopy").onclick = async () => {
