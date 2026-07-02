@@ -207,6 +207,9 @@ def scan_library(library_path, on_file=None):
                 "kind": kind,
                 "size": st.st_size,
                 "mtime": st.st_mtime,
+                # Source-pack folder → Author for NEW assets (upsert only applies
+                # it on insert, never overwriting an existing/edited Author).
+                "author": store.source_folder(full, library_path),
             }
             # Group texture maps of the same material into one set.
             if kind == "texture":

@@ -803,7 +803,7 @@ button, input, select { font-family: inherit; color: inherit; }
 .diag-hint { margin: 10px 14px 0; color: var(--faint); font-size: 12px; }
 
 /* ---- render farm panel ---- */
-.farm-panel { margin: 10px 14px 0; padding: 10px 12px; border: 1px solid var(--line);
+.farm-panel, .tools-panel { margin: 10px 14px 0; padding: 10px 12px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--panel, rgba(255,255,255,0.02)); }
 .farm-head { display: flex; align-items: center; justify-content: space-between; }
 .farm-title { font-weight: 600; font-size: 13px; }

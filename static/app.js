@@ -3291,6 +3291,17 @@ $("#dataDirBtn").onclick = async () => {
 };
 $("#diagClose").onclick = () => $("#diagModal").classList.add("hidden");
 $("#diagModal").onclick = (e) => { if (e.target.id === "diagModal") $("#diagModal").classList.add("hidden"); };
+{
+  const fa = $("#fillAuthorsBtn");
+  if (fa) fa.onclick = async () => {
+    fa.disabled = true; const prev = fa.textContent; fa.textContent = "Setting authors…";
+    let r; try { r = await post("assets/backfill-authors", {}); } catch (_) { r = null; }
+    fa.disabled = false; fa.textContent = prev;
+    if (!r || !r.ok) { toast((r && r.error) || "Couldn't set authors.", "error"); return; }
+    toast(`Set Author on ${r.count} file${r.count === 1 ? "" : "s"} from their source folder.`, "success");
+    refresh();
+  };
+}
 $("#diagCopy").onclick = async () => {
   const ta = $("#diagText");
   ta.select();

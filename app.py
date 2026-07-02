@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.15"
+__version__ = "0.14.16"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -506,6 +506,16 @@ def collection_membership(asset_id):
         data["collection"].strip(), asset_id, add=data.get("add", True)
     )
     return jsonify({"ok": True})
+
+
+@app.post("/api/assets/backfill-authors")
+def backfill_authors():
+    """Set every asset's Author to its source-pack folder (the first folder under
+    its library root — iMesh, Poly Haven, 4023 Interior Models, …). Only fills
+    empty Authors unless {force:true}, so it won't clobber ones you've edited."""
+    force = bool((request.get_json(silent=True) or {}).get("force"))
+    n = store.backfill_source_authors(force=force)
+    return jsonify({"ok": True, "count": n})
 
 
 @app.post("/api/assets/<int:asset_id>/details")

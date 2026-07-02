@@ -382,11 +382,11 @@ def _upsert_asset(conn, meta):
         return existing["id"]
     cur = conn.execute(
         "INSERT INTO assets(path, name, ext, kind, size, mtime, "
-        "set_key, map_role, map_order, subtype, resolution, added_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "set_key, map_role, map_order, subtype, resolution, author, added_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (meta["path"], meta["name"], meta["ext"], meta["kind"],
          meta["size"], meta["mtime"], set_key, map_role, map_order,
-         subtype, resolution, time.time()),
+         subtype, resolution, meta.get("author", ""), time.time()),
     )
     # Auto-suggest categories for any new asset from its folder/file name.
     _auto_categorize(conn, cur.lastrowid, meta["path"], meta["kind"])
@@ -459,6 +459,39 @@ def rename_asset(asset_id, new_path, new_name):
             "UPDATE assets SET path=?, name=? WHERE id=?",
             (new_path, new_name, asset_id),
         )
+
+
+def source_folder(path, root):
+    """The 'source pack' folder for an asset: the first folder under its library
+    root (e.g. .../assets/<Poly Haven>/... -> 'Poly Haven'). A file sitting
+    directly in the root falls back to the root folder's own name. String-based
+    (not os.path) so it works on stored Windows paths regardless of host OS."""
+    p = (path or "").replace("\\", "/")
+    r = (root or "").replace("\\", "/").rstrip("/")
+    if not r or not p.lower().startswith(r.lower() + "/"):
+        return ""
+    parts = [x for x in p[len(r) + 1:].split("/") if x]
+    if len(parts) >= 2:
+        return parts[0]                       # first folder beneath the root
+    return r.split("/")[-1] or ""             # file directly in root -> root name
+
+
+def backfill_source_authors(force=False):
+    """Set each asset's Author to its source-pack folder. Only fills empty
+    Authors unless force=True, so it never overwrites what the user has typed —
+    and since Author is stored, it stays put when a file is later moved."""
+    with connect() as conn:
+        roots = [r["path"] for r in conn.execute("SELECT path FROM libraries")]
+        roots.sort(key=len, reverse=True)     # longest (most specific) root wins
+        where = "" if force else "WHERE author='' OR author IS NULL"
+        rows = conn.execute(f"SELECT id, path FROM assets {where}").fetchall()
+        n = 0
+        for row in rows:
+            src = next((s for s in (source_folder(row["path"], rt) for rt in roots) if s), "")
+            if src:
+                conn.execute("UPDATE assets SET author=? WHERE id=?", (src, row["id"]))
+                n += 1
+    return n
 
 
 def set_asset_details(asset_id, author, description, license, copyright):
