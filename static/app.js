@@ -531,17 +531,41 @@ function destinationFolderForCategory(a, c) {
   return { name: c.name, path: sibling, inferred: true };
 }
 
+// Instant styled tooltip for showing a full folder path on hover (the native
+// `title` tooltip in the Edge --app window is slow and easy to miss).
+let _pathTip;
+function showPathTip(el, text) {
+  if (!_pathTip) {
+    _pathTip = document.createElement("div");
+    _pathTip.className = "path-tip";
+    document.body.appendChild(_pathTip);
+  }
+  _pathTip.textContent = text;
+  _pathTip.style.display = "block";
+  const r = el.getBoundingClientRect();
+  const tr = _pathTip.getBoundingClientRect();
+  let left = r.right + 8;                       // sit to the right of the rail item
+  if (left + tr.width > window.innerWidth - 8) left = Math.max(8, r.left - tr.width - 8);
+  let top = Math.max(8, Math.min(r.top + (r.height - tr.height) / 2,
+                                 window.innerHeight - tr.height - 8));
+  _pathTip.style.left = left + "px";
+  _pathTip.style.top = top + "px";
+}
+function hidePathTip() { if (_pathTip) _pathTip.style.display = "none"; }
+
 function buildCategoryFolderItem(c, f, depth) {
   const li = document.createElement("li");
   li.className = "cat-folder-item";
   if (depth > 1) li.style.paddingLeft = `${42 + (depth - 1) * 14}px`;   // base (depth 1) is 42px
   if (state.filter.category === c.name && state.filter.folder === f.path) li.classList.add("active");
-  li.title = f.path;
+  li.addEventListener("mouseenter", () => showPathTip(li, f.path));
+  li.addEventListener("mouseleave", hidePathTip);
   li.innerHTML =
     `<span class="folder-dot"></span>` +
     `<span class="cat-folder-name">${esc(f.name)}</span><span class="count">${f.count}</span>`;
   li.onclick = (e) => {
     e.stopPropagation();
+    hidePathTip();
     resetFilter();
     state.filter.kind = c.kind || "";
     state.filter.category = c.name;
