@@ -1569,6 +1569,22 @@ function showCategoryMenu(x, y, a) {
           await moveAssetToCategory(a, c.name, c);
         };
         menu.appendChild(item);
+        // This category's folders (the Furniture › Beds level shown in the
+        // sidebar) as deeper drop targets — picking one files the asset under the
+        // category AND moves its file into that folder on disk.
+        for (const f of foldersForCategory(c)) {
+          const fitem = document.createElement("button");
+          fitem.className = "ctx-item ctx-subitem";
+          fitem.style.paddingLeft = `${9 + (depth + 1) * 16}px`;
+          fitem.title = `Move the file into ${f.path}`;
+          fitem.innerHTML =
+            `<span class="ctx-ico">📁</span><span class="ctx-name">${esc(f.name)}</span>`;
+          fitem.onclick = async (e) => {
+            e.stopPropagation(); closeCtxMenu();
+            await moveAssetToFolder(a, c, f);
+          };
+          menu.appendChild(fitem);
+        }
       }
       walk(c.id, depth + 1);
     }
