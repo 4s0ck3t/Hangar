@@ -324,6 +324,12 @@ def _seed_edge_profile(profile, url):
         prefs = {
             "browser": {"check_default_browser": False},
             "profile": {"name": "Hangar"},
+            # Hangar is a local app window, not a browser — stop Edge from signing
+            # the throwaway profile into the Windows account and popping its
+            # "we're now syncing your data across devices" toast.
+            "signin": {"allowed": False, "allowed_on_next_startup": False},
+            "sync": {"requested": False, "keep_everything_synced": False},
+            "sync_promo": {"show_on_first_run_allowed": False, "user_skipped": True},
         }
         if icon_path:
             prefs["web_app_icon"] = icon_path.replace("\\", "/")
@@ -348,7 +354,15 @@ def _launch_app_window(url):
     profile = os.path.join(tempfile.gettempdir(), f"hangar-app-{os.getpid()}")
     _seed_edge_profile(profile, url)
     args = [browser, f"--app={url}", f"--user-data-dir={profile}", "--new-window",
-            "--window-size=1320,860", "--no-first-run", "--no-default-browser-check"]
+            "--window-size=1320,860", "--no-first-run", "--no-default-browser-check",
+            # Kill Edge's account sign-in / sync so it stops nagging in the app
+            # window. --disable-sync stops sync itself; the disabled features cover
+            # Edge's implicit Windows-account sign-in and the sync promo toast
+            # (unknown feature names are harmless — Chromium ignores them).
+            "--disable-sync",
+            "--disable-background-networking",
+            "--disable-features=msImplicitSignin,msEdgeSyncPromotion,EdgeSync,"
+            "SyncPromoAfterSignin,ShowSyncPromo,msEdgeIdentityFRE"]
     # Chromium refuses to start as root unless sandboxing is disabled.
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         args.append("--no-sandbox")
