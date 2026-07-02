@@ -507,6 +507,10 @@ button, input, select { font-family: inherit; color: inherit; }
   margin-top: 3px; font-size: 10px; color: var(--mute);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.card-author {
+  margin-top: 2px; font-size: 10px; color: var(--signal);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .card-line {
   display: flex; align-items: center; gap: 7px; margin-top: 4px;
   font-family: var(--mono); font-size: 10px; color: var(--faint);

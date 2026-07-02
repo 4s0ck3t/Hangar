@@ -1425,6 +1425,10 @@ function buildCard(a, i) {
   const folderLine = folder
     ? `<div class="card-folder" title="${esc(a.path || "")}">🗀 ${esc(folder)}</div>`
     : "";
+  // Author (source pack) on the tile, so you can see origin at a glance.
+  const authorLine = a.author
+    ? `<div class="card-author" title="Author: ${esc(a.author)}">👤 ${esc(a.author)}</div>`
+    : "";
   card.innerHTML = `
     <div class="card-thumb">
       <span class="kind-stripe" style="background:${color}"></span>
@@ -1437,6 +1441,7 @@ function buildCard(a, i) {
     <div class="card-meta">
       <div class="card-name" title="${esc(a.name)}">${esc(a.name)}</div>
       ${folderLine}
+      ${authorLine}
       <div class="card-line">
         <span class="card-ext" style="color:${color}">${esc(ext)}</span>
         <span>·</span><span>${fmtSize(a.size)}</span>
