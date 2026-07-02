@@ -2529,6 +2529,10 @@ async function openDrawer(id, idx) {
       ${a.ext === ".blend" ? `<div id="dBlend"></div>` : ""}
       <div class="d-section-label">Tags</div>
       <div class="tag-row" id="tagRow"></div>
+      <div class="d-section-label d-details-label">Details
+        <button class="d-details-edit" id="dDetailsEdit" title="Edit author, description, license, copyright">✎ Edit</button>
+      </div>
+      <div id="dDetails" class="d-details"></div>
       <div class="d-section-label">Category</div>
       <div id="dCatRow" class="d-cat-row"></div>
       ${(a.collections || []).length ? `
@@ -2597,6 +2601,7 @@ async function openDrawer(id, idx) {
 
   renderTagEditor(a);
   renderDrawerCategoryEditor(a);
+  renderDrawerDetails(a);
   if (a.kind === "texture") renderTextureMaps(a);
 
   $("#favAct").onclick = async () => {
@@ -2755,6 +2760,75 @@ function renderTagEditor(a) {
 
 let allCategories = [];
 let categoryFolders = [];
+
+// File-level metadata (author/description/license/copyright) — stored in Hangar
+// for any asset, no marking needed. Shows the fields (—  when unset) with an
+// Edit button; the search box also matches author/description.
+function renderDrawerDetails(a) {
+  const box = $("#dDetails");
+  if (!box) return;
+  const rows = [
+    ["Author", a.author],
+    ["Description", a.description],
+    ["License", a.license],
+    ["Copyright", a.copyright],
+  ];
+  box.innerHTML = rows.map(([k, v]) =>
+    `<div class="d-detail"><span class="d-detail-k">${k}</span>` +
+    `<span class="d-detail-v${v ? "" : " unset"}">${v ? esc(v) : "—"}</span></div>`
+  ).join("");
+  const edit = $("#dDetailsEdit");
+  if (edit) edit.onclick = () => openDetailsEditor(a);
+}
+
+function openDetailsEditor(a) {
+  document.querySelector(".meta-overlay")?.remove();
+  const ov = document.createElement("div");
+  ov.className = "meta-overlay";
+  ov.innerHTML =
+    `<div class="meta-card">
+       <div class="meta-title">Details — ${esc(a.name)}</div>
+       <label class="meta-field"><span>Author</span><input class="meta-in" id="dAuthor" type="text"></label>
+       <label class="meta-field"><span>Description</span><textarea class="meta-in" id="dDesc" rows="2"></textarea></label>
+       <label class="meta-field"><span>License</span><input class="meta-in" id="dLicense" type="text"></label>
+       <label class="meta-field"><span>Copyright</span><input class="meta-in" id="dCopyright" type="text"></label>
+       <div class="meta-actions">
+         <button class="meta-btn" id="dCancel">Cancel</button>
+         <button class="meta-btn meta-save" id="dSave">Save</button>
+       </div>
+       <div class="meta-note">Stored in Hangar for this file — searchable, no Blender needed.</div>
+     </div>`;
+  document.body.appendChild(ov);
+  ov.querySelector("#dAuthor").value = a.author || "";
+  ov.querySelector("#dDesc").value = a.description || "";
+  ov.querySelector("#dLicense").value = a.license || "";
+  ov.querySelector("#dCopyright").value = a.copyright || "";
+  const close = () => ov.remove();
+  ov.addEventListener("mousedown", (e) => { if (e.target === ov) close(); });
+  ov.querySelector("#dCancel").onclick = close;
+  ov.querySelector("#dSave").onclick = async () => {
+    const save = ov.querySelector("#dSave");
+    save.disabled = true; save.textContent = "Saving…";
+    const payload = {
+      author: ov.querySelector("#dAuthor").value.trim(),
+      description: ov.querySelector("#dDesc").value.trim(),
+      license: ov.querySelector("#dLicense").value.trim(),
+      copyright: ov.querySelector("#dCopyright").value.trim(),
+    };
+    let r;
+    try { r = await post(`assets/${a.id}/details`, payload); }
+    catch (_) { r = null; }
+    if (!r || !r.ok) {
+      save.disabled = false; save.textContent = "Save";
+      toast((r && r.error) || "Couldn't save details.", "error");
+      return;
+    }
+    Object.assign(a, payload);
+    close();
+    toast("Details saved.", "success");
+    if (drawerAssetId === a.id) renderDrawerDetails(a);
+  };
+}
 
 function renderDrawerCategoryEditor(a) {
   const row = $("#dCatRow");

@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.11"
+__version__ = "0.14.12"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -506,6 +506,25 @@ def collection_membership(asset_id):
         data["collection"].strip(), asset_id, add=data.get("add", True)
     )
     return jsonify({"ok": True})
+
+
+@app.post("/api/assets/<int:asset_id>/details")
+def set_asset_details(asset_id):
+    """Save the user-editable file-level metadata (author/description/license/
+    copyright) for any asset. Stored in Hangar's index — no marking, works for
+    every file type. Body: {author?, description?, license?, copyright?}."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    d = request.get_json(force=True) or {}
+    store.set_asset_details(
+        asset_id,
+        (d.get("author") or "").strip(),
+        (d.get("description") or "").strip(),
+        (d.get("license") or "").strip(),
+        (d.get("copyright") or "").strip(),
+    )
+    return jsonify({"ok": True, "asset": store.get_asset(asset_id)})
 
 
 @app.post("/api/assets/<int:asset_id>/category")

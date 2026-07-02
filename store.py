@@ -42,6 +42,10 @@ CREATE TABLE IF NOT EXISTS assets (
     blend_assets INTEGER,
     subtype     TEXT NOT NULL DEFAULT '',
     resolution  TEXT NOT NULL DEFAULT '',
+    author      TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    license     TEXT NOT NULL DEFAULT '',
+    copyright   TEXT NOT NULL DEFAULT '',
     added_at    REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tags (
@@ -200,6 +204,11 @@ def init_db():
             # Aggregated searchable text from a .blend's marked-asset metadata
             # (asset names + tags + author + catalog), so search can reach inside.
             ("blend_meta", "ALTER TABLE assets ADD COLUMN blend_meta TEXT NOT NULL DEFAULT ''"),
+            # File-level metadata the user edits in Hangar (any asset, no marking).
+            ("author",      "ALTER TABLE assets ADD COLUMN author TEXT NOT NULL DEFAULT ''"),
+            ("description", "ALTER TABLE assets ADD COLUMN description TEXT NOT NULL DEFAULT ''"),
+            ("license",     "ALTER TABLE assets ADD COLUMN license TEXT NOT NULL DEFAULT ''"),
+            ("copyright",   "ALTER TABLE assets ADD COLUMN copyright TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in asset_cols:
                 conn.execute(ddl)
@@ -452,6 +461,15 @@ def rename_asset(asset_id, new_path, new_name):
         )
 
 
+def set_asset_details(asset_id, author, description, license, copyright):
+    """Store the user-editable file-level metadata for an asset."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE assets SET author=?, description=?, license=?, copyright=? WHERE id=?",
+            (author or "", description or "", license or "", copyright or "", asset_id),
+        )
+
+
 def set_blend_meta(asset_id, text):
     """Store the aggregated searchable metadata text for a .blend (see search)."""
     with connect() as conn:
@@ -566,11 +584,12 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
         where_params.append(set_key)
         group = ""
     if search:
-        # Match the file name OR the aggregated .blend metadata (marked-asset
-        # names, tags, author, catalog), so a search reaches assets inside a file.
-        clauses.append("(a.name LIKE ? OR a.blend_meta LIKE ?)")
-        where_params.append(f"%{search}%")
-        where_params.append(f"%{search}%")
+        # Match the file name, the user's file-level metadata (author/
+        # description), OR the aggregated .blend metadata (marked-asset names,
+        # tags, author, catalog) — so search reaches all of it.
+        clauses.append(
+            "(a.name LIKE ? OR a.blend_meta LIKE ? OR a.author LIKE ? OR a.description LIKE ?)")
+        where_params += [f"%{search}%"] * 4
     if kind:
         clauses.append("a.kind=?")
         where_params.append(kind)
