@@ -2528,6 +2528,12 @@ async function autoRenderModelPreview(a) {
 // full render without touching Blender again.
 const _blendUpgraded = new Set();
 async function _upgradeBlendPreview(a) {
+  // Off by default: keep the file's own embedded thumbnail (what Blender's file
+  // browser shows) rather than silently replacing it with an EEVEE render that
+  // may frame/light the scene differently and look worse. Opt in via the
+  // "Auto-render sharp .blend previews" toggle in Logs; a manual "Render
+  // preview" always still works.
+  if (localStorage.getItem("hangarAutoRenderBlend") !== "1") return;
   if (_blendUpgraded.has(a.id)) return;
   _blendUpgraded.add(a.id);
   try {
@@ -3463,6 +3469,16 @@ $("#diagModal").onclick = (e) => { if (e.target.id === "diagModal") $("#diagModa
     if (drawerAssetId != null) openDrawer(drawerAssetId, drawerIdx);
     if (r.count === 0) toast("No files were updated — Authors may already be set, or paths aren't under a library root. Tell Nyx your library path if so.", "error");
   };
+  const ar = $("#autoRenderBlend");
+  if (ar) {
+    ar.checked = localStorage.getItem("hangarAutoRenderBlend") === "1";
+    ar.onchange = () => {
+      localStorage.setItem("hangarAutoRenderBlend", ar.checked ? "1" : "0");
+      toast(ar.checked
+        ? "New .blend opens will render a sharp preview."
+        : "Keeping each .blend's own embedded preview.", "success");
+    };
+  }
 }
 $("#diagCopy").onclick = async () => {
   const ta = $("#diagText");

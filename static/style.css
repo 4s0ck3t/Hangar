@@ -837,6 +837,11 @@ button, input, select { font-family: inherit; color: inherit; }
   border-radius: 8px; background: var(--panel, rgba(255,255,255,0.02)); }
 .farm-head { display: flex; align-items: center; justify-content: space-between; }
 .farm-title { font-weight: 600; font-size: 13px; }
+.tools-check {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  font-size: 12px; color: var(--mute); cursor: pointer; line-height: 1.4;
+}
+.tools-check input { cursor: pointer; }
 .farm-chunk { font-size: 12px; color: var(--faint); display: flex; align-items: center; gap: 6px; }
 .farm-step { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--line);
   background: transparent; color: var(--fg); cursor: pointer; font-size: 14px; line-height: 1; }
