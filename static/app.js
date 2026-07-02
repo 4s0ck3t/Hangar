@@ -33,7 +33,8 @@ function loadCollapsed() {
 }
 const state = {
   filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
-            favorite: false, missing: false, missing_blend_textures: false, duplicates: false },
+            favorite: false, missing: false, missing_blend_textures: false, duplicates: false,
+            noAuthor: false },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
@@ -665,7 +666,7 @@ let _facetKindCache = {};  // kind → { subtypes, resolutions }, invalidated on
 function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
                    favorite: false, subtype: "", resolution: "", missing: false,
-                   missing_blend_textures: false, duplicates: false };
+                   missing_blend_textures: false, duplicates: false, noAuthor: false };
   _facetKindCache = {};
 }
 
@@ -674,7 +675,7 @@ function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
     || state.filter.collection || state.filter.category || state.filter.folder
     || state.filter.favorite || state.filter.missing || state.filter.missing_blend_textures || state.filter.subtype
-    || state.filter.resolution || state.filter.duplicates || state.search;
+    || state.filter.resolution || state.filter.duplicates || state.filter.noAuthor || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
@@ -1057,16 +1058,17 @@ async function refresh() {
   // Duplicates view: every file whose name is shared by more than one file,
   // grouped by name. It's its own mode, so it overrides the auto-groupings below.
   const dupes = f.duplicates;
+  const noAuthor = f.noAuthor;   // standalone view: files with no Author set
   // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
   // with no other filter splits the grid into category sections.
-  const grouped = !dupes && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
+  const grouped = !dupes && !noAuthor && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
     && !f.collection && !f.category && !f.folder && !f.favorite && !state.search
     && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
   // Folder-grouped view: a library folder with no sub-filters groups by subfolder.
-  const folderGrouped = !dupes && !!f.folder && !f.kind && !f.ext && !f.tag
+  const folderGrouped = !dupes && !noAuthor && !!f.folder && !f.kind && !f.ext && !f.tag
     && !f.collection && !f.category && !f.favorite && !state.search
     && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
-  const categoryFolderGrouped = !dupes && !!f.category && !f.folder && !f.tag
+  const categoryFolderGrouped = !dupes && !noAuthor && !!f.category && !f.folder && !f.tag
     && !f.collection && !f.favorite && !state.search
     && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
 
@@ -1085,6 +1087,7 @@ async function refresh() {
   if (state.search) p.set("search", state.search);
   p.set("sort", state.sort);
   if (dupes) { p.set("duplicates", "1"); p.set("limit", "2000"); }
+  if (noAuthor) { p.set("no_author", "1"); p.set("limit", "2000"); }
   // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each —
   // but NOT in the duplicates view, where every individual copy must show.
   else p.set("group", "set");
@@ -1108,6 +1111,7 @@ async function refresh() {
   updateActiveLabel(data.total);
   updateClearBtn();
   updateDupBtn();
+  updateNoAuthorBtn();
   updateFacetStrip();
 }
 
@@ -1385,7 +1389,8 @@ function renderGroupedByName(assets) {
 }
 
 function updateActiveLabel(total) {
-  let label = state.filter.duplicates ? "⧉ Duplicates"
+  let label = state.filter.noAuthor ? "🏷 No author"
+    : state.filter.duplicates ? "⧉ Duplicates"
     : state.filter.favorite ? "Favorites"
     : state.filter.missing ? "Missing files"
     : state.filter.missing_blend_textures ? "Blend missing textures"
@@ -3372,6 +3377,19 @@ $("#dupBtn").onclick = () => {
   state.filter.duplicates = on;
   state.search = ""; const s = $("#search"); if (s) s.value = "";
   updateDupBtn();
+  refresh();
+};
+function updateNoAuthorBtn() {
+  const b = $("#noAuthorBtn");
+  if (b) b.classList.toggle("active", state.filter.noAuthor);
+}
+const _noAuthorBtn = $("#noAuthorBtn");
+if (_noAuthorBtn) _noAuthorBtn.onclick = () => {
+  const on = !state.filter.noAuthor;
+  resetFilter();                 // "no author" is a standalone view
+  state.filter.noAuthor = on;
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  updateNoAuthorBtn();
   refresh();
 };
 

@@ -606,8 +606,10 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
                  group="", set_key="", with_categories=False,
                  subtype="", resolution="", missing=False,
-                 missing_blend_textures=False, duplicates=False):
+                 missing_blend_textures=False, duplicates=False, no_author=False):
     clauses = ["a.missing=1"] if missing else ["a.missing=0"]
+    if no_author:
+        clauses.append("(a.author='' OR a.author IS NULL)")
     if duplicates:
         # Only assets whose file name (name+ext, case-insensitive) is shared by
         # more than one indexed file — i.e. duplicate file names across folders.
