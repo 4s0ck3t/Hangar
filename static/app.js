@@ -397,8 +397,12 @@ function renderCategoryTree(ul, allCats, parentId, depth) {
 function buildCategoryItem(c, depth, folders) {
     const li = document.createElement("li");
     depth = depth || 1;
-    li.className = "cat-item" + (depth > 1 ? " cat-sub" : "");
-    if (depth > 2) li.style.paddingLeft = `${24 + (depth - 2) * 14}px`;   // .cat-sub's base is 24px
+    // Every category sits UNDER a kind header, so it's always indented (cat-sub);
+    // nested subcategories indent further per depth. Without this, a kind's
+    // top-level categories aligned flush with the next kind header and ran
+    // together (e.g. HDRI's categories blended into Materials).
+    li.className = "cat-item cat-sub";
+    if (depth > 1) li.style.paddingLeft = `${24 + (depth - 1) * 14}px`;   // .cat-sub base is 24px
     if (state.filter.category === c.name) li.classList.add("active");
     folders = folders || foldersForCategory(c);
     const hasFolders = folders.length > 0;
