@@ -843,17 +843,35 @@ function showBatchCategoryMenu(add, x, y) {
                            : "Selection isn't in any category";
     menu.appendChild(none);
   }
-  for (const c of cats) {
-    const item = document.createElement("button");
-    item.className = "ctx-item" + (add ? "" : " ctx-danger");
-    item.innerHTML =
-      `<span class="ctx-ico">${esc(c.icon || "📂")}</span>` +
-      `<span class="ctx-name">${esc(c.name)}</span>`;
-    item.onclick = async (e) => {
-      e.stopPropagation(); closeCtxMenu(); await batchCategoryApply(add, c.name);
-    };
-    menu.appendChild(item);
+  // Render the category TREE, not a flat list, so nested subcategories
+  // (Furniture › Chairs › Office) appear indented under their parent and can be
+  // picked directly. `cats` is the allowed set; walk the full parent→child tree
+  // and emit the allowed ones in order, indented by their real depth.
+  const allowedIds = new Set(cats.map((c) => c.id));
+  const kids = new Map();
+  for (const c of (allCategories || [])) {
+    const p = c.parent_id || 0;
+    (kids.get(p) || kids.set(p, []).get(p)).push(c);
   }
+  for (const arr of kids.values())
+    arr.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  (function walk(pid, depth) {
+    for (const c of (kids.get(pid) || [])) {
+      if (allowedIds.has(c.id)) {
+        const item = document.createElement("button");
+        item.className = "ctx-item" + (add ? "" : " ctx-danger");
+        if (depth > 0) item.style.paddingLeft = `${9 + depth * 16}px`;
+        item.innerHTML =
+          `<span class="ctx-ico">${esc(c.icon || (depth > 0 ? "↳" : "📂"))}</span>` +
+          `<span class="ctx-name">${esc(c.name)}</span>`;
+        item.onclick = async (e) => {
+          e.stopPropagation(); closeCtxMenu(); await batchCategoryApply(add, c.name);
+        };
+        menu.appendChild(item);
+      }
+      walk(c.id, depth + 1);
+    }
+  })(0, 0);
   if (add) {
     const sep = document.createElement("div"); sep.className = "ctx-sep"; menu.appendChild(sep);
     const mk = document.createElement("button");
@@ -1516,19 +1534,35 @@ function showCategoryMenu(x, y, a) {
     none.textContent = "No categories for this type yet";
     menu.appendChild(none);
   }
-  for (const c of cats) {
-    const item = document.createElement("button");
-    item.className = "ctx-item" + (current.has(c.name) ? " on" : "");
-    item.innerHTML =
-      `<span class="ctx-ico">${esc(c.icon || "")}</span>` +
-      `<span class="ctx-name">${esc(c.name)}</span>` +
-      (current.has(c.name) ? `<span class="ctx-check">✓</span>` : "");
-    item.onclick = async (e) => {
-      e.stopPropagation(); closeCtxMenu();
-      await moveAssetToCategory(a, c.name, c);
-    };
-    menu.appendChild(item);
+  // Show the category tree so nested subcategories appear indented under their
+  // parent and can be picked directly.
+  const allowedIds = new Set(cats.map((c) => c.id));
+  const kids = new Map();
+  for (const c of (allCategories || [])) {
+    const p = c.parent_id || 0;
+    (kids.get(p) || kids.set(p, []).get(p)).push(c);
   }
+  for (const arr of kids.values())
+    arr.sort((a2, b2) => a2.name.localeCompare(b2.name, undefined, { sensitivity: "base" }));
+  (function walk(pid, depth) {
+    for (const c of (kids.get(pid) || [])) {
+      if (allowedIds.has(c.id)) {
+        const item = document.createElement("button");
+        item.className = "ctx-item" + (current.has(c.name) ? " on" : "");
+        if (depth > 0) item.style.paddingLeft = `${9 + depth * 16}px`;
+        item.innerHTML =
+          `<span class="ctx-ico">${esc(c.icon || (depth > 0 ? "↳" : ""))}</span>` +
+          `<span class="ctx-name">${esc(c.name)}</span>` +
+          (current.has(c.name) ? `<span class="ctx-check">✓</span>` : "");
+        item.onclick = async (e) => {
+          e.stopPropagation(); closeCtxMenu();
+          await moveAssetToCategory(a, c.name, c);
+        };
+        menu.appendChild(item);
+      }
+      walk(c.id, depth + 1);
+    }
+  })(0, 0);
 
   const sep = document.createElement("div"); sep.className = "ctx-sep";
   menu.appendChild(sep);
