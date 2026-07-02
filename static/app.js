@@ -3342,8 +3342,11 @@ function startUpdatePolling() {
       const btn = $("#updateDownloadBtn");
       btn.disabled = false; btn.textContent = "Retry download";
       $("#updateProgress").classList.add("hidden");
-      _setPill(`⬆ Update to v${_updateInfo.latest}`, openUpdateModal);
-      toast("Update failed: " + s.error, "error");
+      // Keep the pill as a one-click RETRY of the background download, rather than
+      // dropping back to the manual "Download & install" modal — a single failed
+      // auto-download (e.g. a transient GitHub hiccup) shouldn't undo auto-update.
+      _setPill(`⟳ Retry update to v${_updateInfo.latest}`, beginBackgroundUpdate);
+      toast("Update download failed (" + s.error + ") — click the pill to retry.", "error");
     } else {
       // Still downloading — show it on the status bar AND keep the always-visible
       // pill in sync so the user can close the modal and keep working.
