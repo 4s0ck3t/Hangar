@@ -969,16 +969,12 @@ def set_category_membership(category_name, asset_id, add=True):
             "SELECT id, kind FROM categories WHERE name=?", (name,)
         ).fetchone()
         if add:
-            # Categories are exclusive within a kind: assigning an asset to a
-            # category removes it from every other category of the same kind
-            # scope first, so the same asset can't appear in two HDRI sections
-            # (or two model sections, etc.) at once.
-            cat_kind = cat["kind"] if cat else ""
+            # A category assignment is a MOVE, not an add: an asset lives in one
+            # category at a time, so clear every other category it's in first.
+            # (Was scoped to the same kind, which left an asset in two categories
+            # whenever their kinds differed — e.g. a kind-less custom category.)
             conn.execute(
-                "DELETE FROM asset_categories WHERE asset_id=? AND category_id IN "
-                "(SELECT id FROM categories WHERE kind=?)",
-                (asset_id, cat_kind),
-            )
+                "DELETE FROM asset_categories WHERE asset_id=?", (asset_id,))
             conn.execute(
                 "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) "
                 "VALUES (?, ?)", (cat["id"], asset_id),

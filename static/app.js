@@ -477,7 +477,7 @@ function buildCategoryItem(c, depth, folders) {
       const assetId = e.dataTransfer.getData("text/x-hangar-asset-id");
       if (!assetId) return;
       await post(`assets/${assetId}/category`, { category: c.name, add: true });
-      toast(`Added to ${c.icon || ""} ${c.name}`.trim(), "success");
+      toast(`Moved to ${c.icon || ""} ${c.name}`.trim(), "success");
       await loadState();
     });
 
@@ -706,7 +706,7 @@ function updateBatchBar() {
     <div class="batch-tags">${tags}</div>
     ${blendBtn}
     <button class="batch-coll-btn" id="batchCollBtn">+ Collection</button>
-    <button class="batch-cat-btn" id="batchCatBtn">+ Category</button>
+    <button class="batch-cat-btn" id="batchCatBtn">Move to category</button>
     <button class="batch-cat-btn" id="batchCatRemoveBtn">- Category</button>
     <button class="batch-del-btn" id="batchDelBtn">Remove from Hangar</button>
     <button class="batch-clear" id="batchClearBtn">✕</button>`;
@@ -783,7 +783,7 @@ function showBatchCategoryMenu(add, x, y) {
   menu.className = "ctx-menu";
   const title = document.createElement("div");
   title.className = "ctx-title";
-  title.textContent = add ? `Add ${selection.size} to…` : `Remove ${selection.size} from…`;
+  title.textContent = add ? `Move ${selection.size} to…` : `Remove ${selection.size} from…`;
   menu.appendChild(title);
 
   if (!cats.length) {
@@ -826,7 +826,7 @@ function showBatchCategoryMenu(add, x, y) {
 async function batchCategoryApply(add, name) {
   if (!name) return;
   await post("assets/batch/category", { ids: [...selection], category: name, add });
-  toast(`${add ? "Added" : "Removed"} ${selection.size} asset${selection.size > 1 ? "s" : ""} ${add ? "to" : "from"} "${name}"`, "success");
+  toast(`${add ? "Moved" : "Removed"} ${selection.size} asset${selection.size > 1 ? "s" : ""} ${add ? "to" : "from"} "${name}"`, "success");
   refresh(); loadState();
 }
 
@@ -2037,7 +2037,7 @@ function showBatchMenu(x, y) {
   menu.appendChild(sep);
   const addCat = document.createElement("button");
   addCat.className = "ctx-item";
-  addCat.innerHTML = `<span class="ctx-ico">+</span><span class="ctx-name">Add to category…</span>`;
+  addCat.innerHTML = `<span class="ctx-ico">+</span><span class="ctx-name">Move to category…</span>`;
   addCat.onclick = (e) => { e.stopPropagation(); closeCtxMenu(); showBatchCategoryMenu(true, x, y); };
   menu.appendChild(addCat);
   const removeCat = document.createElement("button");
@@ -2765,12 +2765,13 @@ function renderDrawerCategoryEditor(a) {
     const chip = document.createElement("span");
     chip.className = "chip cat-chip" + (current.has(c.name) ? " on" : "");
     chip.innerHTML = `${c.icon ? `<span class="cat-ico">${esc(c.icon)}</span>` : ""}${esc(c.name)}`;
-    chip.title = current.has(c.name) ? "Click to remove from this category" : "Click to add to this category";
+    chip.title = current.has(c.name) ? "Click to remove from this category" : "Click to move to this category";
     chip.onclick = async () => {
       const add = !current.has(c.name);
-      if (add) current.add(c.name); else current.delete(c.name);
       await post(`assets/${a.id}/category`, { category: c.name, add });
-      a.categories = [...current];
+      // A category is exclusive (a move): adding lands the asset in only this
+      // one; removing leaves it uncategorised.
+      a.categories = add ? [c.name] : [];
       renderDrawerCategoryEditor(a);
       loadState();
     };
@@ -2784,9 +2785,8 @@ function renderDrawerCategoryEditor(a) {
     const icon = prompt("Icon (emoji, optional — press Cancel to skip):") || "";
     await post("categories", { name, icon });
     allCategories = (await api("state")).categories || [];
-    current.add(name.trim());
     await post(`assets/${a.id}/category`, { category: name.trim(), add: true });
-    a.categories = [...current];
+    a.categories = [name.trim()];   // exclusive move
     renderDrawerCategoryEditor(a);
     loadState();
   };
