@@ -34,7 +34,7 @@ function loadCollapsed() {
 const state = {
   filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
             favorite: false, missing: false, missing_blend_textures: false, duplicates: false,
-            noAuthor: false },
+            noAuthor: false, linked: false },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
@@ -670,7 +670,8 @@ let _facetKindCache = {};  // kind → { subtypes, resolutions }, invalidated on
 function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
                    favorite: false, subtype: "", resolution: "", missing: false,
-                   missing_blend_textures: false, duplicates: false, noAuthor: false };
+                   missing_blend_textures: false, duplicates: false, noAuthor: false,
+                   linked: false };
   _facetKindCache = {};
 }
 
@@ -679,7 +680,8 @@ function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
     || state.filter.collection || state.filter.category || state.filter.folder
     || state.filter.favorite || state.filter.missing || state.filter.missing_blend_textures || state.filter.subtype
-    || state.filter.resolution || state.filter.duplicates || state.filter.noAuthor || state.search;
+    || state.filter.resolution || state.filter.duplicates || state.filter.noAuthor
+    || state.filter.linked || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
@@ -1063,16 +1065,18 @@ async function refresh() {
   // grouped by name. It's its own mode, so it overrides the auto-groupings below.
   const dupes = f.duplicates;
   const noAuthor = f.noAuthor;   // standalone view: files with no Author set
+  const linked = f.linked;       // standalone view: .blend files with linked textures
+  const _std = dupes || noAuthor || linked;   // any standalone view suppresses auto-grouping
   // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
   // with no other filter splits the grid into category sections.
-  const grouped = !dupes && !noAuthor && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
+  const grouped = !_std && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
     && !f.collection && !f.category && !f.folder && !f.favorite && !state.search
     && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
   // Folder-grouped view: a library folder with no sub-filters groups by subfolder.
-  const folderGrouped = !dupes && !noAuthor && !!f.folder && !f.kind && !f.ext && !f.tag
+  const folderGrouped = !_std && !!f.folder && !f.kind && !f.ext && !f.tag
     && !f.collection && !f.category && !f.favorite && !state.search
     && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
-  const categoryFolderGrouped = !dupes && !noAuthor && !!f.category && !f.folder && !f.tag
+  const categoryFolderGrouped = !_std && !!f.category && !f.folder && !f.tag
     && !f.collection && !f.favorite && !state.search
     && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
 
@@ -1092,6 +1096,7 @@ async function refresh() {
   p.set("sort", state.sort);
   if (dupes) { p.set("duplicates", "1"); p.set("limit", "2000"); }
   if (noAuthor) { p.set("no_author", "1"); p.set("limit", "2000"); }
+  if (linked) { p.set("linked", "1"); p.set("limit", "2000"); }
   // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each —
   // but NOT in the duplicates view, where every individual copy must show.
   else p.set("group", "set");
@@ -1116,6 +1121,7 @@ async function refresh() {
   updateClearBtn();
   updateDupBtn();
   updateNoAuthorBtn();
+  updateLinkedBtn();
   updateFacetStrip();
 }
 
@@ -1393,7 +1399,8 @@ function renderGroupedByName(assets) {
 }
 
 function updateActiveLabel(total) {
-  let label = state.filter.noAuthor ? "🏷 No author"
+  let label = state.filter.linked ? "🔗 Linked textures"
+    : state.filter.noAuthor ? "🏷 No author"
     : state.filter.duplicates ? "⧉ Duplicates"
     : state.filter.favorite ? "Favorites"
     : state.filter.missing ? "Missing files"
@@ -3460,6 +3467,19 @@ if (_noAuthorBtn) _noAuthorBtn.onclick = () => {
   state.filter.noAuthor = on;
   state.search = ""; const s = $("#search"); if (s) s.value = "";
   updateNoAuthorBtn();
+  refresh();
+};
+function updateLinkedBtn() {
+  const b = $("#linkedBtn");
+  if (b) b.classList.toggle("active", state.filter.linked);
+}
+const _linkedBtn = $("#linkedBtn");
+if (_linkedBtn) _linkedBtn.onclick = () => {
+  const on = !state.filter.linked;
+  resetFilter();                 // "linked" is a standalone view
+  state.filter.linked = on;
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  updateLinkedBtn();
   refresh();
 };
 

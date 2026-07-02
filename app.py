@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.32"
+__version__ = "0.14.33"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -422,6 +422,7 @@ def list_assets():
         missing_blend_textures=q.get("missing_blend_textures") == "1",
         duplicates=q.get("duplicates") == "1",
         no_author=q.get("no_author") == "1",
+        linked=q.get("linked") == "1",
     )
     return jsonify({"assets": assets, "total": total})
 
