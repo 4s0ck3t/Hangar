@@ -1831,6 +1831,24 @@ async function renderBlendInfo(a) {
     html += `</div>`;
   }
 
+  // ── Texture status ─────────────────────────────────────────────────────────
+  // Exact counts behind the tile's Packed/Linked/⚠ badges, so it's clear what
+  // the file actually contains.
+  {
+    const pk = info.packed_textures || 0;
+    const ext = info.external_textures || 0;
+    const miss = (info.missing_textures || []).length;
+    if (pk || ext || miss) {
+      const parts = [];
+      if (pk) parts.push(`📦 ${pk} packed`);
+      if (ext) parts.push(`🔗 ${ext} linked (external)`);
+      if (miss) parts.push(`⚠ ${miss} missing`);
+      html += `<div class="d-preview-source" title="Texture references in this .blend">` +
+        `<span class="d-preview-source-ico">🖼</span>` +
+        `<span class="d-preview-source-label">Textures: ${esc(parts.join(" · "))}</span></div>`;
+    }
+  }
+
   // ── Marked assets gallery ──────────────────────────────────────────────────
   if (info.assets && info.assets.length) {
     html += `<div class="d-section-label">Marked assets (${info.assets.length})</div>`;

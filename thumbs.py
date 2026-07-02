@@ -1005,7 +1005,7 @@ _ID_CODE_KIND = {
 # Bump when _inspect_blend_uncached's result schema changes, so on-disk caches
 # from older builds (e.g. ones predating missing_textures) are recomputed even
 # when the .blend file itself is unchanged.
-_INSPECT_CACHE_VERSION = 5
+_INSPECT_CACHE_VERSION = 6
 
 
 def inspect_blend(path):
@@ -1090,12 +1090,16 @@ def _inspect_blend_uncached(path):
 
         # Image-struct field offsets, for missing-texture detection.
         img_idx = _struct_index(structs, types, "Image")
-        img_path_off = img_pack_off = None
+        img_path_off = img_pack_off = img_packs_off = None
         if img_idx is not None:
             img_path_off = _field_offset(structs, type_lengths, ptr_size,
                                          img_idx, "filepath", "name")
             img_pack_off = _field_offset(structs, type_lengths, ptr_size,
                                          img_idx, "packedfile")
+            # Modern Blender packs into a `packedfiles` ListBase; the deprecated
+            # `packedfile` pointer can be NULL even for a packed image.
+            img_packs_off = _field_offset(structs, type_lengths, ptr_size,
+                                          img_idx, "packedfiles")
 
         base = os.path.dirname(path)
         count = 0
@@ -1143,12 +1147,22 @@ def _inspect_blend_uncached(path):
                     and img_path_off + 1024 <= length):
                 try:
                     # Packed images carry their pixels inside the .blend — they're
-                    # self-contained, never missing.
+                    # self-contained, never missing. Check BOTH the deprecated
+                    # `packedfile` pointer and the modern `packedfiles` ListBase
+                    # (its `first` pointer), since either can hold the packed data.
+                    is_packed = False
                     if img_pack_off is not None and img_pack_off + ptr_size <= length:
                         if struct.unpack(ptr_fmt, data[body + img_pack_off:
                                                        body + img_pack_off + ptr_size])[0]:
-                            packed_tex += 1
-                            continue
+                            is_packed = True
+                    if (not is_packed and img_packs_off is not None
+                            and img_packs_off + ptr_size <= length):
+                        if struct.unpack(ptr_fmt, data[body + img_packs_off:
+                                                       body + img_packs_off + ptr_size])[0]:
+                            is_packed = True
+                    if is_packed:
+                        packed_tex += 1
+                        continue
                     fp = _read_cstr(data, body + img_path_off, 1024).strip()
                     # Skip empty (generated/viewer images) and UDIM/sequence tokens
                     # whose on-disk name we can't resolve to one concrete file.
