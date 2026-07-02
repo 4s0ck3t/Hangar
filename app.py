@@ -24,11 +24,33 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.9"
+__version__ = "0.14.10"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
 BLENDER_QUEUE = store.DATA_DIR / "blender_queue.jsonl"
+
+
+def _accessible(path):
+    """os.path.exists that also copes with Windows paths longer than 260 chars.
+
+    The plain call reports such a path as missing even when the drive is mounted
+    (a deeply-nested asset pack easily exceeds MAX_PATH), which made the drawer
+    wrongly flag files as inaccessible and skip loading their .blend panel. The
+    \\?\ extended-length prefix lifts that limit."""
+    if not path:
+        return False
+    if os.path.exists(path):
+        return True
+    if os.name == "nt":
+        try:
+            p = os.path.abspath(path)
+            if not p.startswith("\\\\?\\"):
+                p = "\\\\?\\" + p
+            return os.path.exists(p)
+        except OSError:
+            pass
+    return False
 
 # How many Blender renders to run at once for the Regenerate-previews pass. Each
 # render is its own Blender process (CPU/RAM bound), so default to a few, capped,
@@ -433,7 +455,7 @@ def asset_detail(asset_id):
         store.save_stats(asset_id, v, f)
         asset["vertices"], asset["faces"], asset["stats_done"] = v, f, 1
     # Whether the file is reachable right now, so the drawer can flag it.
-    asset["exists"] = os.path.exists(asset["path"])
+    asset["exists"] = _accessible(asset["path"])
     # Whether a thumbnail is already cached, so the drawer can show it instantly
     # instead of re-running the 3D viewer on every open.
     asset["has_thumb"] = thumbs.has_cached_thumb(asset)
@@ -786,7 +808,7 @@ def _blend_info(asset):
     """Merge the pure-Python .blend inspection (marked-asset names + missing
     textures) with the exported preview manifest (which assets have a thumbnail
     cached). Returns the dict the drawer renders, or None if not a .blend."""
-    if asset["ext"] != ".blend" or not os.path.exists(asset["path"]):
+    if asset["ext"] != ".blend" or not _accessible(asset["path"]):
         return None
     info = thumbs.inspect_blend(asset["path"]) or {
         "count": 0, "assets": [], "missing_textures": []}

@@ -1731,14 +1731,20 @@ async function renderBlendInfo(a) {
         html += `<div class="d-asset-noimg"><span>${esc(asset.kind[0])}</span></div>`;
       }
       html += `<div class="d-asset-name">${esc(asset.name)}</div>`;
+      const hasMeta = asset.author || asset.description || asset.catalog
+        || asset.license || asset.copyright || (asset.tags && asset.tags.length);
       if (asset.catalog) html += `<div class="d-asset-cat" title="Catalog">📁 ${esc(asset.catalog)}</div>`;
       if (asset.author) html += `<div class="d-asset-author">by ${esc(asset.author)}</div>`;
       if (asset.description) html += `<div class="d-asset-desc">${esc(asset.description)}</div>`;
+      if (asset.license) html += `<div class="d-asset-desc" title="License">⚖ ${esc(asset.license)}</div>`;
       if (asset.tags && asset.tags.length) {
         html += `<div class="d-asset-tags">` +
           asset.tags.slice(0, 8).map((t) => `<span class="d-asset-tag">${esc(t)}</span>`).join("") +
           `</div>`;
       }
+      // State plainly when a marked asset carries no metadata yet, rather than
+      // showing nothing — so it's clear the fields exist and are just empty.
+      if (!hasMeta) html += `<div class="d-asset-nometa">No metadata — ✎ to add</div>`;
       html += `<button class="d-meta-btn" data-name="${esc(asset.name)}" data-kind="${esc(asset.kind)}" title="Edit metadata — author, description, license, tags">✎ Metadata</button>`;
       if (asset.has_individual) {
         html += `<div class="d-asset-have">Own .blend ✓</div>`;

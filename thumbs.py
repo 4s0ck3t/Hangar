@@ -694,6 +694,7 @@ def extract_blend_thumbnail(path):
     zstd-compressed files (Blender 3.0+ "Compress", via _zstd_decompress).
     """
     from PIL import Image
+    path = _fs(path)
     f = None
     try:
         f = open(path, "rb")
@@ -845,9 +846,22 @@ def _zstd_decompress(path):
     return None
 
 
+def _fs(path):
+    """Long-path-safe filesystem path. On Windows, open()/gzip choke on paths over
+    260 chars unless prefixed with the \\?\ extended-length marker — deeply-nested
+    asset packs hit this, so a .blend that's actually present fails to read."""
+    if os.name == "nt" and path and not str(path).startswith("\\\\?\\"):
+        try:
+            return "\\\\?\\" + os.path.abspath(path)
+        except OSError:
+            return path
+    return path
+
+
 def _blend_decompress(path):
     """Return the fully-decompressed bytes of a .blend (handles raw, gzip, and
     zstd), or None if it isn't a parseable .blend."""
+    path = _fs(path)
     with open(path, "rb") as fh:
         magic = fh.read(4)
     if magic[:2] == b"\x1f\x8b":                      # gzip-compressed .blend
@@ -995,7 +1009,7 @@ def inspect_blend(path):
     only recomputed when the file changes. Returns the same dict as
     :func:`_inspect_blend_uncached`, or None if the file can't be parsed."""
     try:
-        st = os.stat(path)
+        st = os.stat(_fs(path))
     except OSError:
         return _inspect_blend_uncached(path)
     cache_file = _blend_asset_dir(path) / "inspect.json"

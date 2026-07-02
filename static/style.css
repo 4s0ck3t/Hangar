@@ -964,6 +964,7 @@ button, input, select { font-family: inherit; color: inherit; }
   max-width: 84px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .d-asset-cat { color: var(--mute); }
+.d-asset-nometa { font-size: 9px; color: var(--faint); font-style: italic; text-align: center; }
 .d-asset-author { font-style: italic; }
 .d-asset-tags {
   display: flex; flex-wrap: wrap; gap: 3px; justify-content: center;
