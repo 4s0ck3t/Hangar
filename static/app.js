@@ -1429,10 +1429,16 @@ function buildCard(a, i) {
   const authorLine = a.author
     ? `<div class="card-author" title="Author: ${esc(a.author)}">👤 ${esc(a.author)}</div>`
     : "";
+  // Warn when a .blend references external textures that are missing on disk.
+  const nMissTex = a.blend_missing_textures || 0;
+  const texWarn = nMissTex > 0
+    ? `<span class="tex-warn" title="${nMissTex} missing texture reference${nMissTex > 1 ? "s" : ""} — this .blend points at external images not found on disk">⚠ ${nMissTex}</span>`
+    : "";
   card.innerHTML = `
     <div class="card-thumb">
       <span class="kind-stripe" style="background:${color}"></span>
       <span class="fav-pin">●</span>
+      ${texWarn}
       ${setBadge}
       <div class="badge-tile">
         <span class="badge-ext" style="color:${color}">${esc(ext)}</span>
