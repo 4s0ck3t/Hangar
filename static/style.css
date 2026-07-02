@@ -870,6 +870,13 @@ button, input, select { font-family: inherit; color: inherit; }
   color: var(--ink); background: rgba(232,121,74,.12);
   border: 1px solid rgba(232,121,74,.45); border-radius: 7px;
 }
+.d-recheck {
+  margin-left: 6px; padding: 2px 9px; border-radius: 5px; cursor: pointer;
+  font-size: 11px; background: none; color: var(--ink);
+  border: 1px solid rgba(232,121,74,.6);
+}
+.d-recheck:hover { background: rgba(232,121,74,.18); }
+.d-recheck:disabled { opacity: .6; cursor: default; }
 
 /* Clickable path in drawer */
 .d-path.clickable {

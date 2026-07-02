@@ -2517,7 +2517,7 @@ async function openDrawer(id, idx) {
         <button class="d-rename-btn" id="dRename" title="Rename file">✏</button>
       </div>
       <div class="d-path clickable" id="dPath" title="Open this file — ${esc(a.path)}">${esc(a.path)}</div>
-      ${a.exists === false ? `<div class="d-missing">⚠ This file isn't accessible right now — the drive/folder may be disconnected, moved, or deleted.</div>` : ""}
+      ${a.exists === false ? `<div class="d-missing">⚠ This file isn't accessible right now — the drive/folder may be disconnected, moved, or deleted. <button class="d-recheck" id="dRecheck">Recheck</button></div>` : ""}
       <div class="d-format-row">
         <span class="d-format-badge" style="color:${color};border-color:${color}40">${esc(ext)}</span>
         <span class="d-kind-label">${esc(a.kind)}</span>
@@ -2607,6 +2607,21 @@ async function openDrawer(id, idx) {
   renderDrawerCategoryEditor(a);
   renderDrawerDetails(a);
   if (a.kind === "texture") renderTextureMaps(a);
+
+  // Re-verify a file flagged inaccessible — a dropped USB/drive that's since been
+  // reconnected re-checks live and clears the warning without reopening.
+  const recheckBtn = $("#dRecheck");
+  if (recheckBtn) recheckBtn.onclick = async () => {
+    recheckBtn.disabled = true; recheckBtn.textContent = "Rechecking…";
+    let fresh; try { fresh = await api(`assets/${a.id}`); } catch (_) { fresh = null; }
+    if (fresh && fresh.exists) {
+      toast("File is reachable again.", "success");
+      openDrawer(a.id, drawerIdx);          // rebuild the drawer without the warning
+    } else {
+      recheckBtn.disabled = false; recheckBtn.textContent = "Recheck";
+      toast("Still not reachable — check the drive/folder is connected.", "error");
+    }
+  };
 
   $("#favAct").onclick = async () => {
     const r = await post(`assets/${a.id}/favorite`, { value: !a.favorite });
