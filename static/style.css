@@ -528,6 +528,16 @@ button, input, select { font-family: inherit; color: inherit; }
   backdrop-filter: blur(2px);
 }
 
+/* Packed vs linked texture badge (bottom-left of a .blend tile) */
+.tex-kind {
+  position: absolute; bottom: 7px; left: 8px; z-index: 2;
+  font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: .02em;
+  border-radius: 4px; padding: 2px 6px; backdrop-filter: blur(2px);
+  border: 1px solid var(--line);
+}
+.tex-linked { color: #f0c674; background: rgba(10,12,16,.74); border-color: rgba(232,176,75,.5); }
+.tex-packed { color: #3DBE8B; background: rgba(10,12,16,.74); border-color: rgba(61,190,139,.5); }
+
 /* Missing-external-texture warning badge on a .blend tile */
 .tex-warn {
   position: absolute; top: 7px; left: 8px; z-index: 2;

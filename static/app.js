@@ -1434,12 +1434,24 @@ function buildCard(a, i) {
   const texWarn = nMissTex > 0
     ? `<span class="tex-warn" title="${nMissTex} missing texture reference${nMissTex > 1 ? "s" : ""} — this .blend points at external images not found on disk">⚠ ${nMissTex}</span>`
     : "";
+  // Packed (textures embedded, self-contained) vs Linked (references external
+  // image files). Only meaningful for .blend files that have textures.
+  let texKind = "";
+  if (a.ext === ".blend") {
+    const ext = a.blend_external_tex || 0, pk = a.blend_packed_tex || 0;
+    if (ext > 0) {
+      texKind = `<span class="tex-kind tex-linked" title="References ${ext} external texture file${ext > 1 ? "s" : ""} — linked, so those files must travel with the .blend">🔗 Linked</span>`;
+    } else if (pk > 0) {
+      texKind = `<span class="tex-kind tex-packed" title="${pk} texture${pk > 1 ? "s" : ""} packed into the .blend — self-contained">📦 Packed</span>`;
+    }
+  }
   card.innerHTML = `
     <div class="card-thumb">
       <span class="kind-stripe" style="background:${color}"></span>
       <span class="fav-pin">●</span>
       ${texWarn}
       ${setBadge}
+      ${texKind}
       <div class="badge-tile">
         <span class="badge-ext" style="color:${color}">${esc(ext)}</span>
       </div>

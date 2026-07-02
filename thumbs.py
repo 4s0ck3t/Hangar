@@ -1005,7 +1005,7 @@ _ID_CODE_KIND = {
 # Bump when _inspect_blend_uncached's result schema changes, so on-disk caches
 # from older builds (e.g. ones predating missing_textures) are recomputed even
 # when the .blend file itself is unchanged.
-_INSPECT_CACHE_VERSION = 4
+_INSPECT_CACHE_VERSION = 5
 
 
 def inspect_blend(path):
@@ -1101,6 +1101,8 @@ def _inspect_blend_uncached(path):
         count = 0
         assets = []
         missing = []
+        packed_tex = 0        # Image datablocks with pixels embedded in the .blend
+        external_tex = 0      # Image datablocks referencing an external file
         seen_paths = set()
         for sdna_index, body, length in blocks:
             if sdna_index <= 0 or sdna_index >= len(structs):
@@ -1140,16 +1142,19 @@ def _inspect_blend_uncached(path):
                     and img_path_off is not None
                     and img_path_off + 1024 <= length):
                 try:
-                    # Packed images carry their pixels inside the .blend — never missing.
+                    # Packed images carry their pixels inside the .blend — they're
+                    # self-contained, never missing.
                     if img_pack_off is not None and img_pack_off + ptr_size <= length:
                         if struct.unpack(ptr_fmt, data[body + img_pack_off:
                                                        body + img_pack_off + ptr_size])[0]:
+                            packed_tex += 1
                             continue
                     fp = _read_cstr(data, body + img_path_off, 1024).strip()
                     # Skip empty (generated/viewer images) and UDIM/sequence tokens
                     # whose on-disk name we can't resolve to one concrete file.
                     if not fp or "<" in fp:
                         continue
+                    external_tex += 1        # a linked (external-file) texture
                     resolved = fp
                     if resolved.startswith("//"):    # Blender = relative to .blend
                         resolved = os.path.join(base, resolved[2:].lstrip("/\\"))
@@ -1165,7 +1170,8 @@ def _inspect_blend_uncached(path):
 
         if asset_off is None:
             count = 0                                # file predates asset system
-        return {"count": count, "assets": assets, "missing_textures": missing}
+        return {"count": count, "assets": assets, "missing_textures": missing,
+                "packed_textures": packed_tex, "external_textures": external_tex}
     except Exception:
         log.exception("inspect_blend failed for %s", path)
         return None

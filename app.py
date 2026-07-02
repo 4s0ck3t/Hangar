@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.26"
+__version__ = "0.14.27"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -898,6 +898,8 @@ def _blend_info(asset):
             asset["id"],
             _blend_search_text(info),
             len(info.get("missing_textures") or []),
+            info.get("packed_textures"),
+            info.get("external_textures"),
         )
     except Exception:
         pass
@@ -946,6 +948,8 @@ def _run_meta_index(generation):
                     t["id"],
                     _blend_search_text(info),
                     len(info.get("missing_textures") or []),
+                    info.get("packed_textures"),
+                    info.get("external_textures"),
                 )
         except Exception:
             pass

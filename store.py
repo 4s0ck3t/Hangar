@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS assets (
     map_order   INTEGER NOT NULL DEFAULT 50,
     blend_assets INTEGER,
     blend_missing_textures INTEGER NOT NULL DEFAULT 0,
+    blend_packed_tex INTEGER NOT NULL DEFAULT 0,
+    blend_external_tex INTEGER NOT NULL DEFAULT 0,
     subtype     TEXT NOT NULL DEFAULT '',
     resolution  TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL DEFAULT '',
@@ -201,6 +203,8 @@ def init_db():
             ("map_order", "ALTER TABLE assets ADD COLUMN map_order INTEGER NOT NULL DEFAULT 50"),
             ("blend_assets", "ALTER TABLE assets ADD COLUMN blend_assets INTEGER"),
             ("blend_missing_textures", "ALTER TABLE assets ADD COLUMN blend_missing_textures INTEGER NOT NULL DEFAULT 0"),
+            ("blend_packed_tex", "ALTER TABLE assets ADD COLUMN blend_packed_tex INTEGER NOT NULL DEFAULT 0"),
+            ("blend_external_tex", "ALTER TABLE assets ADD COLUMN blend_external_tex INTEGER NOT NULL DEFAULT 0"),
             ("subtype",    "ALTER TABLE assets ADD COLUMN subtype TEXT NOT NULL DEFAULT ''"),
             ("resolution", "ALTER TABLE assets ADD COLUMN resolution TEXT NOT NULL DEFAULT ''"),
             # Aggregated searchable text from a .blend's marked-asset metadata
@@ -505,13 +509,21 @@ def set_asset_details(asset_id, author, description, license, copyright):
         )
 
 
-def set_blend_meta(asset_id, text, missing_textures=None):
-    """Store aggregated .blend metadata and, when known, missing texture count."""
+def set_blend_meta(asset_id, text, missing_textures=None,
+                   packed_tex=None, external_tex=None):
+    """Store aggregated .blend metadata and, when known, texture counts
+    (missing, packed/embedded, external/linked)."""
     updates = ["blend_meta=?"]
     params = [text or ""]
     if missing_textures is not None:
         updates.append("blend_missing_textures=?")
         params.append(max(0, int(missing_textures or 0)))
+    if packed_tex is not None:
+        updates.append("blend_packed_tex=?")
+        params.append(max(0, int(packed_tex or 0)))
+    if external_tex is not None:
+        updates.append("blend_external_tex=?")
+        params.append(max(0, int(external_tex or 0)))
     params.append(asset_id)
     with connect() as conn:
         conn.execute(
