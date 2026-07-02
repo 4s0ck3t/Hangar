@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.19"
+__version__ = "0.14.20"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -419,6 +419,7 @@ def list_assets():
         subtype=q.get("subtype", "").strip(),
         resolution=q.get("resolution", "").strip(),
         missing=q.get("missing") == "1",
+        missing_blend_textures=q.get("missing_blend_textures") == "1",
         duplicates=q.get("duplicates") == "1",
     )
     return jsonify({"assets": assets, "total": total})
@@ -892,7 +893,11 @@ def _blend_info(asset):
     info["preview"] = thumbs.preview_source(asset)
     # Keep the file's searchable metadata blob current whenever we inspect it.
     try:
-        store.set_blend_meta(asset["id"], _blend_search_text(info))
+        store.set_blend_meta(
+            asset["id"],
+            _blend_search_text(info),
+            len(info.get("missing_textures") or []),
+        )
     except Exception:
         pass
     return info
@@ -936,7 +941,11 @@ def _run_meta_index(generation):
         try:
             info = thumbs.inspect_blend(t["path"])
             if info is not None:
-                store.set_blend_meta(t["id"], _blend_search_text(info))
+                store.set_blend_meta(
+                    t["id"],
+                    _blend_search_text(info),
+                    len(info.get("missing_textures") or []),
+                )
         except Exception:
             pass
         time.sleep(0.02)                             # stay low-priority

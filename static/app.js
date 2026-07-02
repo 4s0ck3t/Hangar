@@ -32,7 +32,8 @@ function loadCollapsed() {
   catch (_) { return new Set(DEFAULT); }
 }
 const state = {
-  filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "", favorite: false, duplicates: false },
+  filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
+            favorite: false, missing: false, missing_blend_textures: false, duplicates: false },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
@@ -153,29 +154,49 @@ async function loadState() {
   renderLibraries(s.libraries);
   renderOfflineBanner(s.libraries);
   renderStatusBar(s.counts, s.version);
-  renderMissingPanel(s.counts.missing || 0);
+  renderMissingPanel(s.counts);
   return s;
 }
 
 // ---- missing-files sidebar panel ------------------------------------------
-function renderMissingPanel(count) {
+function renderMissingPanel(counts) {
   const panel = $("#missingPanel");
   if (!panel) return;
-  if (!count) {
+  const missingFiles = counts.missing || 0;
+  const blendMissing = counts.blend_missing_textures || 0;
+  const total = missingFiles + blendMissing;
+  if (!total) {
     panel.classList.add("hidden");
     // If missing filter was active and everything's now clean, clear the filter.
-    if (state.filter.missing) { resetFilter(); refresh(); }
+    if (state.filter.missing || state.filter.missing_blend_textures) { resetFilter(); refresh(); }
     return;
   }
   panel.classList.remove("hidden");
-  const badge = $("#missingCount"); if (badge) badge.textContent = count;
+  const badge = $("#missingCount"); if (badge) badge.textContent = total;
   const btn = $("#missingFilterBtn");
-  const countEl = $("#missingFilterCount"); if (countEl) countEl.textContent = count;
+  const countEl = $("#missingFilterCount"); if (countEl) countEl.textContent = missingFiles;
   if (btn) {
+    btn.classList.toggle("hidden", !missingFiles);
     btn.classList.toggle("active", !!state.filter.missing);
     btn.onclick = () => {
       if (state.filter.missing) { resetFilter(); }
       else { resetFilter(); state.filter.missing = true; }
+      refresh();
+    };
+  }
+  const purge = $("#missingPurgeBtn");
+  if (purge) purge.classList.toggle("hidden", !missingFiles);
+  const blendBtn = $("#blendMissingFilterBtn");
+  const blendCountEl = $("#blendMissingFilterCount"); if (blendCountEl) blendCountEl.textContent = blendMissing;
+  if (blendBtn) {
+    blendBtn.classList.toggle("hidden", !blendMissing);
+    blendBtn.classList.toggle("active", !!state.filter.missing_blend_textures);
+    blendBtn.title = counts.blend_missing_texture_refs
+      ? `${counts.blend_missing_texture_refs} missing texture reference${counts.blend_missing_texture_refs === 1 ? "" : "s"}`
+      : "";
+    blendBtn.onclick = () => {
+      if (state.filter.missing_blend_textures) { resetFilter(); }
+      else { resetFilter(); state.filter.missing_blend_textures = true; }
       refresh();
     };
   }
@@ -619,7 +640,8 @@ let _facetKindCache = {};  // kind → { subtypes, resolutions }, invalidated on
 
 function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
-                   favorite: false, subtype: "", resolution: "", missing: false, duplicates: false };
+                   favorite: false, subtype: "", resolution: "", missing: false,
+                   missing_blend_textures: false, duplicates: false };
   _facetKindCache = {};
 }
 
@@ -627,7 +649,7 @@ function resetFilter() {
 function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
     || state.filter.collection || state.filter.category || state.filter.folder
-    || state.filter.favorite || state.filter.missing || state.filter.subtype
+    || state.filter.favorite || state.filter.missing || state.filter.missing_blend_textures || state.filter.subtype
     || state.filter.resolution || state.filter.duplicates || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
@@ -997,14 +1019,14 @@ async function refresh() {
   // with no other filter splits the grid into category sections.
   const grouped = !dupes && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
     && !f.collection && !f.category && !f.folder && !f.favorite && !state.search
-    && !f.subtype && !f.resolution;
+    && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
   // Folder-grouped view: a library folder with no sub-filters groups by subfolder.
   const folderGrouped = !dupes && !!f.folder && !f.kind && !f.ext && !f.tag
     && !f.collection && !f.category && !f.favorite && !state.search
-    && !f.subtype && !f.resolution;
+    && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
   const categoryFolderGrouped = !dupes && !!f.category && !f.folder && !f.tag
     && !f.collection && !f.favorite && !state.search
-    && !f.subtype && !f.resolution;
+    && !f.missing && !f.missing_blend_textures && !f.subtype && !f.resolution;
 
   const p = new URLSearchParams();
   if (f.kind) p.set("kind", f.kind);
@@ -1015,6 +1037,7 @@ async function refresh() {
   if (f.folder) p.set("folder", f.folder);
   if (f.favorite) p.set("favorite", "1");
   if (f.missing) p.set("missing", "1");
+  if (f.missing_blend_textures) p.set("missing_blend_textures", "1");
   if (f.subtype) p.set("subtype", f.subtype);
   if (f.resolution) p.set("resolution", f.resolution);
   if (state.search) p.set("search", state.search);
@@ -1322,6 +1345,8 @@ function renderGroupedByName(assets) {
 function updateActiveLabel(total) {
   let label = state.filter.duplicates ? "⧉ Duplicates"
     : state.filter.favorite ? "Favorites"
+    : state.filter.missing ? "Missing files"
+    : state.filter.missing_blend_textures ? "Blend missing textures"
     : state.filter.tag ? `#${state.filter.tag}`
     : state.filter.category ? state.filter.category
     : state.filter.folder ? `📁 ${baseName(state.filter.folder)}`

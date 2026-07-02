@@ -60,9 +60,14 @@
             <span>Show missing</span>
             <span id="missingFilterCount" class="count"></span>
           </li>
+          <li id="blendMissingFilterBtn" class="kind-item missing-item">
+            <span class="dot" style="background:var(--warn)"></span>
+            <span>Blend missing textures</span>
+            <span id="blendMissingFilterCount" class="count"></span>
+          </li>
         </ul>
         <button id="missingPurgeBtn" class="missing-purge">Remove stale entries</button>
-        <p class="missing-hint">These files are recorded in your library but can't be found on disk — deleted, moved, or on an unmounted drive.</p>
+        <p class="missing-hint">Missing files are stale index entries. Blend missing textures are live .blend files with absent image/material references.</p>
       </div>
     </nav>
   </aside>

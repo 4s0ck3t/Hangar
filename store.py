@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS assets (
     map_role    TEXT NOT NULL DEFAULT '',
     map_order   INTEGER NOT NULL DEFAULT 50,
     blend_assets INTEGER,
+    blend_missing_textures INTEGER NOT NULL DEFAULT 0,
     subtype     TEXT NOT NULL DEFAULT '',
     resolution  TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL DEFAULT '',
@@ -199,6 +200,7 @@ def init_db():
             ("map_role",  "ALTER TABLE assets ADD COLUMN map_role TEXT NOT NULL DEFAULT ''"),
             ("map_order", "ALTER TABLE assets ADD COLUMN map_order INTEGER NOT NULL DEFAULT 50"),
             ("blend_assets", "ALTER TABLE assets ADD COLUMN blend_assets INTEGER"),
+            ("blend_missing_textures", "ALTER TABLE assets ADD COLUMN blend_missing_textures INTEGER NOT NULL DEFAULT 0"),
             ("subtype",    "ALTER TABLE assets ADD COLUMN subtype TEXT NOT NULL DEFAULT ''"),
             ("resolution", "ALTER TABLE assets ADD COLUMN resolution TEXT NOT NULL DEFAULT ''"),
             # Aggregated searchable text from a .blend's marked-asset metadata
@@ -503,10 +505,19 @@ def set_asset_details(asset_id, author, description, license, copyright):
         )
 
 
-def set_blend_meta(asset_id, text):
-    """Store the aggregated searchable metadata text for a .blend (see search)."""
+def set_blend_meta(asset_id, text, missing_textures=None):
+    """Store aggregated .blend metadata and, when known, missing texture count."""
+    updates = ["blend_meta=?"]
+    params = [text or ""]
+    if missing_textures is not None:
+        updates.append("blend_missing_textures=?")
+        params.append(max(0, int(missing_textures or 0)))
+    params.append(asset_id)
     with connect() as conn:
-        conn.execute("UPDATE assets SET blend_meta=? WHERE id=?", (text or "", asset_id))
+        conn.execute(
+            f"UPDATE assets SET {', '.join(updates)} WHERE id=?",
+            params,
+        )
 
 
 def blend_meta_targets():
@@ -594,7 +605,8 @@ def iter_thumb_targets():
 def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
                  group="", set_key="", with_categories=False,
-                 subtype="", resolution="", missing=False, duplicates=False):
+                 subtype="", resolution="", missing=False,
+                 missing_blend_textures=False, duplicates=False):
     clauses = ["a.missing=1"] if missing else ["a.missing=0"]
     if duplicates:
         # Only assets whose file name (name+ext, case-insensitive) is shared by
@@ -604,6 +616,9 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
             "SELECT LOWER(name || ext) FROM assets WHERE missing=0 "
             "GROUP BY LOWER(name || ext) HAVING COUNT(*) > 1)"
         )
+    if missing_blend_textures:
+        clauses.append("a.ext='.blend'")
+        clauses.append("a.blend_missing_textures>0")
     joins = ""
     # Placeholders in the final SQL appear JOINs-first (text precedes WHERE), so
     # params must be ordered the same way. Keep join params and where-clause
@@ -789,12 +804,22 @@ def kind_counts():
         missing_count = conn2.execute(
             "SELECT COUNT(*) c FROM assets WHERE missing=1"
         ).fetchone()["c"]
+        blend_missing_textures = conn2.execute(
+            "SELECT COUNT(*) c FROM assets "
+            "WHERE missing=0 AND ext='.blend' AND blend_missing_textures>0"
+        ).fetchone()["c"]
+        blend_missing_texture_refs = conn2.execute(
+            "SELECT COALESCE(SUM(blend_missing_textures), 0) c FROM assets "
+            "WHERE missing=0 AND ext='.blend'"
+        ).fetchone()["c"]
     return {
         "by_kind": {r["kind"]: r["c"] for r in rows},
         "total": total,
         "favorites": favs,
         "model_by_ext": {r["ext"]: r["c"] for r in ext_rows},
         "missing": missing_count,
+        "blend_missing_textures": blend_missing_textures,
+        "blend_missing_texture_refs": blend_missing_texture_refs,
     }
 
 
