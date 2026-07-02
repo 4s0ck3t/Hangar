@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS categories (
     icon      TEXT NOT NULL DEFAULT '',
     sort      INTEGER NOT NULL DEFAULT 0,
     keywords  TEXT NOT NULL DEFAULT '',
-    kind      TEXT NOT NULL DEFAULT ''
+    kind      TEXT NOT NULL DEFAULT '',
+    parent_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS asset_categories (
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
@@ -184,6 +185,10 @@ def init_db():
             conn.execute("ALTER TABLE categories ADD COLUMN keywords TEXT NOT NULL DEFAULT ''")
         if "kind" not in cat_cols:
             conn.execute("ALTER TABLE categories ADD COLUMN kind TEXT NOT NULL DEFAULT ''")
+        if "parent_id" not in cat_cols:
+            conn.execute(
+                "ALTER TABLE categories ADD COLUMN parent_id "
+                "INTEGER REFERENCES categories(id) ON DELETE SET NULL")
         asset_cols = {r["name"] for r in conn.execute("PRAGMA table_info(assets)")}
         for col, ddl in (
             ("set_key",   "ALTER TABLE assets ADD COLUMN set_key TEXT NOT NULL DEFAULT ''"),
@@ -829,12 +834,42 @@ def set_collection_membership(collection_name, asset_id, add=True):
 def list_categories():
     with connect() as conn:
         rows = conn.execute(
-            "SELECT cat.id, cat.name, cat.icon, cat.keywords, cat.kind, "
+            "SELECT cat.id, cat.name, cat.icon, cat.keywords, cat.kind, cat.parent_id, "
             "COUNT(ac.asset_id) c FROM categories cat "
             "LEFT JOIN asset_categories ac ON ac.category_id=cat.id "
             "GROUP BY cat.id ORDER BY cat.name COLLATE NOCASE"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def _category_descendant_ids(conn, cat_id):
+    """Every category id nested under `cat_id` (any depth), for the cycle guard."""
+    ids, frontier = set(), [cat_id]
+    while frontier:
+        rows = conn.execute(
+            "SELECT id FROM categories WHERE parent_id=?", (frontier.pop(),)
+        ).fetchall()
+        for r in rows:
+            if r["id"] not in ids:
+                ids.add(r["id"]); frontier.append(r["id"])
+    return ids
+
+
+def set_category_parent(cat_id, parent_id):
+    """Nest a category under another (or clear its nesting with parent_id=None).
+    Refuses a move that would make a category its own ancestor. Returns
+    (ok, error_or_None)."""
+    with connect() as conn:
+        if parent_id is not None:
+            if parent_id == cat_id:
+                return False, "A category can't be nested under itself."
+            if parent_id in _category_descendant_ids(conn, cat_id):
+                return False, "That would nest a category inside its own child."
+            row = conn.execute("SELECT kind FROM categories WHERE id=?", (parent_id,)).fetchone()
+            if row is None:
+                return False, "Target category not found."
+        conn.execute("UPDATE categories SET parent_id=? WHERE id=?", (parent_id, cat_id))
+    return True, None
 
 
 def category_folder_counts():

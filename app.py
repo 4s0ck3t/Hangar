@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.8"
+__version__ = "0.14.9"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -579,6 +579,19 @@ def reorder_categories_route():
     """Persist a drag-reordered sidebar. Body: {"order": [id, id, …]}."""
     data = request.get_json(force=True)
     store.reorder_categories(data.get("order", []))
+    return jsonify({"ok": True, "categories": store.list_categories()})
+
+
+@app.post("/api/categories/<int:category_id>/parent")
+def set_category_parent_route(category_id):
+    """Nest a category under another (Furniture > Chairs), or clear its nesting.
+    Body: {"parent_id": <id> | null}."""
+    data = request.get_json(force=True)
+    parent_id = data.get("parent_id")
+    parent_id = int(parent_id) if parent_id not in (None, "") else None
+    ok, error = store.set_category_parent(category_id, parent_id)
+    if not ok:
+        return jsonify({"ok": False, "error": error}), 400
     return jsonify({"ok": True, "categories": store.list_categories()})
 
 

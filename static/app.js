@@ -267,6 +267,24 @@ function renderKindFilters(counts, cats) {
       }
       refresh();
     };
+    // Drop a nested category here to un-nest it back to top level of this kind.
+    li.addEventListener("dragover", (e) => {
+      if (Array.from(e.dataTransfer.types || []).includes("text/x-hangar-cat-id")) {
+        e.preventDefault();
+        li.classList.add("cat-reorder-over");
+      }
+    });
+    li.addEventListener("dragleave", () => li.classList.remove("cat-reorder-over"));
+    li.addEventListener("drop", async (e) => {
+      const dragCatId = e.dataTransfer.getData("text/x-hangar-cat-id");
+      if (!dragCatId) return;
+      e.preventDefault();
+      li.classList.remove("cat-reorder-over");
+      const r = await post(`categories/${dragCatId}/parent`, { parent_id: null });
+      if (!r || !r.ok) { toast((r && r.error) || "Couldn't move that category.", "error"); return; }
+      toast("Moved to top level.", "success");
+      await loadState(); refresh();
+    });
     if (hasChildren) {
       li.querySelector(".twisty").onclick = (e) => {
         e.stopPropagation();
@@ -277,15 +295,10 @@ function renderKindFilters(counts, cats) {
 
     if (collapsed) continue;  // children hidden
 
-    // Categories nested under their type, with their represented folders under
-    // each category (e.g. Furniture > Beds).
-    for (const c of kindCats) {
-      const folders = foldersForCategory(c);
-      ul.appendChild(buildCategoryItem(c, true, folders));
-      if (catFoldersExpanded(c)) {
-        for (const f of folders) ul.appendChild(buildCategoryFolderItem(c, f));
-      }
-    }
+    // Categories nested under their type, hierarchically (Furniture > Chairs),
+    // with each category's represented folders shown below it (Furniture > Beds
+    // — a physical grouping, distinct from the category-nesting tree).
+    renderCategoryTree(ul, kindCats, null, 1);
 
     // Model file-format subcategories, under Models below its categories.
     if (kind === "model" && count > 0) {
@@ -339,9 +352,27 @@ function renderKindFilters(counts, cats) {
 // Haven–style): shared categories under "All assets", scoped ones under their
 // own type. See renderKindFilters. `kind` scope: "model"/"hdri"/"texture"/
 // "material", or "" = shared.
-function buildCategoryItem(c, nested, folders) {
+// Recursively render a category tree: each level's categories alphabetical
+// (list_categories already sorts by name), children indented under their parent
+// via `depth`. Every category's own folders (physical groupings) render right
+// below it, before its child categories.
+function renderCategoryTree(ul, allCats, parentId, depth) {
+  const level = allCats.filter((c) => (c.parent_id || null) === parentId);
+  for (const c of level) {
+    const folders = foldersForCategory(c);
+    ul.appendChild(buildCategoryItem(c, depth, folders));
+    if (catFoldersExpanded(c)) {
+      for (const f of folders) ul.appendChild(buildCategoryFolderItem(c, f, depth));
+    }
+    renderCategoryTree(ul, allCats, c.id, depth + 1);
+  }
+}
+
+function buildCategoryItem(c, depth, folders) {
     const li = document.createElement("li");
-    li.className = "cat-item" + (nested ? " cat-sub" : "");
+    depth = depth || 1;
+    li.className = "cat-item" + (depth > 1 ? " cat-sub" : "");
+    if (depth > 2) li.style.paddingLeft = `${24 + (depth - 2) * 14}px`;   // .cat-sub's base is 24px
     if (state.filter.category === c.name) li.classList.add("active");
     folders = folders || foldersForCategory(c);
     const hasFolders = folders.length > 0;
@@ -400,18 +431,49 @@ function buildCategoryItem(c, nested, folders) {
       await loadState(); refresh();
     };
 
-    // Drop target: a dragged asset card gets filed into this category. (The
-    // sidebar is sorted alphabetically now, so categories aren't drag-reordered.)
+    // Drag source: this category can be dragged onto another same-kind category
+    // to nest it underneath (Furniture > Chairs). The sidebar stays alphabetical
+    // within each level — this sets hierarchy, not manual ordering.
+    li.draggable = true;
     li.dataset.catId = c.id;
     li.dataset.catKind = c.kind || "";
+    li.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/x-hangar-cat-id", String(c.id));
+      e.dataTransfer.effectAllowed = "move";
+      li.classList.add("dragging-cat");
+    });
+    li.addEventListener("dragend", () => li.classList.remove("dragging-cat"));
+
+    // Drop target: an asset card files into this category; another category
+    // (same kind only) nests underneath it.
     li.addEventListener("dragover", (e) => {
       e.preventDefault();
-      li.classList.add("drop-over");
+      const types = Array.from(e.dataTransfer.types || []);
+      if (types.includes("text/x-hangar-cat-id")) {
+        li.classList.add("cat-reorder-over");
+      } else {
+        li.classList.add("drop-over");
+      }
     });
-    li.addEventListener("dragleave", () => li.classList.remove("drop-over"));
+    li.addEventListener("dragleave", () => li.classList.remove("drop-over", "cat-reorder-over"));
     li.addEventListener("drop", async (e) => {
       e.preventDefault();
-      li.classList.remove("drop-over");
+      li.classList.remove("drop-over", "cat-reorder-over");
+      const dragCatId = e.dataTransfer.getData("text/x-hangar-cat-id");
+      if (dragCatId) {
+        const dragId = parseInt(dragCatId, 10);
+        if (dragId === c.id) return;
+        const dragged = allCategories.find((x) => x.id === dragId);
+        if (dragged && (dragged.kind || "") !== (c.kind || "")) {
+          toast("Can't nest across different asset types.", "error");
+          return;
+        }
+        const r = await post(`categories/${dragId}/parent`, { parent_id: c.id });
+        if (!r || !r.ok) { toast((r && r.error) || "Couldn't nest that category.", "error"); return; }
+        toast(`Nested under ${c.icon || ""} ${c.name}`.trim(), "success");
+        await loadState(); refresh();
+        return;
+      }
       const assetId = e.dataTransfer.getData("text/x-hangar-asset-id");
       if (!assetId) return;
       await post(`assets/${assetId}/category`, { category: c.name, add: true });
@@ -444,9 +506,10 @@ function destinationFolderForCategory(a, c) {
   return { name: c.name, path: sibling, inferred: true };
 }
 
-function buildCategoryFolderItem(c, f) {
+function buildCategoryFolderItem(c, f, depth) {
   const li = document.createElement("li");
   li.className = "cat-folder-item";
+  if (depth > 1) li.style.paddingLeft = `${42 + (depth - 1) * 14}px`;   // base (depth 1) is 42px
   if (state.filter.category === c.name && state.filter.folder === f.path) li.classList.add("active");
   li.title = f.path;
   li.innerHTML =
