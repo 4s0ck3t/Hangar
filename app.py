@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.12"
+__version__ = "0.14.13"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1822,7 +1822,19 @@ def update_check():
     try:
         rel = _fetch_latest_release(force=force)
     except Exception as e:
-        return jsonify({"ok": False, "error": f"Couldn't reach GitHub: {e}"}), 200
+        import urllib.error
+        if isinstance(e, urllib.error.HTTPError) and e.code == 403:
+            msg = ("GitHub is rate-limiting update checks (HTTP 403). This resets "
+                   "within an hour — try again shortly, or download the latest "
+                   "release manually from the GitHub releases page.")
+        elif isinstance(e, urllib.error.HTTPError):
+            msg = f"GitHub returned HTTP {e.code} when checking for updates."
+        elif "CERTIFICATE" in str(e).upper() or "SSL" in str(e).upper():
+            msg = ("Couldn't verify GitHub's SSL certificate — a proxy/antivirus "
+                   "or missing system certificates may be blocking HTTPS.")
+        else:
+            msg = f"Couldn't reach GitHub to check for updates: {e}"
+        return jsonify({"ok": False, "error": msg}), 200
     latest = (rel.get("tag_name") or "").lstrip("v")
     asset = _platform_asset(rel.get("assets", []))
     return jsonify({

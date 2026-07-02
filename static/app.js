@@ -134,7 +134,11 @@ function toast(msg, type) {
   t.className = "toast" + (type === "success" ? " toast-ok" : type === "error" ? " toast-err" : "");
   t.classList.remove("hidden");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.add("hidden"), 2600);
+  // Errors stay put until clicked (or 30s) so they can actually be read — a
+  // 2.6s flash was impossible to catch. Success/info still auto-dismiss quickly.
+  t.onclick = () => { clearTimeout(toastTimer); t.classList.add("hidden"); };
+  toastTimer = setTimeout(() => t.classList.add("hidden"), type === "error" ? 30000 : 2600);
+  if (type === "error") t.title = "Click to dismiss";
 }
 
 // ---- sidebar / state ------------------------------------------------------

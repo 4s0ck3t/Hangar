@@ -697,9 +697,11 @@ button, input, select { font-family: inherit; color: inherit; }
   background: var(--raised-hi); border: 1px solid var(--line); border-radius: 9px;
   padding: 11px 18px; font-size: 13px; z-index: 50;
   box-shadow: 0 10px 30px rgba(0,0,0,.45); animation: pop .2s ease;
+  max-width: min(680px, 92vw); white-space: pre-wrap; word-break: break-word;
+  line-height: 1.4;
 }
 .toast.toast-ok  { border-color: rgba(61,190,139,.5); }
-.toast.toast-err { border-color: rgba(232,121,74,.5); color: #E8794A; }
+.toast.toast-err { border-color: rgba(232,121,74,.5); color: #E8794A; cursor: pointer; }
 @keyframes pop { from { opacity: 0; transform: translate(-50%, 8px); } }
 
 .hidden { display: none !important; }
