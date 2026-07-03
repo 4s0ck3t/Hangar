@@ -1420,7 +1420,8 @@ function updateActiveLabel(total) {
 function buildCard(a, i) {
   const card = document.createElement("div");
   card.className = "card" + (a.favorite ? " is-fav" : "")
-    + (selection.has(a.id) ? " is-selected" : "");
+    + (selection.has(a.id) ? " is-selected" : "")
+    + ((a.blend_missing_textures || 0) > 0 ? " has-missing-tex" : "");
   card.dataset.id = a.id;
   const color = KIND_COLORS[a.kind] || "var(--mute)";
   const ext = a.ext.replace(".", "").toUpperCase();
@@ -1690,6 +1691,11 @@ function showCategoryMenu(x, y, a) {
   if (a.ext === ".blend") {
     const markSep = document.createElement("div"); markSep.className = "ctx-sep";
     menu.appendChild(markSep);
+    const packBtn = document.createElement("button");
+    packBtn.className = "ctx-item";
+    packBtn.innerHTML = `<span class="ctx-ico">📦</span><span class="ctx-name">Pack textures into .blend</span>`;
+    packBtn.onclick = (e) => { e.stopPropagation(); closeCtxMenu(); packBlendTextures(a); };
+    menu.appendChild(packBtn);
     const markObj = document.createElement("button");
     markObj.className = "ctx-item";
     markObj.innerHTML = `<span class="ctx-ico">📦</span><span class="ctx-name">Mark objects as assets</span>`;
@@ -2321,6 +2327,24 @@ async function moveAssetToFolder(a, c, f) {
   a.path = r.path;
   await moveAssetToCategory(a, c.name);   // file under the category (also refreshes)
   toast(`Moved into ${f.name}`, "success");
+}
+
+// Embed a .blend's external textures into the file (Blender pack) so it's
+// self-contained. Confirms first because it modifies and re-saves the file.
+async function packBlendTextures(a) {
+  if (!confirm(`Pack all external textures into "${a.name}.blend"?\n\nThis embeds the image files inside the .blend (making it self-contained and larger) and re-saves the file. Textures that are missing on disk can't be packed.`))
+    return;
+  toast("Packing textures — Blender is running, please wait…");
+  let r;
+  try { r = await post(`assets/${a.id}/pack-textures`); }
+  catch (_) { r = null; }
+  if (!r || !r.ok) { toast((r && r.error) || "Couldn't pack textures.", "error"); return; }
+  const msg = r.failed
+    ? `Packed ${r.packed} texture${r.packed === 1 ? "" : "s"}; ${r.failed} couldn't be packed (missing on disk).`
+    : `Packed ${r.packed} texture${r.packed === 1 ? "" : "s"} — the .blend is now self-contained.`;
+  toast(msg, r.failed ? "error" : "success");
+  refresh();   // tile badges (Linked → Packed) update on the next scan/inspect
+  if (isDrawerOpen() && drawerAssetId === a.id) renderBlendInfo(a);
 }
 
 async function uncategorizeAsset(a) {

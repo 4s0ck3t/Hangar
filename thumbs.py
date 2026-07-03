@@ -1440,6 +1440,69 @@ def write_blend_asset_meta(blend_path, name, kind, meta):
     return {"ok": False, "error": _render_failure_summary(proc)}
 
 
+# Pack every external image into the .blend (embed its pixels) and save. Packs
+# per-image so a single missing file can't abort the whole operation — those stay
+# unpacked/missing and are reported.
+_PACK_TEXTURES_SCRIPT = r'''
+import bpy
+packed = 0
+failed = 0
+for img in list(bpy.data.images):
+    if getattr(img, "source", "") not in ("FILE", "SEQUENCE", "MOVIE", "TILED"):
+        continue
+    already = bool(getattr(img, "packed_file", None)) or bool(len(getattr(img, "packed_files", []) or []))
+    if already:
+        continue
+    try:
+        img.pack()
+        packed += 1
+    except Exception as e:
+        failed += 1
+        print("HANGAR_PACK_SKIP:", img.name, e, flush=True)
+try:
+    bpy.ops.wm.save_mainfile()
+    print("HANGAR_PACK_DONE: packed=%d failed=%d" % (packed, failed), flush=True)
+except Exception as e:
+    print("HANGAR_PACK_FAIL:", e, flush=True)
+'''
+
+
+def pack_blend_textures(blend_path):
+    """Embed a .blend's external textures into the file and save it in place.
+    Returns {"ok", "packed", "failed", "error"}. Files that can't be packed
+    (e.g. missing on disk) are skipped and counted in "failed". Modifies the
+    source .blend (via Blender)."""
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "error": "Blender wasn't found — set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "error": "File isn't accessible right now."}
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        script = os.path.join(td, "hangar_pack.py")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_PACK_TEXTURES_SCRIPT)
+        try:
+            proc = subprocess.run(
+                [blender, "--background", "--factory-startup", "--disable-autoexec",
+                 blend_path, "-P", script],
+                timeout=RENDER_TIMEOUT, capture_output=True, text=True,
+                env=_blender_env(), **_no_window(),
+            )
+        except subprocess.TimeoutExpired as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Timed out after {RENDER_TIMEOUT}s."}
+        except Exception as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
+    _record_render_log(blender, blend_path, proc)
+    m = re.search(r"HANGAR_PACK_DONE: packed=(\d+) failed=(\d+)", proc.stdout or "")
+    if m:
+        return {"ok": True, "packed": int(m.group(1)), "failed": int(m.group(2))}
+    return {"ok": False, "error": _render_failure_summary(proc)}
+
+
 # Extract one marked datablock into its own .blend. bpy.data.libraries.write
 # writes the named object/collection plus every datablock it depends on (mesh,
 # materials, textures), leaving the source file untouched.

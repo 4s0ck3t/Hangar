@@ -367,6 +367,10 @@ button, input, select { font-family: inherit; color: inherit; }
   transition: transform .14s ease, border-color .14s, box-shadow .14s;
 }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+/* A .blend with missing external textures — outline it so it stands out (e.g. in
+   the Linked view) alongside the ⚠ badge. */
+.card.has-missing-tex { border-color: rgba(224,82,82,.7); }
+.card.has-missing-tex:hover { border-color: var(--warn); }
 /* Spacer rows reserve scroll height above/below the virtualized window. */
 .vspacer { grid-column: 1 / -1; visibility: hidden; pointer-events: none; }
 

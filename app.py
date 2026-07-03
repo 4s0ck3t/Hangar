@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.33"
+__version__ = "0.14.34"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1038,6 +1038,27 @@ def unmark_assets(asset_id):
         n = thumbs.count_blend_marked_assets(asset["path"])
         store.save_blend_asset_count(asset_id, n)
         result["blend_assets"] = n
+    return jsonify(result), 200
+
+
+@app.post("/api/assets/<int:asset_id>/pack-textures")
+def pack_textures(asset_id):
+    """Embed a .blend's external textures into the file and save it in place, so
+    the .blend becomes self-contained. Textures missing on disk can't be packed
+    and are reported in `failed`. Modifies the source .blend (via Blender)."""
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["ext"] != ".blend":
+        return jsonify({"error": "Only .blend files can pack textures."}), 400
+    if not thumbs.blender_available():
+        return jsonify({"ok": False, "blender": False,
+                        "error": "Blender wasn't found — set its path first."}), 200
+    result = thumbs.pack_blend_textures(asset["path"])
+    if result.get("ok"):
+        # Saving bumps mtime → inspect_blend re-parses; refresh the packed/external/
+        # missing counts and the search index.
+        _blend_info(asset)
     return jsonify(result), 200
 
 
