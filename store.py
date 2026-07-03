@@ -494,6 +494,12 @@ def backfill_source_authors(force=False):
         n = 0
         for row in rows:
             src = next((s for s in (source_folder(row["path"], rt) for rt in roots) if s), "")
+            if not src:
+                # Not under any known library root (path form differs, library
+                # removed, etc.) — fall back to the file's immediate parent folder
+                # so every file still gets an origin rather than staying blank.
+                parent = os.path.dirname((row["path"] or "").replace("\\", "/")).rstrip("/")
+                src = parent.split("/")[-1] if parent else ""
             if src:
                 conn.execute("UPDATE assets SET author=? WHERE id=?", (src, row["id"]))
                 n += 1
