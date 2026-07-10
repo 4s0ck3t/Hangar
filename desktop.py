@@ -424,13 +424,18 @@ def _set_taskbar_identity(hwnd, icon_path):
     _release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])
     try:
         exe = sys.executable
+        # Point the taskbar's relaunch icon at the exe's OWN embedded icon
+        # (resource 0 — Hangar.exe is built with --icon hangar.ico) rather than
+        # the bundled .ico in _MEIPASS, whose temp path is deleted when the frozen
+        # app exits. Fall back to the loose .ico for a dev (non-frozen) run.
+        icon_res = f"{exe},0" if getattr(sys, "frozen", False) else f"{icon_path},0"
         values = [
             (PID_ID, "4s0ck3t.Hangar"),
             # RelaunchIconResource only takes effect when the display name is
             # also set; the command makes taskbar "relaunch"/pin start Hangar
             # itself rather than a bare Edge.
             (PID_RELAUNCH_NAME, "Hangar"),
-            (PID_RELAUNCH_ICON, f"{icon_path},0"),
+            (PID_RELAUNCH_ICON, icon_res),
             (PID_RELAUNCH_COMMAND, f'"{exe}"'),
         ]
         for pid, val in values:

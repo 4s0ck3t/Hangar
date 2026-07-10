@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.2"
+__version__ = "0.15.3"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
