@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.0"
+__version__ = "0.15.1"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -2021,6 +2021,22 @@ def _do_update_download(url, name, version, mode="full"):
                 os.chmod(exe, 0o755)
             except Exception:
                 pass
+        # Integrity gate: a frozen onedir build is only runnable if the exe has
+        # its _internal runtime beside it (python DLL, packages…). Without this
+        # check, downloading the wrong/partial asset produces a folder that dies
+        # at launch with a missing-python-DLL error AFTER the old instance has
+        # already handed over — exactly what happened when a pre-0.15 updater
+        # grabbed the app-only delta zip as if it were a full build.
+        # base_library.zip is PyInstaller's bundled-stdlib marker: present in every
+        # onedir _internal, absent from the app-only delta zip (which carries just
+        # our .py files + static). "Folder exists / non-empty" is NOT enough —
+        # a delta zip extracted alone also creates a non-empty _internal.
+        if exe and not os.path.exists(os.path.join(os.path.dirname(exe),
+                                                   "_internal", "base_library.zip")):
+            raise RuntimeError(
+                "Downloaded update is incomplete (no Python runtime beside the "
+                "executable) — not installing it. Please retry, or download "
+                "the full package from the GitHub releases page.")
         with UPDATE_LOCK:
             UPDATE.update(running=False, done=True, pct=100,
                           path=dest, folder=folder, exe=exe)

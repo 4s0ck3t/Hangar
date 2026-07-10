@@ -158,11 +158,19 @@ jobs:
           # releases. The updater downloads only this when the runtime signature on
           # the running install matches the release's, instead of the full ~tens-of-MB
           # package, for every minor update.
+          #
+          # NAMING IS LOAD-BEARING: pre-0.15 updaters pick "any .zip whose name
+          # contains 'windows'" as the full package — a name like
+          # Hangar-windows-app.zip gets downloaded by them as if it were a full
+          # standalone build, which then dies at launch with a missing-python-DLL
+          # error (this actually happened on 0.14.36 -> 0.15.0). The delta asset
+          # must therefore NEVER contain "windows" in its filename; new updaters
+          # find it via update-manifest.json's app_asset field, not by name.
           $py = @(
             "import os, zipfile",
             "root = 'dist/Hangar'",
             "app_py_files = ['store.py', 'thumbs.py', 'scanner.py', 'worker.py', 'worker_main.py']",
-            "z = zipfile.ZipFile('dist/Hangar-windows-app.zip', 'w', zipfile.ZIP_DEFLATED)",
+            "z = zipfile.ZipFile('dist/Hangar-app-update.zip', 'w', zipfile.ZIP_DEFLATED)",
             "z.write(os.path.join(root, 'Hangar.exe'), 'Hangar.exe')",
             "for name in app_py_files:",
             "    full = os.path.join(root, '_internal', name)",
@@ -174,7 +182,7 @@ jobs:
             "        full = os.path.join(dp, f)",
             "        z.write(full, os.path.relpath(full, root).replace(os.sep, '/'))",
             "z.close()",
-            "print('zipped app package', os.path.getsize('dist/Hangar-windows-app.zip'), 'bytes')"
+            "print('zipped app package', os.path.getsize('dist/Hangar-app-update.zip'), 'bytes')"
           )
           Set-Content -Path zipapp.py -Value $py -Encoding ascii
           python zipapp.py
@@ -184,13 +192,13 @@ jobs:
         run: |
           $ver = "${{ github.ref_name }}" -replace '^v',''
           $fullSize = (Get-Item dist/Hangar-windows.zip).Length
-          $appSize = (Get-Item dist/Hangar-windows-app.zip).Length
+          $appSize = (Get-Item dist/Hangar-app-update.zip).Length
           $manifest = @{
             version = $ver
             runtime_sig = "${{ env.RUNTIME_SIG }}"
             full_asset = "Hangar-windows.zip"
             full_size = $fullSize
-            app_asset = "Hangar-windows-app.zip"
+            app_asset = "Hangar-app-update.zip"
             app_size = $appSize
           }
           $manifest | ConvertTo-Json | Set-Content -Path dist/update-manifest.json -Encoding utf8
@@ -202,7 +210,7 @@ jobs:
           name: Hangar-windows
           path: |
             dist/Hangar-windows.zip
-            dist/Hangar-windows-app.zip
+            dist/Hangar-app-update.zip
             dist/update-manifest.json
 
       - name: Attach to release (tag builds only)
@@ -211,7 +219,7 @@ jobs:
         with:
           files: |
             dist/Hangar-windows.zip
-            dist/Hangar-windows-app.zip
+            dist/Hangar-app-update.zip
             dist/update-manifest.json
           name: Hangar ${{ github.ref_name }}
           body: |
@@ -227,7 +235,7 @@ jobs:
             Requires the Edge WebView2 runtime (default on Windows 10/11).
             Data is stored in `%USERPROFILE%\.hangar`.
 
-            Hangar's in-app updater downloads `Hangar-windows-app.zip` instead of
+            Hangar's in-app updater downloads `Hangar-app-update.zip` instead of
             the full package whenever the runtime hasn't changed since your
             installed version — most releases only touch app code, so most
             updates are a few MB instead of the full download.
