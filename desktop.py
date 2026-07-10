@@ -375,16 +375,93 @@ def _find_pids_by_profile(profile):
         return []
 
 
-def _stamp_taskbar_icon(profile, timeout=10.0):
-    """Force the Edge/Chrome --app window's title-bar/taskbar icon to Hangar's
-    own icon via WM_SETICON, instead of leaving it to Chromium's favicon/manifest
-    adoption. That adoption is an async fetch-after-first-paint heuristic, and
-    per repeated user reports it doesn't reliably catch — the window (and the
-    taskbar) can keep showing Edge's own logo indefinitely. Setting the icon
-    directly at the Win32 level is authoritative and doesn't depend on it.
+def _set_taskbar_identity(hwnd, icon_path):
+    """Give the window its own taskbar identity via the shell property store:
+    AppUserModelID (so the button is Hangar's, not grouped/branded as Edge) plus
+    the Relaunch* properties (which control the icon and label the taskbar shows
+    for that button). This is the authoritative fix — WM_SETICON alone changes
+    the window icon, but Chromium periodically repaints its own icon over it,
+    and the taskbar can key off the process/AUMID rather than the window icon.
 
-    Best-effort and Windows-only: polls briefly for the window (creation isn't
-    instant) and silently gives up after `timeout` seconds."""
+    Pure-ctypes COM (no pywin32 in the frozen build). Best-effort."""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("d1", ctypes.c_uint32), ("d2", ctypes.c_uint16),
+                    ("d3", ctypes.c_uint16), ("d4", ctypes.c_ubyte * 8)]
+
+    class PROPERTYKEY(ctypes.Structure):
+        _fields_ = [("fmtid", GUID), ("pid", ctypes.c_uint32)]
+
+    class PROPVARIANT(ctypes.Structure):
+        _fields_ = [("vt", ctypes.c_ushort), ("r", ctypes.c_ubyte * 6),
+                    ("pwszVal", ctypes.c_void_p), ("pad", ctypes.c_void_p)]
+
+    ole32 = ctypes.windll.ole32
+    shell32 = ctypes.windll.shell32
+    shlwapi = ctypes.windll.shlwapi
+
+    def _guid(s):
+        g = GUID()
+        if ole32.CLSIDFromString(ctypes.c_wchar_p(s), ctypes.byref(g)) != 0:
+            raise OSError(f"bad GUID {s}")
+        return g
+
+    IID_IPropertyStore = _guid("{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}")
+    FMTID_AppUserModel = _guid("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}")
+    PID_RELAUNCH_COMMAND, PID_RELAUNCH_ICON, PID_RELAUNCH_NAME, PID_ID = 2, 3, 4, 5
+
+    store = ctypes.c_void_p()
+    hr = shell32.SHGetPropertyStoreForWindow(hwnd, ctypes.byref(IID_IPropertyStore),
+                                             ctypes.byref(store))
+    if hr != 0 or not store.value:
+        raise OSError(f"SHGetPropertyStoreForWindow failed (hr={hr:#x})")
+    vtbl = ctypes.cast(store.value, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    _set = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(PROPERTYKEY),
+                              ctypes.POINTER(PROPVARIANT))(vtbl[6])
+    _commit = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p)(vtbl[7])
+    _release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])
+    try:
+        exe = sys.executable
+        values = [
+            (PID_ID, "4s0ck3t.Hangar"),
+            # RelaunchIconResource only takes effect when the display name is
+            # also set; the command makes taskbar "relaunch"/pin start Hangar
+            # itself rather than a bare Edge.
+            (PID_RELAUNCH_NAME, "Hangar"),
+            (PID_RELAUNCH_ICON, f"{icon_path},0"),
+            (PID_RELAUNCH_COMMAND, f'"{exe}"'),
+        ]
+        for pid, val in values:
+            key = PROPERTYKEY(FMTID_AppUserModel, pid)
+            pv = PROPVARIANT()
+            pv.vt = 31                                   # VT_LPWSTR
+            # SHStrDupW allocates a CoTaskMem copy — the form PropVariantClear owns.
+            if shlwapi.SHStrDupW(ctypes.c_wchar_p(val),
+                                 ctypes.byref(pv, PROPVARIANT.pwszVal.offset)) != 0:
+                continue
+            _set(store, ctypes.byref(key), ctypes.byref(pv))
+            ole32.PropVariantClear(ctypes.byref(pv))
+        _commit(store)
+    finally:
+        _release(store)
+
+
+def _stamp_taskbar_icon(profile, find_timeout=15.0):
+    """Make the Edge/Chrome --app window show HANGAR's icon in the taskbar, not
+    Edge's. Two mechanisms, because each alone has failure modes seen in the
+    field:
+
+      1. Shell property store (AppUserModelID + Relaunch icon/name/command):
+         owns the taskbar button identity outright. Set once per window.
+      2. WM_SETICON + class icon: covers the alt-tab/title-bar icon. Chromium
+         repaints its own icon over this asynchronously (its favicon adoption),
+         which is why a one-shot stamp "worked then reverted" — so a watcher
+         re-applies it whenever it detects the icon was replaced, for the
+         window's whole lifetime (cheap: one SendMessage per window every 3 s).
+
+    Runs on a daemon thread; Windows-only; every step best-effort."""
     if sys.platform != "win32":
         return
     icon_path = _icon_ico_path()
@@ -395,9 +472,10 @@ def _stamp_taskbar_icon(profile, timeout=10.0):
         import ctypes
         from ctypes import wintypes
 
+        ctypes.windll.ole32.CoInitialize(None)   # property store needs COM on this thread
         user32 = ctypes.windll.user32
         IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
-        WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+        WM_SETICON, WM_GETICON, ICON_SMALL, ICON_BIG = 0x0080, 0x007F, 0, 1
         GCLP_HICON, GCLP_HICONSM = -14, -34
         # Handles are pointer-sized (64-bit on x64). Declaring restype/argtypes is
         # essential — ctypes' default c_int return would truncate an HICON/HWND and
@@ -420,11 +498,9 @@ def _stamp_taskbar_icon(profile, timeout=10.0):
             _log(f"icon stamp: LoadImageW couldn't load {icon_path}")
             return
 
-        stamped = set()
-        deadline = time.time() + timeout
-        while time.time() < deadline and not stamped:
+        def _find_windows():
             pids = _find_pids_by_profile(profile)
-            windows = []
+            found = []
             if pids:
                 @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
                 def _enum(hwnd, _lp):
@@ -433,23 +509,64 @@ def _stamp_taskbar_icon(profile, timeout=10.0):
                     if (wpid.value in pids and user32.IsWindowVisible(hwnd)
                             and not user32.GetWindow(hwnd, 4)
                             and user32.GetWindowTextLengthW(hwnd) > 0):
-                        windows.append(hwnd)
+                        found.append(hwnd)
                     return True
                 user32.EnumWindows(_enum, 0)
-            for hwnd in windows:
-                if hicon_big:
-                    user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
-                    set_class_long(hwnd, GCLP_HICON, hicon_big)
-                if hicon_small:
-                    user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
-                    set_class_long(hwnd, GCLP_HICONSM, hicon_small)
-                stamped.add(hwnd)
-            if not stamped:
-                time.sleep(0.4)
-        if stamped:
-            _log(f"icon stamp: applied to {len(stamped)} window(s)")
-        else:
+            return found
+
+        def _apply(hwnd):
+            if hicon_big:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+                set_class_long(hwnd, GCLP_HICON, hicon_big)
+            if hicon_small:
+                user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+                set_class_long(hwnd, GCLP_HICONSM, hicon_small)
+
+        # -- find the window(s) --------------------------------------------
+        windows = []
+        deadline = time.time() + find_timeout
+        while time.time() < deadline and not windows:
+            windows = _find_windows()
+            if not windows:
+                time.sleep(0.5)
+        if not windows:
             _log("icon stamp: timed out finding the app window")
+            return
+
+        for hwnd in windows:
+            _apply(hwnd)
+            try:
+                _set_taskbar_identity(hwnd, icon_path)
+            except Exception as e:
+                _log(f"icon stamp: property store failed ({e}) — window icon still applied")
+        _log(f"icon stamp: applied to {len(windows)} window(s); watching for repaints")
+
+        # -- watch: Chromium repaints its icon asynchronously; put ours back --
+        misses = 0
+        while True:
+            time.sleep(3.0)
+            live = [h for h in windows if user32.IsWindow(h)]
+            if not live:
+                # All known windows gone — one re-find in case Chromium swapped
+                # HWNDs (it can recreate the window); otherwise the app closed.
+                misses += 1
+                if misses > 2:
+                    _log("icon stamp: window closed — watcher exiting")
+                    return
+                windows = _find_windows()
+                for hwnd in windows:
+                    _apply(hwnd)
+                    try:
+                        _set_taskbar_identity(hwnd, icon_path)
+                    except Exception:
+                        pass
+                continue
+            misses = 0
+            want = hicon_big or hicon_small
+            for hwnd in live:
+                cur = user32.SendMessageW(hwnd, WM_GETICON, ICON_BIG, None)
+                if cur != want:
+                    _apply(hwnd)
     except Exception:
         _log("icon stamp failed:\n" + traceback.format_exc())
 
