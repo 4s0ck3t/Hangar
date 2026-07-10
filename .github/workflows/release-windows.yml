@@ -64,6 +64,7 @@ jobs:
           pyinstaller --noconsole --name Hangar --noupx
           --version-file version.txt
           --icon hangar.ico
+          --add-data "hangar.ico;."
           --add-data "static;static"
           --add-data "MicrosoftEdgeWebview2Setup.exe;."
           --add-data "worker_main.py;."
@@ -100,6 +101,32 @@ jobs:
             Write-Host "no selftest file produced (exe may have crashed before writing it)"
           }
 
+      - name: Compute runtime signature (identifies the heavy _internal payload)
+        shell: pwsh
+        run: |
+          # The "runtime" is everything in _internal except our own source (.py) and
+          # static/ (the UI) -- i.e. the Python interpreter, numpy/trimesh/Pillow/
+          # OpenEXR/cryptography/tcl-tk and friends. That payload is what makes minor
+          # updates huge even though it almost never changes between releases. This
+          # signature is a hash of exactly the installed package versions that produce
+          # it, so the updater can tell "did the runtime actually change" and skip
+          # re-downloading it when it didn't.
+          pip freeze > runtime-freeze.txt
+          $py = @(
+            "import hashlib, platform, PyInstaller",
+            "with open('runtime-freeze.txt', 'rb') as f:",
+            "    freeze = f.read()",
+            "basis = platform.python_version().encode() + b'|' + PyInstaller.__version__.encode() + b'|' + freeze",
+            "sig = hashlib.sha256(basis).hexdigest()[:16]",
+            "with open('dist/Hangar/_internal/runtime_sig.txt', 'w') as f:",
+            "    f.write(sig)",
+            "print('runtime_sig', sig)"
+          )
+          Set-Content -Path runtimesig.py -Value $py -Encoding ascii
+          python runtimesig.py
+          $sig = Get-Content dist/Hangar/_internal/runtime_sig.txt
+          "RUNTIME_SIG=$sig" | Out-File -FilePath $env:GITHUB_ENV -Encoding ascii -Append
+
       - name: Zip the build folder (clean forward-slash paths for the in-app updater)
         shell: pwsh
         run: |
@@ -121,17 +148,71 @@ jobs:
           Set-Content -Path zipit.py -Value $py -Encoding ascii
           python zipit.py
 
+      - name: Zip the small app-only package (Hangar.exe + our code + static + icon)
+        shell: pwsh
+        run: |
+          # This is everything that changes on a normal Hangar release: the exe
+          # (carries our compiled code), the loose .py files the Blender subprocess /
+          # render-farm worker need on disk, the web UI, and the icon. It excludes the
+          # heavy runtime (_internal minus these), which almost never changes between
+          # releases. The updater downloads only this when the runtime signature on
+          # the running install matches the release's, instead of the full ~tens-of-MB
+          # package, for every minor update.
+          $py = @(
+            "import os, zipfile",
+            "root = 'dist/Hangar'",
+            "app_py_files = ['store.py', 'thumbs.py', 'scanner.py', 'worker.py', 'worker_main.py']",
+            "z = zipfile.ZipFile('dist/Hangar-windows-app.zip', 'w', zipfile.ZIP_DEFLATED)",
+            "z.write(os.path.join(root, 'Hangar.exe'), 'Hangar.exe')",
+            "for name in app_py_files:",
+            "    full = os.path.join(root, '_internal', name)",
+            "    if os.path.exists(full):",
+            "        z.write(full, '_internal/' + name)",
+            "static_root = os.path.join(root, '_internal', 'static')",
+            "for dp, _, files in os.walk(static_root):",
+            "    for f in files:",
+            "        full = os.path.join(dp, f)",
+            "        z.write(full, os.path.relpath(full, root).replace(os.sep, '/'))",
+            "z.close()",
+            "print('zipped app package', os.path.getsize('dist/Hangar-windows-app.zip'), 'bytes')"
+          )
+          Set-Content -Path zipapp.py -Value $py -Encoding ascii
+          python zipapp.py
+
+      - name: Write update manifest
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}" -replace '^v',''
+          $fullSize = (Get-Item dist/Hangar-windows.zip).Length
+          $appSize = (Get-Item dist/Hangar-windows-app.zip).Length
+          $manifest = @{
+            version = $ver
+            runtime_sig = "${{ env.RUNTIME_SIG }}"
+            full_asset = "Hangar-windows.zip"
+            full_size = $fullSize
+            app_asset = "Hangar-windows-app.zip"
+            app_size = $appSize
+          }
+          $manifest | ConvertTo-Json | Set-Content -Path dist/update-manifest.json -Encoding utf8
+          Get-Content dist/update-manifest.json
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Hangar-windows
-          path: dist/Hangar-windows.zip
+          path: |
+            dist/Hangar-windows.zip
+            dist/Hangar-windows-app.zip
+            dist/update-manifest.json
 
       - name: Attach to release (tag builds only)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Hangar-windows.zip
+          files: |
+            dist/Hangar-windows.zip
+            dist/Hangar-windows-app.zip
+            dist/update-manifest.json
           name: Hangar ${{ github.ref_name }}
           body: |
             Standalone Windows build of Hangar (PyInstaller --onedir, zipped).
@@ -145,6 +226,11 @@ jobs:
 
             Requires the Edge WebView2 runtime (default on Windows 10/11).
             Data is stored in `%USERPROFILE%\.hangar`.
+
+            Hangar's in-app updater downloads `Hangar-windows-app.zip` instead of
+            the full package whenever the runtime hasn't changed since your
+            installed version — most releases only touch app code, so most
+            updates are a few MB instead of the full download.
 
             **Windows Defender false positive:** Defender's ML heuristic
             (e.g. `Wacatac.C!ml`) flags unsigned PyInstaller apps like this one —

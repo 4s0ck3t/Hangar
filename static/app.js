@@ -3299,6 +3299,13 @@ if (_farmDl) _farmDl.onclick = () => { window.location.href = "/api/farm/worker-
 let _updateInfo = null;
 let _updatePoll = null;
 let _updateReady = false;   // download finished, exe ready to launch
+
+function _fmtSize(bytes) {
+  if (!bytes) return "";
+  const mb = bytes / 1048576;
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.ceil(bytes / 1024)} KB`;
+}
+
 async function checkForUpdate() {
   try {
     const u = await api("update/check");
@@ -3314,9 +3321,15 @@ async function checkForUpdate() {
 function openUpdateModal() {
   if (!_updateInfo) return;
   $("#updateTitle").textContent = `Update available — v${_updateInfo.latest}`;
-  $("#updateSub").textContent =
-    `You're on v${_updateInfo.current}. This downloads and unpacks v${_updateInfo.latest} ` +
-    `into a new folder (your current install is left untouched), then you can launch it.`;
+  const size = _fmtSize(_updateInfo.asset_size);
+  const sub = _updateInfo.mode === "delta"
+    ? `You're on v${_updateInfo.current}. Your install's runtime hasn't changed, so this ` +
+      `only downloads the small app update${size ? ` (${size})` : ""} and reuses the rest of ` +
+      `your current install (left untouched) — then you can launch it.`
+    : `You're on v${_updateInfo.current}. This downloads${size ? ` (${size})` : ""} and unpacks ` +
+      `v${_updateInfo.latest} into a new folder (your current install is left untouched), then ` +
+      `you can launch it.`;
+  $("#updateSub").textContent = sub;
   $("#updateNotes").value = (_updateInfo.notes || "Release notes unavailable.").trim();
   const btn = $("#updateDownloadBtn");
   if (_updateReady) {
@@ -3351,12 +3364,14 @@ function _setPill(text, handler) {
 
 // Show the background download on the shared status-bar progress bar, but never
 // fight a scan or a regenerate pass that already owns it.
-function _updateStatusBar(pct) {
+function _updateStatusBar(pct, stage) {
   if (state.scanTimer || state.regenTimer) return;
   state.updateBar = true;
   $("#statusSummary").classList.add("hidden");
   $("#scanProgress").classList.remove("hidden");
-  $("#scanText").textContent = `Downloading update v${_updateInfo.latest}`;
+  $("#scanText").textContent = stage === "copying"
+    ? `Reusing current install for v${_updateInfo.latest}…`
+    : `Downloading update v${_updateInfo.latest}`;
   $("#scanFill").style.width = pct + "%";
   $("#scanPct").textContent = pct + "%";
   $("#scanFile").textContent = ""; $("#scanFile").title = "";
@@ -3399,8 +3414,11 @@ function startUpdatePolling() {
     } else {
       // Still downloading — show it on the status bar AND keep the always-visible
       // pill in sync so the user can close the modal and keep working.
-      _updateStatusBar(pct);
-      _setPill(`⬇ Downloading v${_updateInfo.latest}… ${pct}%`, openUpdateModal);
+      _updateStatusBar(pct, s.stage);
+      const pillText = s.stage === "copying"
+        ? `⟳ Preparing v${_updateInfo.latest}…`
+        : `⬇ Downloading v${_updateInfo.latest}… ${pct}%`;
+      _setPill(pillText, openUpdateModal);
     }
   }, 500);
 }
@@ -3418,10 +3436,12 @@ function beginBackgroundUpdate() {
   }
   post("update/download", {
     url: _updateInfo.asset_url, name: _updateInfo.asset_name, version: _updateInfo.latest,
+    mode: _updateInfo.mode,
   });
   startUpdatePolling();
   _setPill(`⬇ Downloading v${_updateInfo.latest}… 0%`, openUpdateModal);
-  toast(`Downloading v${_updateInfo.latest} in the background…`, "success");
+  const sizeNote = _updateInfo.mode === "delta" ? ` (small update, ${_fmtSize(_updateInfo.asset_size)})` : "";
+  toast(`Downloading v${_updateInfo.latest} in the background${sizeNote}…`, "success");
 }
 
 async function startUpdateDownload() {
@@ -3430,7 +3450,10 @@ async function startUpdateDownload() {
   const btn = $("#updateDownloadBtn");
   btn.disabled = true; btn.textContent = "Downloading…";
   $("#updateProgress").classList.remove("hidden");
-  await post("update/download", { url: _updateInfo.asset_url, name: _updateInfo.asset_name, version: _updateInfo.latest });
+  await post("update/download", {
+    url: _updateInfo.asset_url, name: _updateInfo.asset_name, version: _updateInfo.latest,
+    mode: _updateInfo.mode,
+  });
   startUpdatePolling();
 }
 $("#updateDownloadBtn").onclick = startUpdateDownload;

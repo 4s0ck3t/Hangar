@@ -342,6 +342,118 @@ def _seed_edge_profile(profile, url):
         pass  # cosmetic only — never block the launch
 
 
+def _icon_ico_path():
+    """Locate hangar.ico (bundled as loose data — see the PyInstaller --add-data
+    flag), preferring the frozen build's temp dir and falling back to the source
+    tree for dev runs."""
+    candidates = [
+        os.path.join(getattr(sys, "_MEIPASS", "") or "", "hangar.ico"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "hangar.ico"),
+    ]
+    return next((p for p in candidates if p and os.path.exists(p)), None)
+
+
+def _find_pids_by_profile(profile):
+    """PIDs of any Windows process whose command line contains the given
+    Chromium --user-data-dir path (same matching approach as
+    _terminate_window_processes, reused here to locate the --app window)."""
+    if sys.platform != "win32":
+        return []
+    quoted = "'" + os.path.normpath(profile).replace("'", "''") + "'"
+    ps = (
+        "$profile = " + quoted + "; "
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) } | "
+        "Select-Object -ExpandProperty ProcessId"
+    )
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                              "-Command", ps],
+                             capture_output=True, text=True, timeout=10, **_no_window()).stdout
+        return [int(x) for x in out.split() if x.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def _stamp_taskbar_icon(profile, timeout=10.0):
+    """Force the Edge/Chrome --app window's title-bar/taskbar icon to Hangar's
+    own icon via WM_SETICON, instead of leaving it to Chromium's favicon/manifest
+    adoption. That adoption is an async fetch-after-first-paint heuristic, and
+    per repeated user reports it doesn't reliably catch — the window (and the
+    taskbar) can keep showing Edge's own logo indefinitely. Setting the icon
+    directly at the Win32 level is authoritative and doesn't depend on it.
+
+    Best-effort and Windows-only: polls briefly for the window (creation isn't
+    instant) and silently gives up after `timeout` seconds."""
+    if sys.platform != "win32":
+        return
+    icon_path = _icon_ico_path()
+    if not icon_path:
+        _log("icon stamp: hangar.ico not found — skipping")
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+        WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+        GCLP_HICON, GCLP_HICONSM = -14, -34
+        # Handles are pointer-sized (64-bit on x64). Declaring restype/argtypes is
+        # essential — ctypes' default c_int return would truncate an HICON/HWND and
+        # the icon would silently fail to apply.
+        user32.LoadImageW.restype = wintypes.HANDLE
+        user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                      ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user32.SendMessageW.restype = ctypes.c_void_p
+        user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                        ctypes.c_void_p, ctypes.c_void_p]
+        # SetClassLongPtrW exists on 64-bit; 32-bit Windows only has SetClassLongW.
+        set_class_long = getattr(user32, "SetClassLongPtrW", None) or user32.SetClassLongW
+        set_class_long.restype = ctypes.c_void_p
+        set_class_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+
+        hicon_big = user32.LoadImageW(None, icon_path, IMAGE_ICON, 0, 0,
+                                       LR_LOADFROMFILE | LR_DEFAULTSIZE)
+        hicon_small = user32.LoadImageW(None, icon_path, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        if not hicon_big and not hicon_small:
+            _log(f"icon stamp: LoadImageW couldn't load {icon_path}")
+            return
+
+        stamped = set()
+        deadline = time.time() + timeout
+        while time.time() < deadline and not stamped:
+            pids = _find_pids_by_profile(profile)
+            windows = []
+            if pids:
+                @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+                def _enum(hwnd, _lp):
+                    wpid = wintypes.DWORD()
+                    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+                    if (wpid.value in pids and user32.IsWindowVisible(hwnd)
+                            and not user32.GetWindow(hwnd, 4)
+                            and user32.GetWindowTextLengthW(hwnd) > 0):
+                        windows.append(hwnd)
+                    return True
+                user32.EnumWindows(_enum, 0)
+            for hwnd in windows:
+                if hicon_big:
+                    user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
+                    set_class_long(hwnd, GCLP_HICON, hicon_big)
+                if hicon_small:
+                    user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+                    set_class_long(hwnd, GCLP_HICONSM, hicon_small)
+                stamped.add(hwnd)
+            if not stamped:
+                time.sleep(0.4)
+        if stamped:
+            _log(f"icon stamp: applied to {len(stamped)} window(s)")
+        else:
+            _log("icon stamp: timed out finding the app window")
+    except Exception:
+        _log("icon stamp failed:\n" + traceback.format_exc())
+
+
 def _launch_app_window(url):
     browser = _find_chromium()
     if not browser:
@@ -372,6 +484,7 @@ def _launch_app_window(url):
         proc = subprocess.Popen(args)
         backend.WINDOW_PROC = proc  # let the updater close this window on handover
         backend.WINDOW_PROFILE = profile
+        threading.Thread(target=_stamp_taskbar_icon, args=(profile,), daemon=True).start()
     except Exception:
         _log("couldn't launch --app window:\n" + traceback.format_exc())
         return False

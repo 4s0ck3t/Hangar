@@ -24,7 +24,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.14.36"
+__version__ = "0.15.0"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1786,7 +1786,7 @@ def set_blender():
 # can run alongside the old one.
 GITHUB_REPO = "4s0ck3t/Hangar"
 UPDATE = {"running": False, "pct": 0, "done": False, "path": None,
-          "folder": None, "exe": None, "error": None}
+          "folder": None, "exe": None, "error": None, "stage": None}
 UPDATE_LOCK = threading.Lock()
 
 _RELEASE_CACHE: dict = {}          # {"data": ..., "ts": float}
@@ -1821,6 +1821,50 @@ def _fetch_latest_release(force=False):
     return data
 
 
+def _install_dir():
+    """The running frozen install's root folder (contains Hangar.exe/_internal),
+    or None outside a frozen build (dev runs have no install to overlay onto)."""
+    if not getattr(sys, "frozen", False):
+        return None
+    return os.path.dirname(sys.executable)
+
+
+def _local_runtime_sig():
+    """This install's runtime signature, written by CI into _internal/runtime_sig.txt
+    at build time. None for dev runs or any install that predates this feature —
+    both cases fall back to a full download, which is always safe."""
+    d = _install_dir()
+    if not d:
+        return None
+    p = os.path.join(d, "_internal", "runtime_sig.txt")
+    try:
+        with open(p, "r", encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    except Exception:
+        return None
+
+
+def _fetch_update_manifest(rel):
+    """Fetch+parse the small update-manifest.json release asset (runtime_sig +
+    app/full asset names+sizes). Returns None if the release predates this
+    feature (e.g. an older tag, or the Linux build which doesn't publish one) —
+    callers must treat that as "no delta available", not an error."""
+    import urllib.request
+    asset = next((a for a in rel.get("assets", [])
+                  if (a.get("name") or "") == "update-manifest.json"), None)
+    if not asset:
+        return None
+    url = asset.get("browser_download_url")
+    if not url:
+        return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Hangar-updater"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
 def _downloads_dir():
     home = os.path.expanduser("~")
     dl = os.path.join(home, "Downloads")
@@ -1844,12 +1888,15 @@ def _reveal_path(path):
 
 
 def _platform_asset(assets):
-    """Pick the release asset for the current OS: Windows -> the .zip, Linux ->
-    the .tar.gz, falling back to any archive if the named one is missing."""
+    """Pick the FULL-package release asset for the current OS: Windows -> the
+    .zip, Linux -> the .tar.gz, falling back to any archive if the named one is
+    missing. Always excludes the small app-only delta zip (name contains
+    "-app"), which is a separate, non-standalone package picked via the update
+    manifest instead — never as the "download everything" fallback."""
     sysname = platform.system()
     ext = {"Windows": ".zip", "Linux": ".tar.gz", "Darwin": ".zip"}.get(sysname, ".zip")
     kw = {"Windows": "windows", "Linux": "linux", "Darwin": "mac"}.get(sysname, "")
-    names = [(a, (a.get("name") or "").lower()) for a in assets]
+    names = [(a, (a.get("name") or "").lower()) for a in assets if "-app" not in (a.get("name") or "").lower()]
     by_ext = [a for a, n in names if n.endswith(ext)]
     preferred = [a for a in by_ext if kw in (a.get("name") or "").lower()]
     if preferred:
@@ -1882,6 +1929,23 @@ def update_check():
         return jsonify({"ok": False, "error": msg}), 200
     latest = (rel.get("tag_name") or "").lstrip("v")
     asset = _platform_asset(rel.get("assets", []))
+    # Prefer the small app-only package when this install's runtime matches the
+    # release's — the normal case, since most releases only touch our own code
+    # and the UI, not the heavy bundled runtime (Python/numpy/trimesh/Pillow/…).
+    # Any mismatch (a real runtime bump, an install that predates this feature,
+    # a non-Windows build without a manifest, or any fetch hiccup) safely falls
+    # back to the full package.
+    mode = "full"
+    if platform.system() == "Windows" and asset:
+        manifest = _fetch_update_manifest(rel)
+        local_sig = _local_runtime_sig()
+        if manifest and local_sig and manifest.get("runtime_sig") == local_sig:
+            app_name = manifest.get("app_asset")
+            app_asset = next((a for a in rel.get("assets", [])
+                               if (a.get("name") or "") == app_name), None)
+            if app_asset:
+                asset = app_asset
+                mode = "delta"
     return jsonify({
         "ok": True,
         "current": __version__,
@@ -1889,18 +1953,35 @@ def update_check():
         "update_available": _version_tuple(latest) > _version_tuple(__version__),
         "notes": rel.get("body", ""),
         "html_url": rel.get("html_url", ""),
+        "mode": mode,
         "asset_url": asset.get("browser_download_url") if asset else None,
         "asset_name": asset.get("name") if asset else None,
         "asset_size": asset.get("size") if asset else None,
     })
 
 
-def _do_update_download(url, name, version):
+def _do_update_download(url, name, version, mode="full"):
     import urllib.request
     import tarfile
     import shutil
     dest = os.path.join(_downloads_dir(), name)
     try:
+        folder = os.path.join(_downloads_dir(), f"Hangar-{version}")
+        if os.path.isdir(folder):
+            shutil.rmtree(folder, ignore_errors=True)
+        src_dir = _install_dir() if mode == "delta" else None
+        if mode == "delta" and src_dir and os.path.isdir(src_dir):
+            # Seed the sibling folder from a local copy of the CURRENT install —
+            # no network involved for the (unchanged) runtime — then overlay only
+            # the small downloaded package on top. The running install itself is
+            # never touched, same as a full update.
+            with UPDATE_LOCK:
+                UPDATE["stage"] = "copying"
+            shutil.copytree(src_dir, folder)
+        else:
+            mode = "full"  # no local install to overlay onto — always safe to fall back
+        with UPDATE_LOCK:
+            UPDATE["stage"] = "downloading"
         req = urllib.request.Request(url, headers={"User-Agent": "Hangar-updater"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             total = int(resp.headers.get("Content-Length", 0) or 0)
@@ -1914,10 +1995,11 @@ def _do_update_download(url, name, version):
                     got += len(chunk)
                     with UPDATE_LOCK:
                         UPDATE["pct"] = int(got * 100 / total) if total else 0
-        # Extract to a fresh sibling folder so the running install is untouched.
-        folder = os.path.join(_downloads_dir(), f"Hangar-{version}")
-        if os.path.isdir(folder):
-            shutil.rmtree(folder, ignore_errors=True)
+        with UPDATE_LOCK:
+            UPDATE["stage"] = "extracting"
+        # Full mode extracts into a fresh empty folder (the extractors create it);
+        # delta mode overlays onto the just-copied install (overwriting only the
+        # small set of changed files — the extractors write-and-overwrite by design).
         low = name.lower()
         if low.endswith((".tar.gz", ".tgz")):
             _safe_extract_tar(dest, folder)
@@ -2017,14 +2099,15 @@ def update_download():
     url = data.get("url")
     name = data.get("name") or "Hangar-windows.zip"
     version = (data.get("version") or "latest").lstrip("v")
+    mode = data.get("mode") if data.get("mode") in ("delta", "full") else "full"
     if not url:
         return jsonify({"ok": False, "error": "No download URL provided."}), 200
     with UPDATE_LOCK:
         if UPDATE["running"]:
             return jsonify({"ok": True, "running": True})
         UPDATE.update(running=True, pct=0, done=False, path=None,
-                      folder=None, exe=None, error=None)
-    threading.Thread(target=_do_update_download, args=(url, name, version),
+                      folder=None, exe=None, error=None, stage=None)
+    threading.Thread(target=_do_update_download, args=(url, name, version, mode),
                      daemon=True).start()
     return jsonify({"ok": True, "running": True})
 
