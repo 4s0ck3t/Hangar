@@ -75,7 +75,9 @@
   <main class="main">
     <header class="topbar">
       <div class="search-wrap">
-        <input id="search" type="search" placeholder="Search assets…" autocomplete="off" />
+        <input id="search" type="search" placeholder="Search assets…" autocomplete="off"
+               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="searchSuggest" />
+        <div id="searchSuggest" class="search-suggest hidden" role="listbox"></div>
       </div>
       <div class="topbar-right">
         <span id="activeFilter" class="active-filter"></span>

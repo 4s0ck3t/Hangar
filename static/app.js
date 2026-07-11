@@ -1060,6 +1060,9 @@ function sectionCollapseButton(key, label) {
 }
 
 async function refresh() {
+  // Nothing on screen yet (first load / coming from an empty view) → show
+  // shimmering placeholder tiles instead of a blank pane while we fetch.
+  if (!$("#grid").querySelector(".card")) renderGridSkeleton();
   const f = state.filter;
   // Duplicates view: every file whose name is shared by more than one file,
   // grouped by name. It's its own mode, so it overrides the auto-groupings below.
@@ -1423,6 +1426,11 @@ function buildCard(a, i) {
     + (selection.has(a.id) ? " is-selected" : "")
     + ((a.blend_missing_textures || 0) > 0 ? " has-missing-tex" : "");
   card.dataset.id = a.id;
+  // Tiles are keyboard-reachable: Tab lands on a card, arrows move between
+  // cards (grid-level handler), Enter/Space opens it like a click.
+  card.tabIndex = 0;
+  card.setAttribute("role", "button");
+  card.setAttribute("aria-label", a.name);
   const color = KIND_COLORS[a.kind] || "var(--mute)";
   const ext = a.ext.replace(".", "").toUpperCase();
   const tagDots = (a.tags || []).slice(0, 4)
@@ -1469,7 +1477,7 @@ function buildCard(a, i) {
       </div>
     </div>
     <div class="card-meta">
-      <div class="card-name" title="${esc(a.name)}">${esc(a.name)}</div>
+      <div class="card-name">${esc(a.name)}</div>
       ${folderLine}
       ${authorLine}
       <div class="card-line">
@@ -1490,6 +1498,23 @@ function buildCard(a, i) {
   // Ctrl/Cmd-click toggles selection; Shift-click extends to a range;
   // once a selection is active a plain click keeps building it.
   // Otherwise a click opens the detail drawer.
+  card.onkeydown = (e) => {
+    if ((e.key === "Enter" || e.key === " ") && e.target === card) {
+      e.preventDefault();
+      card.click();
+    }
+  };
+  // A name cut off by the ellipsis reveals itself in full on hover/focus, as a
+  // wrapped flap over the thumbnail (see .card-meta.has-trunc::after). The
+  // check runs lazily on hover because cards are built off-DOM (no widths yet).
+  const meta = card.querySelector(".card-meta");
+  meta.dataset.fullName = a.name;
+  const markTrunc = () => {
+    const nameEl = card.querySelector(".card-name");
+    meta.classList.toggle("has-trunc", nameEl.scrollWidth > nameEl.clientWidth + 1);
+  };
+  card.addEventListener("mouseenter", markTrunc);
+  card.addEventListener("focus", markTrunc);
   card.onclick = (e) => {
     if (e.shiftKey && _lastSelectedIdx >= 0) {
       e.preventDefault();
@@ -2441,6 +2466,12 @@ function renderWindow() {
   if (start === _vRange.start && end === _vRange.end) return; // window unchanged
   _vRange = { start, end };
 
+  // Recycling replaces every card node, which would silently drop keyboard
+  // focus mid-arrow-navigation — remember the focused card to re-focus after.
+  const act = document.activeElement;
+  const focusId = act && act.classList && act.classList.contains("card")
+    && grid.contains(act) ? act.dataset.id : null;
+
   const lastRow = Math.ceil(end / cols);
   const frag = document.createDocumentFragment();
   if (firstRow > 0) {
@@ -2458,6 +2489,10 @@ function renderWindow() {
     frag.appendChild(bottom);
   }
   grid.replaceChildren(frag);
+  if (focusId) {
+    const c = grid.querySelector(`.card[data-id="${focusId}"]`);
+    if (c) c.focus({ preventScroll: true });
+  }
 }
 
 function bindVirtual() {
@@ -2475,6 +2510,24 @@ function bindVirtual() {
   // the spacer spans. A ResizeObserver catches both (a scrollbar toggle is not
   // a window 'resize' event), so the window is recomputed whenever width moves.
   new ResizeObserver(() => { _vRange = { start: -1, end: -1 }; renderWindow(); }).observe(grid);
+}
+
+// Placeholder tiles shown while the asset list is being fetched, so the pane
+// never sits blank. Replaced wholesale by the real renderer when data lands.
+function renderGridSkeleton() {
+  const grid = $("#grid");
+  grid.classList.remove("grouped");
+  $("#emptyState").classList.add("hidden");
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < 12; i++) {
+    const s = document.createElement("div");
+    s.className = "skel-card";
+    s.innerHTML =
+      `<div class="skel-thumb"></div>` +
+      `<div class="skel-meta"><div class="skel-line"></div><div class="skel-line short"></div></div>`;
+    frag.appendChild(s);
+  }
+  grid.replaceChildren(frag);
 }
 
 function renderGrid(assets, total) {
@@ -3716,7 +3769,155 @@ let searchTimer;
 $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => { state.search = e.target.value.trim(); refresh(); }, 220);
+  updateSuggest(e.target.value.trim());
 };
+
+// ---- search autocomplete ---------------------------------------------------
+// A dropdown of matching asset names under the search box, fed by the same
+// /api/assets search the grid uses. Arrow keys walk it, Enter picks, Esc closes.
+const suggestEl = $("#searchSuggest");
+let _sugSeq = 0, _sugItems = [], _sugSel = -1;
+
+function closeSuggest() {
+  _sugItems = []; _sugSel = -1;
+  suggestEl.classList.add("hidden");
+  suggestEl.replaceChildren();
+  $("#search").setAttribute("aria-expanded", "false");
+  $("#search").removeAttribute("aria-activedescendant");
+}
+
+function pickSuggest(name) {
+  const s = $("#search");
+  s.value = name;
+  closeSuggest();
+  clearTimeout(searchTimer);
+  state.search = name;
+  refresh();
+}
+
+function setSuggestSel(i) {
+  _sugSel = i;
+  [...suggestEl.children].forEach((el, j) => {
+    el.classList.toggle("is-active", j === i);
+    el.setAttribute("aria-selected", j === i ? "true" : "false");
+  });
+  const s = $("#search");
+  if (i >= 0) {
+    s.setAttribute("aria-activedescendant", "suggest-" + i);
+    suggestEl.children[i].scrollIntoView({ block: "nearest" });
+  } else s.removeAttribute("aria-activedescendant");
+}
+
+function highlightMatch(name, q) {
+  const i = name.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return esc(name);
+  return esc(name.slice(0, i)) + "<b>" + esc(name.slice(i, i + q.length)) + "</b>"
+    + esc(name.slice(i + q.length));
+}
+
+async function updateSuggest(q) {
+  const seq = ++_sugSeq;
+  if (!q || q.length < 2) { closeSuggest(); return; }
+  const p = new URLSearchParams({ search: q, limit: "30", sort: "name" });
+  const data = await api("assets?" + p.toString());
+  if (seq !== _sugSeq) return;                          // superseded by a newer keystroke
+  if (document.activeElement !== $("#search")) return;  // box was left while fetching
+  // Distinct names only — many files share a name across packs.
+  const seen = new Set(); const items = [];
+  for (const a of data.assets || []) {
+    const k = a.name.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    items.push(a);
+    if (items.length >= 8) break;
+  }
+  // Echoing back exactly what's typed adds nothing.
+  if (!items.length
+      || (items.length === 1 && items[0].name.toLowerCase() === q.toLowerCase())) {
+    closeSuggest(); return;
+  }
+  _sugItems = items; _sugSel = -1;
+  const frag = document.createDocumentFragment();
+  items.forEach((a, i) => {
+    const el = document.createElement("div");
+    el.className = "suggest-item";
+    el.id = "suggest-" + i;
+    el.setAttribute("role", "option");
+    const ext = (a.ext || "").replace(".", "").toUpperCase();
+    el.innerHTML = `<span class="suggest-name">${highlightMatch(a.name, q)}</span>`
+      + `<span class="suggest-ext">${esc(ext)}</span>`;
+    // mousedown, not click — click lands after the input's blur closed the list.
+    el.onmousedown = (e) => { e.preventDefault(); pickSuggest(a.name); };
+    el.onmousemove = () => { if (_sugSel !== i) setSuggestSel(i); };
+    frag.appendChild(el);
+  });
+  suggestEl.replaceChildren(frag);
+  suggestEl.classList.remove("hidden");
+  $("#search").setAttribute("aria-expanded", "true");
+}
+
+$("#search").addEventListener("keydown", (e) => {
+  const open = !suggestEl.classList.contains("hidden");
+  if (e.key === "Enter") {
+    e.preventDefault();
+    if (open && _sugSel >= 0) { pickSuggest(_sugItems[_sugSel].name); return; }
+    // No pick → search what's typed right away instead of waiting the debounce.
+    clearTimeout(searchTimer);
+    closeSuggest();
+    state.search = e.target.value.trim();
+    refresh();
+    return;
+  }
+  if (!open) return;
+  if (e.key === "ArrowDown") {
+    e.preventDefault(); setSuggestSel((_sugSel + 1) % _sugItems.length);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault(); setSuggestSel((_sugSel - 1 + _sugItems.length) % _sugItems.length);
+  } else if (e.key === "Escape") {
+    e.stopPropagation(); closeSuggest();   // first Esc closes the list, second blurs
+  }
+});
+$("#search").addEventListener("blur", closeSuggest);
+
+// ---- keyboard navigation on grid tiles --------------------------------------
+// Arrows move focus between cards; works in the flat (virtualized) grid and the
+// grouped-section views alike by picking the geometrically nearest card, so no
+// per-layout column math. Enter/Space on a card opens it (bound in buildCard).
+$("#grid").addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+  if (isDrawerOpen()) return;   // drawer arrows page assets (document handler)
+  const cur = e.target.closest && e.target.closest(".card");
+  if (!cur) return;
+  e.preventDefault();
+  const cards = [...$("#grid").querySelectorAll(".card")];
+  const i = cards.indexOf(cur);
+  if (i < 0) return;
+  let next = null;
+  if (e.key === "ArrowLeft") next = cards[i - 1];
+  else if (e.key === "ArrowRight") next = cards[i + 1];
+  else {
+    // Up/Down: the card in the nearest row that direction whose horizontal
+    // centre is closest to the current card's.
+    const r = cur.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const dir = e.key === "ArrowDown" ? 1 : -1;
+    let bestDy = Infinity, bestDx = Infinity;
+    for (const c of cards) {
+      if (c === cur) continue;
+      const cr = c.getBoundingClientRect();
+      const dy = (cr.top - r.top) * dir;
+      if (dy <= 1) continue;   // same row or the wrong direction
+      const dx = Math.abs(cr.left + cr.width / 2 - cx);
+      if (dy < bestDy - 1 || (Math.abs(dy - bestDy) <= 1 && dx < bestDx)) {
+        next = c; bestDy = dy; bestDx = dx;
+      }
+    }
+  }
+  if (next) {
+    next.focus();
+    next.scrollIntoView({ block: "nearest" });
+  }
+});
 $("#sort").onchange = (e) => { state.sort = e.target.value; refresh(); };
 $("#drawerClose").onclick = closeDrawer;
 $("#scrim").onclick = closeDrawer;

@@ -301,13 +301,31 @@ button, input, select { font-family: inherit; color: inherit; }
   display: flex; align-items: center; gap: 14px;
   padding: 14px 22px; border-bottom: 1px solid var(--line);
 }
-.search-wrap { flex: 1; max-width: 460px; }
+.search-wrap { flex: 1; max-width: 460px; position: relative; }
 #search {
   width: 100%; background: var(--raised); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 9px 13px; font-size: 13px;
   outline: none; transition: border-color .15s, box-shadow .15s;
 }
 #search:focus { border-color: var(--select); box-shadow: 0 0 0 3px rgba(91,141,239,.15); }
+
+/* ---- search autocomplete dropdown ---- */
+.search-suggest {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 50;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0,0,0,.45); padding: 4px; overflow: hidden;
+}
+.suggest-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 9px; border-radius: 6px; cursor: pointer; font-size: 12.5px;
+}
+.suggest-item.is-active { background: var(--raised-hi); }
+.suggest-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.suggest-name b { color: var(--select); font-weight: 600; }
+.suggest-ext {
+  margin-left: auto; flex: none;
+  font-family: var(--mono); font-size: 10px; color: var(--faint);
+}
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 /* Thin divider between logical groups of top-bar controls. */
 .topbar-sep { width: 1px; height: 20px; background: var(--line); flex: none; }
@@ -396,6 +414,25 @@ button, input, select { font-family: inherit; color: inherit; }
 .card.has-missing-tex:hover { border-color: var(--warn); }
 /* Spacer rows reserve scroll height above/below the virtualized window. */
 .vspacer { grid-column: 1 / -1; visibility: hidden; pointer-events: none; }
+
+/* ---- loading skeleton ---- */
+/* Placeholder tiles with a shimmer sweep while assets are being fetched. The
+   global prefers-reduced-motion rule freezes the sweep to a static tile. */
+.skel-card {
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden; height: 100%;
+}
+.skel-thumb { height: 196px; border-bottom: 1px solid var(--line); }
+.skel-meta { padding: 13px 11px; display: flex; flex-direction: column; gap: 9px; }
+.skel-line { height: 10px; border-radius: 4px; width: 75%; }
+.skel-line.short { width: 40%; }
+.skel-thumb, .skel-line {
+  background: linear-gradient(100deg,
+    var(--raised) 40%, var(--raised-hi) 50%, var(--raised) 60%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+@keyframes shimmer { to { background-position: -200% 0; } }
 
 /* ---- grouped-by-category grid ---- */
 .grid.grouped { display: block; grid-auto-rows: initial; padding: 0; }
@@ -527,9 +564,21 @@ button, input, select { font-family: inherit; color: inherit; }
   color: var(--signal); opacity: 0; filter: drop-shadow(0 1px 2px rgba(0,0,0,.5));
 }
 .card.is-fav .fav-pin { opacity: 1; }
-.card-meta { padding: 9px 11px 10px; }
+.card-meta { padding: 9px 11px 10px; position: relative; }
 .card-name {
   font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* A name the ellipsis cut off (marked .has-trunc in buildCard) unfolds in full
+   on hover/focus — a wrapped flap over the thumbnail's lower edge, absolutely
+   positioned so the tile itself never shifts. */
+.card:hover .card-meta.has-trunc::after,
+.card:focus .card-meta.has-trunc::after {
+  content: attr(data-full-name);
+  position: absolute; left: -1px; right: -1px; bottom: calc(100% - 1px); z-index: 5;
+  padding: 7px 11px; font-size: 12.5px; line-height: 1.35;
+  white-space: normal; overflow-wrap: anywhere;
+  background: var(--raised-hi); border: 1px solid var(--line); border-bottom: none;
+  border-radius: 6px 6px 0 0; box-shadow: 0 -8px 18px rgba(0,0,0,.35);
 }
 .card-folder {
   margin-top: 3px; font-size: 10px; color: var(--mute);
