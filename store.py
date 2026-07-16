@@ -343,15 +343,44 @@ def add_library(path, name=None):
     return dict(row)
 
 
+def _path_like(prefix):
+    """LIKE pattern (ESCAPE '!') matching every path under `prefix`. Trailing
+    separators are stripped first — a drive-root library stores as "D:\\", and
+    appending os.sep to that made a pattern ("D:\\\\%") that matched nothing.
+    The prefix's own % and _ are escaped so a folder name containing them can't
+    match a sibling's assets."""
+    p = prefix.rstrip("/\\")
+    p = p.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+    return p + os.sep + "%"
+
+
 def remove_library(library_id):
     with connect() as conn:
         row = conn.execute("SELECT path FROM libraries WHERE id=?", (library_id,)).fetchone()
         if not row:
             return
-        prefix = row["path"]
         # Drop assets that lived under this library root.
-        conn.execute("DELETE FROM assets WHERE path LIKE ?", (prefix + os.sep + "%",))
+        conn.execute("DELETE FROM assets WHERE path LIKE ? ESCAPE '!'",
+                     (_path_like(row["path"]),))
         conn.execute("DELETE FROM libraries WHERE id=?", (library_id,))
+    purge_orphan_assets()
+
+
+def purge_orphan_assets():
+    """Delete asset rows that don't live under ANY current library root — ghosts
+    left behind when a root changed form (drive letter changed, folder moved and
+    re-added) or by the pre-0.15.6 removal bug that missed a drive-root
+    library's assets. Every asset comes from scanning a library, so with no
+    libraries left the index should be empty. Returns how many were removed."""
+    with connect() as conn:
+        roots = [r["path"] for r in conn.execute("SELECT path FROM libraries")]
+        if roots:
+            cond = " OR ".join("path LIKE ? ESCAPE '!'" for _ in roots)
+            cur = conn.execute(f"DELETE FROM assets WHERE NOT ({cond})",
+                               [_path_like(r) for r in roots])
+        else:
+            cur = conn.execute("DELETE FROM assets")
+        return cur.rowcount
 
 
 def list_libraries():

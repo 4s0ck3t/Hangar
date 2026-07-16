@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.5"
+__version__ = "0.15.6"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -70,6 +70,11 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="")
 store.init_db()
+# One-time sweep per start: drop asset rows no library covers any more (ghosts
+# from a removed drive-root library or a root that changed drive letter/path).
+_orphans = store.purge_orphan_assets()
+if _orphans:
+    print(f"[Hangar] removed {_orphans} indexed assets no library folder covers")
 
 # ---- background scan state ------------------------------------------------
 SCAN = {"running": False, "scanned": 0, "total": 0,
