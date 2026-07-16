@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS assets (
     description TEXT NOT NULL DEFAULT '',
     license     TEXT NOT NULL DEFAULT '',
     copyright   TEXT NOT NULL DEFAULT '',
+    content_hash     TEXT NOT NULL DEFAULT '',
+    content_hash_sig TEXT NOT NULL DEFAULT '',
     added_at    REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tags (
@@ -215,12 +217,18 @@ def init_db():
             ("description", "ALTER TABLE assets ADD COLUMN description TEXT NOT NULL DEFAULT ''"),
             ("license",     "ALTER TABLE assets ADD COLUMN license TEXT NOT NULL DEFAULT ''"),
             ("copyright",   "ALTER TABLE assets ADD COLUMN copyright TEXT NOT NULL DEFAULT ''"),
+            # Content-duplicate detection: BLAKE2b of the file's bytes, plus the
+            # size:mtime signature captured at hash time so a changed file gets
+            # re-hashed on the next duplicates scan.
+            ("content_hash",     "ALTER TABLE assets ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"),
+            ("content_hash_sig", "ALTER TABLE assets ADD COLUMN content_hash_sig TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in asset_cols:
                 conn.execute(ddl)
         # Safe now that set_key is guaranteed to exist (fresh CREATE TABLE or the
         # ALTER above). Must come after the migration — see the SCHEMA note.
         conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_set_key ON assets(set_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_assets_content_hash ON assets(content_hash)")
         # One-time backfill: rows indexed before set_key existed migrated in with
         # set_key='' and would collapse into a single group=set tile. Give every
         # asset its unique path, then re-derive proper map-set grouping for
@@ -620,6 +628,35 @@ def iter_thumb_targets():
     return [dict(r) for r in rows]
 
 
+def iter_dup_hash_targets():
+    """Assets that still need content-hashing for the duplicates view. Only
+    files whose byte size collides with another live file can possibly be exact
+    duplicates, and of those only ones never hashed — or whose file changed
+    since (the sig is size:mtime captured at hash time) — need work."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path, size, mtime, content_hash, content_hash_sig "
+            "FROM assets WHERE missing=0 AND size IN ("
+            "SELECT size FROM assets WHERE missing=0 "
+            "GROUP BY size HAVING COUNT(*) > 1)"
+        ).fetchall()
+    out = []
+    for r in rows:
+        sig = f"{r['size']}:{r['mtime']}"
+        if not r["content_hash"] or r["content_hash_sig"] != sig:
+            out.append({"id": r["id"], "path": r["path"], "sig": sig})
+    return out
+
+
+def set_content_hash(asset_id, content_hash, sig):
+    """Store one asset's content hash (empty hash = unreadable, retried on the
+    next duplicates scan only if the file's size/mtime changes)."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE assets SET content_hash=?, content_hash_sig=? WHERE id=?",
+            (content_hash, sig, asset_id))
+
+
 def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  folder="", favorite=False, sort="name", limit=200, offset=0,
                  group="", set_key="", with_categories=False,
@@ -632,12 +669,14 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
     if linked:
         clauses.append("a.blend_external_tex>0")   # .blend files referencing external textures
     if duplicates:
-        # Only assets whose file name (name+ext, case-insensitive) is shared by
-        # more than one indexed file — i.e. duplicate file names across folders.
+        # Only assets whose file CONTENT is byte-identical to another indexed
+        # file — same BLAKE2b hash, computed by the duplicates scan in app.py.
+        # A shared name is neither necessary (renamed copies still match) nor
+        # sufficient (same-named different files don't).
         clauses.append(
-            "LOWER(a.name || a.ext) IN ("
-            "SELECT LOWER(name || ext) FROM assets WHERE missing=0 "
-            "GROUP BY LOWER(name || ext) HAVING COUNT(*) > 1)"
+            "a.content_hash != '' AND a.content_hash IN ("
+            "SELECT content_hash FROM assets WHERE missing=0 AND content_hash != '' "
+            "GROUP BY content_hash HAVING COUNT(*) > 1)"
         )
     if missing_blend_textures:
         clauses.append("a.ext='.blend'")

@@ -174,7 +174,19 @@ def _save_downscaled(img, out, min_side=0):
         img = img.resize((round(img.width * scale), round(img.height * scale)),
                          Image.LANCZOS)
     img.thumbnail(THUMB_SIZE, Image.LANCZOS)
-    img.save(out, "JPEG", quality=90)
+    # Write to a temp file and swap it into place atomically: get_or_make() and
+    # has_cached_thumb() treat "file exists" as "file is ready", so a concurrent
+    # /api/thumb request must never catch a half-written JPEG — the browser
+    # would cache the truncated image for a week. The random suffix keeps two
+    # concurrent bakes of the same asset (warm pass + on-demand request) off
+    # each other's temp file.
+    tmp = out.with_name(f"{out.name}.{os.urandom(4).hex()}.part")
+    try:
+        img.save(tmp, "JPEG", quality=90)
+        os.replace(tmp, out)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     return True
 
 

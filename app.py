@@ -4,6 +4,7 @@ Run as a desktop app:   python desktop.py
 Run as a local web app: python app.py  (opens in your browser)
 """
 
+import hashlib
 import json
 import mimetypes
 import os
@@ -24,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.4"
+__version__ = "0.15.5"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -230,6 +231,73 @@ def _start_warm():
     with WARM_LOCK:
         WARM["running"] = True
     threading.Thread(target=_run_warm, args=(WARM_GEN,), daemon=True).start()
+
+
+# ---- duplicate detection ---------------------------------------------------
+# The Duplicates view groups files that are byte-identical, not merely
+# same-named. Opening the view kicks this pass: hash (BLAKE2b) every file whose
+# size collides with another file's — a unique size can't be an exact duplicate,
+# so most of the library is never read — and cache the hash in the DB keyed to
+# size+mtime, making every later pass nearly free.
+DUP = {"running": False, "done": 0, "total": 0, "current": "", "finished_at": 0}
+DUP_LOCK = threading.Lock()
+DUP_GEN = 0  # bumped per scan so a stale in-flight pass bows out
+
+
+def _hash_file(path):
+    h = hashlib.blake2b(digest_size=20)
+    with open(thumbs._fs(path), "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _run_dup_hash(generation):
+    try:
+        targets = store.iter_dup_hash_targets()
+    except Exception as e:
+        print(f"[Hangar] duplicates: could not list assets: {e}")
+        targets = []
+    with DUP_LOCK:
+        DUP.update(total=len(targets), done=0)
+    done = 0
+    for t in targets:
+        if generation != DUP_GEN:
+            return
+        try:
+            store.set_content_hash(t["id"], _hash_file(t["path"]), t["sig"])
+        except Exception as e:
+            # Unreadable right now (locked/offline) — record the attempt so the
+            # pass isn't retried until the file's size/mtime changes.
+            print(f"[Hangar] duplicates: hash failed for {t['path']}: {e}")
+            try:
+                store.set_content_hash(t["id"], "", t["sig"])
+            except Exception:
+                pass
+        done += 1
+        with DUP_LOCK:
+            DUP.update(done=done, current=t["path"])
+    with DUP_LOCK:
+        DUP.update(running=False, current="", finished_at=time.time())
+
+
+@app.post("/api/duplicates/scan")
+def duplicates_scan():
+    """Start (or report on) the content-hash pass backing the Duplicates view."""
+    global DUP_GEN
+    with DUP_LOCK:
+        if not DUP["running"]:
+            DUP_GEN += 1
+            DUP.update(running=True, done=0, total=0, current="")
+            threading.Thread(target=_run_dup_hash, args=(DUP_GEN,),
+                             daemon=True).start()
+        return jsonify(dict(DUP))
+
+
+@app.get("/api/duplicates/status")
+def duplicates_status():
+    with DUP_LOCK:
+        return jsonify(dict(DUP))
 
 
 # ---- pages ----------------------------------------------------------------

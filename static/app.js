@@ -1064,8 +1064,9 @@ async function refresh() {
   // shimmering placeholder tiles instead of a blank pane while we fetch.
   if (!$("#grid").querySelector(".card")) renderGridSkeleton();
   const f = state.filter;
-  // Duplicates view: every file whose name is shared by more than one file,
-  // grouped by name. It's its own mode, so it overrides the auto-groupings below.
+  // Duplicates view: every file that is byte-identical to at least one other
+  // file, grouped by content. It's its own mode, so it overrides the
+  // auto-groupings below.
   const dupes = f.duplicates;
   const noAuthor = f.noAuthor;   // standalone view: files with no Author set
   const linked = f.linked;       // standalone view: .blend files with linked textures
@@ -1102,14 +1103,14 @@ async function refresh() {
   if (linked) { p.set("linked", "1"); p.set("limit", "2000"); }
   // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each —
   // but NOT in the duplicates view, where every individual copy must show.
-  else p.set("group", "set");
+  else if (!dupes) p.set("group", "set");
   if (grouped) { p.set("with_categories", "1"); p.set("limit", "2000"); }
   if (folderGrouped) { p.set("limit", "2000"); }
   if (categoryFolderGrouped) { p.set("limit", "2000"); }
 
   const data = await api("assets?" + p.toString());
   recordThumbMtimes(data.assets);
-  if (dupes) renderGroupedByName(data.assets);
+  if (dupes) renderGroupedByContent(data.assets);
   else if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
   else if (categoryFolderGrouped) renderGroupedByFolder(data.assets, "", { parentOnly: true });
   else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
@@ -1341,10 +1342,12 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
   grid.scrollTop = 0;
 }
 
-// Duplicates view: one section per shared file name, each holding every copy so
-// you can compare and clean them up. Backend already limits the set to names
-// that occur more than once.
-function renderGroupedByName(assets) {
+// Duplicates view: one section per identical file CONTENT (same content hash),
+// each holding every byte-for-byte copy so you can compare and clean them up.
+// Backend already limits the set to hashes shared by more than one file, so a
+// renamed copy still groups with its original while two different files that
+// merely share a name stay apart.
+function renderGroupedByContent(assets) {
   const grid = $("#grid"); const empty = $("#emptyState");
   _vAssets = []; _vRange = { start: -1, end: -1 };
   _currentAssets = assets;
@@ -1354,16 +1357,26 @@ function renderGroupedByName(assets) {
   grid.classList.add("grouped");
   bindGridDragScroll();
 
-  const groups = new Map();  // lowercased file name → {label, key, items[]}
+  const groups = new Map();  // content hash → {names, key, items[], size}
   for (const a of assets) {
-    const fname = `${a.name}${a.ext}`;
-    const key = fname.toLowerCase();
-    if (!groups.has(key)) groups.set(key, { label: fname, key: `dup:${key}`, items: [] });
-    groups.get(key).items.push(a);
+    const key = a.content_hash || `id:${a.id}`;
+    if (!groups.has(key)) {
+      groups.set(key, { names: new Set(), key: `dup:${key}`, items: [], size: a.size || 0 });
+    }
+    const g = groups.get(key);
+    g.names.add(`${a.name}${a.ext}`);
+    g.items.push(a);
   }
 
-  const sections = [...groups.values()]
-    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+  // Label each group with the distinct file names its copies go by; biggest
+  // files first, since those are the ones worth cleaning up.
+  const sections = [...groups.values()].map((g) => {
+    const names = [...g.names];
+    g.label = names.slice(0, 3).join("  ·  ")
+      + (names.length > 3 ? `  (+${names.length - 3} more names)` : "");
+    return g;
+  }).sort((a, b) => (b.size - a.size)
+    || a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
 
   const ordered = [];
   const secOf = [];
@@ -1378,7 +1391,7 @@ function renderGroupedByName(assets) {
     head.innerHTML =
       `<span class="section-ico">⧉</span>` +
       `<span class="section-name">${esc(s.label)}</span>` +
-      `<span class="section-count">${s.items.length}</span>`;
+      `<span class="section-count">${s.items.length} × ${fmtSize(s.size)}</span>`;
     head.prepend(sectionCollapseButton(s.key, s.label));
     section.appendChild(head);
     const sgrid = document.createElement("div");
@@ -1489,7 +1502,20 @@ function buildCard(a, i) {
   const tile = card.querySelector(".badge-tile");
   const img = new Image();
   img.onload = () => { tile.replaceWith(img); };
-  img.onerror = () => { /* keep placeholder tile */ };
+  // One delayed retry with a cache-buster: a request that raced the warm pass,
+  // or a truncated JPEG an older build let the browser cache, heals itself
+  // instead of leaving the tile image-less until the next rebake. Genuinely
+  // thumb-less assets just 404 once more and keep the format badge.
+  let retriedThumb = false;
+  img.onerror = () => {
+    if (retriedThumb) return;
+    retriedThumb = true;
+    setTimeout(() => {
+      if (!card.isConnected) return;
+      const u = thumbUrl(a.id);
+      img.src = u + (u.includes("?") ? "&" : "?") + "r=" + Date.now();
+    }, 1200);
+  };
   img.src = thumbUrl(a.id);
   img.alt = a.name;
   // Without this the browser drags the thumbnail picture itself instead of the
@@ -3548,14 +3574,31 @@ function updateDupBtn() {
   const b = $("#dupBtn");
   if (b) b.classList.toggle("active", state.filter.duplicates);
 }
-$("#dupBtn").onclick = () => {
+$("#dupBtn").onclick = async () => {
   const on = !state.filter.duplicates;
   resetFilter();                 // duplicates is a standalone view
   state.filter.duplicates = on;
   state.search = ""; const s = $("#search"); if (s) s.value = "";
   updateDupBtn();
+  if (on) await ensureDupIndex();   // hash new/changed files before querying
   refresh();
 };
+
+// Content-duplicate detection happens server-side (files whose sizes collide
+// get content-hashed, results cached in the DB). Kick the pass and wait for it,
+// narrating progress in the header — instant once the library has been hashed.
+async function ensureDupIndex() {
+  renderGridSkeleton();
+  let s;
+  try { s = await api("duplicates/scan", { method: "POST" }); } catch (_) { return; }
+  while (s && s.running && state.filter.duplicates) {
+    $("#activeFilter").textContent = s.total
+      ? `⧉ Comparing file contents… ${s.done}/${s.total}`
+      : "⧉ Comparing file contents…";
+    await new Promise((r) => setTimeout(r, 400));
+    try { s = await api("duplicates/status"); } catch (_) { return; }
+  }
+}
 function updateNoAuthorBtn() {
   const b = $("#noAuthorBtn");
   if (b) b.classList.toggle("active", state.filter.noAuthor);
