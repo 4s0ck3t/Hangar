@@ -812,6 +812,74 @@ def extract_blend_thumbnail(path):
             pass
 
 
+def verify_blend(path):
+    """Structural integrity check of a .blend, no Blender needed: walk every
+    file-block header to the end and require both a DNA1 block and the ENDB
+    terminator. A save that was killed mid-write truncates the file, which is
+    exactly what Blender rejects as "Missing DNA block". Returns (ok, error).
+    """
+    import io
+    f = None
+    try:
+        f = open(_fs(path), "rb")
+        head = f.read(12)
+        if head[:2] == b"\x1f\x8b":              # gzip-compressed .blend
+            import gzip
+            f.close()
+            f = gzip.open(_fs(path), "rb")
+            head = f.read(12)
+        elif head[:4] == b"\x28\xb5\x2f\xfd":    # zstd (Blender 3.0+ default)
+            f.close()
+            raw = _zstd_decompress(path)
+            if raw is None:
+                return False, "Compressed data is unreadable (file truncated?)."
+            f = io.BytesIO(raw)
+            head = f.read(12)
+        if head[:7] != b"BLENDER":
+            return False, "Not a .blend header — the file start is overwritten or wrong."
+        is_64 = head[7:8] == b"-"
+        endian = "<" if head[8:9] == b"v" else ">"
+        bhead_size = 24 if is_64 else 20
+        saw_dna = False
+        while True:
+            bhead = f.read(bhead_size)
+            if len(bhead) < bhead_size:
+                return False, ("File ends mid-block — truncated "
+                               "(interrupted save). Missing DNA block."
+                               if not saw_dna else
+                               "File ends mid-block — truncated (interrupted save).")
+            code = bhead[:4]
+            length = struct.unpack(endian + "i", bhead[4:8])[0]
+            if length < 0:
+                return False, "Corrupt block header (negative length)."
+            if code == b"ENDB":
+                break
+            if code == b"DNA1":
+                saw_dna = True
+            f.seek(length, 1)
+        if not saw_dna:
+            return False, "Missing DNA block — the file was cut off mid-save."
+        return True, ""
+    except EOFError:
+        return False, "Compressed data ends early — truncated (interrupted save)."
+    except OSError as e:
+        return False, f"Unreadable: {e}"
+    except Exception as e:
+        return False, f"Parse failed: {e}"
+    finally:
+        try:
+            if f:
+                f.close()
+        except Exception:
+            pass
+
+
+def blend_backup_path(path):
+    """Blender keeps the previous version as <name>.blend1 when it saves — the
+    natural restore source for a truncated .blend."""
+    return str(path) + "1"
+
+
 def _blend_field_ident(name):
     """The bare C identifier from a DNA field name (`*mat[4]` -> `mat`)."""
     m = re.search(r"[A-Za-z_]\w*", name)

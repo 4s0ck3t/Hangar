@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS assets (
     copyright   TEXT NOT NULL DEFAULT '',
     content_hash     TEXT NOT NULL DEFAULT '',
     content_hash_sig TEXT NOT NULL DEFAULT '',
+    blend_corrupt    INTEGER NOT NULL DEFAULT 0,
     added_at    REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tags (
@@ -222,6 +223,9 @@ def init_db():
             # re-hashed on the next duplicates scan.
             ("content_hash",     "ALTER TABLE assets ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"),
             ("content_hash_sig", "ALTER TABLE assets ADD COLUMN content_hash_sig TEXT NOT NULL DEFAULT ''"),
+            # Set by the .blend health check: file failed structural verification
+            # (truncated / missing DNA block).
+            ("blend_corrupt",    "ALTER TABLE assets ADD COLUMN blend_corrupt INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in asset_cols:
                 conn.execute(ddl)
@@ -677,6 +681,33 @@ def iter_dup_hash_targets():
     return out
 
 
+def list_blend_assets():
+    """id + path of every live .blend, for the health check pass."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path FROM assets WHERE missing=0 AND ext='.blend' "
+            "ORDER BY path").fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_blend_corrupt(asset_id, corrupt):
+    with connect() as conn:
+        conn.execute("UPDATE assets SET blend_corrupt=? WHERE id=?",
+                     (1 if corrupt else 0, asset_id))
+
+
+def refresh_asset_file(asset_id, path):
+    """Re-stat a file after Hangar restored/replaced it on disk, so mtime/size
+    match the new content (and the thumb cache keys off the new state)."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return
+    with connect() as conn:
+        conn.execute("UPDATE assets SET size=?, mtime=?, missing=0 WHERE id=?",
+                     (st.st_size, st.st_mtime, asset_id))
+
+
 def set_content_hash(asset_id, content_hash, sig):
     """Store one asset's content hash (empty hash = unreadable, retried on the
     next duplicates scan only if the file's size/mtime changes)."""
@@ -691,8 +722,10 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  group="", set_key="", with_categories=False,
                  subtype="", resolution="", missing=False,
                  missing_blend_textures=False, duplicates=False, no_author=False,
-                 linked=False):
+                 linked=False, corrupt=False):
     clauses = ["a.missing=1"] if missing else ["a.missing=0"]
+    if corrupt:
+        clauses.append("a.blend_corrupt>0")   # damaged .blend files (health check)
     if no_author:
         clauses.append("(a.author='' OR a.author IS NULL)")
     if linked:

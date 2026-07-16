@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.8"
+__version__ = "0.15.9"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -317,6 +317,102 @@ def duplicates_status():
         return jsonify(dict(DUP))
 
 
+# ---- .blend health check ----------------------------------------------------
+# Walks every indexed .blend's file-block structure (pure Python, no Blender)
+# and flags files that are truncated / missing their DNA block — the damage an
+# interrupted save leaves behind, which Blender refuses to open. Each damaged
+# file also reports whether a .blend1 backup sits next to it for restore.
+HEALTH = {"running": False, "done": 0, "total": 0, "current": "",
+          "corrupt": [], "finished_at": 0}
+HEALTH_LOCK = threading.Lock()
+HEALTH_GEN = 0
+
+
+def _run_blend_health(generation):
+    try:
+        targets = store.list_blend_assets()
+    except Exception as e:
+        print(f"[Hangar] health: could not list assets: {e}")
+        targets = []
+    with HEALTH_LOCK:
+        HEALTH.update(total=len(targets), done=0, corrupt=[])
+    done = 0
+    corrupt = []
+    for t in targets:
+        if generation != HEALTH_GEN:
+            return
+        try:
+            ok, err = thumbs.verify_blend(t["path"])
+        except Exception as e:
+            ok, err = False, f"Check failed: {e}"
+        if not ok:
+            corrupt.append({
+                "id": t["id"], "path": t["path"], "error": err,
+                "has_backup": os.path.exists(
+                    thumbs._fs(thumbs.blend_backup_path(t["path"]))),
+            })
+        try:
+            store.set_blend_corrupt(t["id"], not ok)
+        except Exception:
+            pass
+        done += 1
+        with HEALTH_LOCK:
+            HEALTH.update(done=done, current=t["path"], corrupt=list(corrupt))
+    with HEALTH_LOCK:
+        HEALTH.update(running=False, current="", corrupt=list(corrupt),
+                      finished_at=time.time())
+
+
+@app.post("/api/blend-health/scan")
+def blend_health_scan():
+    global HEALTH_GEN
+    with HEALTH_LOCK:
+        if not HEALTH["running"]:
+            HEALTH_GEN += 1
+            HEALTH.update(running=True, done=0, total=0, corrupt=[], current="")
+            threading.Thread(target=_run_blend_health, args=(HEALTH_GEN,),
+                             daemon=True).start()
+        return jsonify(dict(HEALTH))
+
+
+@app.get("/api/blend-health/status")
+def blend_health_status():
+    with HEALTH_LOCK:
+        return jsonify(dict(HEALTH))
+
+
+@app.post("/api/assets/<int:asset_id>/restore-backup")
+def restore_blend_backup(asset_id):
+    """Replace a damaged .blend with its .blend1 sibling (Blender's previous-
+    version backup). The damaged file is kept next to it as .blend.corrupt, and
+    the backup is verified before it's used. Only copies — .blend1 stays put."""
+    asset = store.get_asset(asset_id)
+    if not asset or asset["ext"] != ".blend":
+        return jsonify({"error": "Asset not found or not a .blend."}), 404
+    path = asset["path"]
+    backup = thumbs.blend_backup_path(path)
+    if not os.path.exists(thumbs._fs(backup)):
+        return jsonify({"ok": False, "error": "No .blend1 backup exists next to this file."})
+    ok, err = thumbs.verify_blend(backup)
+    if not ok:
+        return jsonify({"ok": False,
+                        "error": f"The .blend1 backup is damaged too ({err}) — "
+                                 f"restore from your asset pack instead."})
+    try:
+        if os.path.exists(thumbs._fs(path)):
+            os.replace(thumbs._fs(path), thumbs._fs(path + ".corrupt"))
+        shutil.copy2(thumbs._fs(backup), thumbs._fs(path))
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"Restore failed: {e}"})
+    store.refresh_asset_file(asset_id, path)
+    ok, err = thumbs.verify_blend(path)
+    store.set_blend_corrupt(asset_id, not ok)
+    with HEALTH_LOCK:
+        HEALTH["corrupt"] = [c for c in HEALTH["corrupt"] if c["id"] != asset_id]
+    return jsonify({"ok": ok, "verified": ok,
+                    "error": "" if ok else f"Restored copy still fails: {err}"})
+
+
 # ---- pages ----------------------------------------------------------------
 
 @app.get("/")
@@ -508,6 +604,7 @@ def list_assets():
         duplicates=q.get("duplicates") == "1",
         no_author=q.get("no_author") == "1",
         linked=q.get("linked") == "1",
+        corrupt=q.get("corrupt") == "1",
     )
     return jsonify({"assets": assets, "total": total})
 
@@ -543,6 +640,11 @@ def asset_detail(asset_id):
         asset["vertices"], asset["faces"], asset["stats_done"] = v, f, 1
     # Whether the file is reachable right now, so the drawer can flag it.
     asset["exists"] = _accessible(asset["path"])
+    # For a damaged .blend (health check): is Blender's previous-version backup
+    # sitting next to it, so the drawer can offer one-click restore?
+    if asset["ext"] == ".blend" and asset.get("blend_corrupt"):
+        asset["blend_backup"] = os.path.exists(
+            thumbs._fs(thumbs.blend_backup_path(asset["path"])))
     # Whether a thumbnail is already cached, so the drawer can show it instantly
     # instead of re-running the 3D viewer on every open.
     asset["has_thumb"] = thumbs.has_cached_thumb(asset)

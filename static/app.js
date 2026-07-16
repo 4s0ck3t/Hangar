@@ -33,7 +33,7 @@ function loadCollapsed() {
 }
 const state = {
   filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
-            favorite: false, missing: false, missing_blend_textures: false, duplicates: false,
+            favorite: false, missing: false, missing_blend_textures: false, duplicates: false, corrupt: false,
             noAuthor: false, linked: false },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
@@ -671,7 +671,7 @@ function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
                    favorite: false, subtype: "", resolution: "", missing: false,
                    missing_blend_textures: false, duplicates: false, noAuthor: false,
-                   linked: false };
+                   linked: false, corrupt: false };
   _facetKindCache = {};
 }
 
@@ -681,7 +681,7 @@ function updateClearBtn() {
     || state.filter.collection || state.filter.category || state.filter.folder
     || state.filter.favorite || state.filter.missing || state.filter.missing_blend_textures || state.filter.subtype
     || state.filter.resolution || state.filter.duplicates || state.filter.noAuthor
-    || state.filter.linked || state.search;
+    || state.filter.linked || state.filter.corrupt || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
@@ -1070,7 +1070,8 @@ async function refresh() {
   const dupes = f.duplicates;
   const noAuthor = f.noAuthor;   // standalone view: files with no Author set
   const linked = f.linked;       // standalone view: .blend files with linked textures
-  const _std = dupes || noAuthor || linked;   // any standalone view suppresses auto-grouping
+  const corrupt = f.corrupt;     // standalone view: damaged .blend files (health check)
+  const _std = dupes || noAuthor || linked || corrupt;   // any standalone view suppresses auto-grouping
   // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
   // with no other filter splits the grid into category sections.
   const grouped = !_std && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
@@ -1101,9 +1102,10 @@ async function refresh() {
   if (dupes) { p.set("duplicates", "1"); p.set("limit", "2000"); }
   if (noAuthor) { p.set("no_author", "1"); p.set("limit", "2000"); }
   if (linked) { p.set("linked", "1"); p.set("limit", "2000"); }
+  if (corrupt) { p.set("corrupt", "1"); p.set("limit", "2000"); }
   // Collapse texture-map sets (diffuse+normal+roughness+…) into one tile each —
   // but NOT in the duplicates view, where every individual copy must show.
-  else if (!dupes) p.set("group", "set");
+  if (!linked && !dupes && !corrupt) p.set("group", "set");
   if (grouped) { p.set("with_categories", "1"); p.set("limit", "2000"); }
   if (folderGrouped) { p.set("limit", "2000"); }
   if (categoryFolderGrouped) { p.set("limit", "2000"); }
@@ -1126,6 +1128,7 @@ async function refresh() {
   updateDupBtn();
   updateNoAuthorBtn();
   updateLinkedBtn();
+  updateHealthBtn();
   updateFacetStrip();
 }
 
@@ -1415,7 +1418,8 @@ function renderGroupedByContent(assets) {
 }
 
 function updateActiveLabel(total) {
-  let label = state.filter.linked ? "🔗 Linked textures"
+  let label = state.filter.corrupt ? "🩺 Damaged .blend files"
+    : state.filter.linked ? "🔗 Linked textures"
     : state.filter.noAuthor ? "🏷 No author"
     : state.filter.duplicates ? "⧉ Duplicates"
     : state.filter.favorite ? "Favorites"
@@ -2783,6 +2787,9 @@ async function openDrawer(id, idx) {
       </div>
       <div class="d-path clickable" id="dPath" title="Open this file — ${esc(a.path)}">${esc(a.path)}</div>
       ${a.exists === false ? `<div class="d-missing">⚠ This file isn't accessible right now — the drive/folder may be disconnected, moved, or deleted. <button class="d-recheck" id="dRecheck">Recheck</button></div>` : ""}
+      ${a.blend_corrupt ? `<div class="d-missing">🩺 This .blend is damaged (truncated — Blender can't open it).${a.blend_backup
+        ? ` A .blend1 backup exists next to it. <button class="d-recheck" id="dRestoreBackup">Restore backup</button>`
+        : ` No .blend1 backup was found next to it — restore this file from its original asset pack.`}</div>` : ""}
       <div class="d-format-row">
         <span class="d-format-badge" style="color:${color};border-color:${color}40">${esc(ext)}</span>
         <span class="d-kind-label">${esc(a.kind)}</span>
@@ -2885,6 +2892,23 @@ async function openDrawer(id, idx) {
     } else {
       recheckBtn.disabled = false; recheckBtn.textContent = "Recheck";
       toast("Still not reachable — check the drive/folder is connected.", "error");
+    }
+  };
+
+  // Replace a damaged .blend with its .blend1 sibling (verified server-side
+  // first; the damaged file is kept as .blend.corrupt).
+  const restoreBtn = $("#dRestoreBackup");
+  if (restoreBtn) restoreBtn.onclick = async () => {
+    restoreBtn.disabled = true; restoreBtn.textContent = "Restoring…";
+    let r; try { r = await post(`assets/${a.id}/restore-backup`); } catch (_) { r = null; }
+    if (r && r.ok) {
+      toast("Restored from the .blend1 backup and verified. The damaged copy was kept as .blend.corrupt.", "success");
+      thumbBust[a.id] = Date.now();
+      openDrawer(a.id, drawerIdx);          // rebuild without the warning
+      refresh();                            // drop it from the damaged-files view
+    } else {
+      restoreBtn.disabled = false; restoreBtn.textContent = "Restore backup";
+      toast((r && r.error) || "Restore failed.", "error");
     }
   };
 
@@ -3624,6 +3648,38 @@ if (_linkedBtn) _linkedBtn.onclick = () => {
   state.filter.linked = on;
   state.search = ""; const s = $("#search"); if (s) s.value = "";
   updateLinkedBtn();
+  refresh();
+};
+function updateHealthBtn() {
+  const b = $("#healthBtn");
+  if (b) b.classList.toggle("active", state.filter.corrupt);
+}
+// File health: verify every .blend's structure server-side (catches files an
+// interrupted save truncated — the ones Blender rejects with "Missing DNA
+// block"), then show the damaged ones as a standalone view.
+const _healthBtn = $("#healthBtn");
+if (_healthBtn) _healthBtn.onclick = async () => {
+  const on = !state.filter.corrupt;
+  resetFilter();                 // damaged-files is a standalone view
+  state.filter.corrupt = on;
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  updateHealthBtn();
+  if (!on) { refresh(); return; }
+  renderGridSkeleton();
+  let st;
+  try { st = await api("blend-health/scan", { method: "POST" }); } catch (_) { refresh(); return; }
+  while (st && st.running && state.filter.corrupt) {
+    $("#activeFilter").textContent =
+      `🩺 Checking .blend files… ${st.done}/${st.total}`;
+    await new Promise((r) => setTimeout(r, 400));
+    try { st = await api("blend-health/status"); } catch (_) { break; }
+  }
+  if (!state.filter.corrupt) return;   // user moved on mid-scan
+  const bad = (st && st.corrupt) || [];
+  const restorable = bad.filter((c) => c.has_backup).length;
+  toast(bad.length
+    ? `🩺 ${bad.length} damaged .blend file${bad.length > 1 ? "s" : ""} found — ${restorable} restorable from .blend1 backups. Open one for details.`
+    : "🩺 All .blend files passed the structure check.");
   refresh();
 };
 
