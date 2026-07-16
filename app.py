@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.6"
+__version__ = "0.15.7"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -143,7 +143,7 @@ def _start_scan(libs):
 # scroll-render would.
 WARM = {"running": False, "done": 0, "total": 0, "rendered": 0, "failed": 0,
         "current": "", "blender": False, "last_error": "", "by_ext": {},
-        "finished_at": 0}
+        "finished_at": 0, "known_failed": 0}
 WARM_LOCK = threading.Lock()
 WARM_GEN = 0  # bumped on each new scan so an in-flight warm pass bows out
 
@@ -157,19 +157,28 @@ def _run_warm(generation):
             WARM.update(running=False, finished_at=time.time())
         return
     targets = []
+    known_failed = 0
     for asset in all_targets:
         if generation != WARM_GEN:
             return
         try:
-            if not thumbs.has_cached_thumb(asset):
-                targets.append(asset)
+            if thumbs.has_cached_thumb(asset):
+                continue
+            # Generation already failed for this exact file state (same path +
+            # mtime) — don't burn another pass on it. It retries when the file
+            # changes, on an explicit re-bake, or (for Blender-missing failures)
+            # as soon as a Blender is available.
+            if thumbs.get_thumb_failure(asset):
+                known_failed += 1
+                continue
+            targets.append(asset)
         except Exception:
             targets.append(asset)
     blender_ok = thumbs.blender_available()
     with WARM_LOCK:
         WARM.update(running=True, done=0, total=len(targets), rendered=0,
                     failed=0, current="", blender=blender_ok, last_error="",
-                    by_ext={}, finished_at=0)
+                    by_ext={}, finished_at=0, known_failed=known_failed)
     done = rendered = failed = 0
     last_error = ""
     # Per-extension outcome tally so diagnostics can show exactly what happened
@@ -203,6 +212,7 @@ def _run_warm(generation):
                     failed += 1; tally(ext, "fail")
                     last_error = ("Blender not found — install it or set its path "
                                   "in Hangar to preview USD/FBX/Alembic models.")
+                    thumbs.record_thumb_failure(asset, last_error, no_blender=True)
                 elif thumbs.render_model_preview(asset):
                     rendered += 1; tally(ext, "render")
                 else:
@@ -215,6 +225,8 @@ def _run_warm(generation):
             else:
                 failed += 1
                 tally(ext, "fail")        # no preview path for this kind/ext
+                thumbs.record_thumb_failure(
+                    asset, "No preview could be generated for this file.")
         except Exception as e:
             failed += 1; tally(ext, "fail")
             last_error = f"{e}  [{asset.get('path', '?')}]"
@@ -1444,6 +1456,18 @@ def render_model_preview(asset_id):
             "error": "Blender wasn't found. Click “Set Blender path” and "
                      "point Hangar at your blender executable.",
         }), 200
+    # Auto-triggered renders (drawer open, background tile fill) don't repeat an
+    # attempt that already failed for this exact file state; the explicit
+    # "Render preview" button sends force=1 to try again regardless.
+    force = bool((request.get_json(silent=True) or {}).get("force"))
+    if not force:
+        fail = thumbs.get_thumb_failure(asset)
+        if fail:
+            return jsonify({
+                "blender": True, "cached_failure": True,
+                "error": fail.get("reason") or "A previous render attempt failed.",
+                "log": str(thumbs.RENDER_LOG),
+            }), 200
     path = thumbs.render_model_preview(asset)
     if not path:
         return jsonify({

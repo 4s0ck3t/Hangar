@@ -2940,7 +2940,8 @@ async function openDrawer(id, idx) {
       const prev = lbl.textContent; btn.disabled = true;
       lbl.textContent = "Rendering in Blender…";
       toast("Rendering preview — this can take a moment.");
-      const r = await post(`assets/${a.id}/render`);
+      // force: the explicit button retries even a recorded past failure.
+      const r = await post(`assets/${a.id}/render`, { force: true });
       btn.disabled = false; lbl.textContent = prev;
       if (r.ok) {
         thumbBust[a.id] = Date.now();

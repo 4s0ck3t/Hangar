@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 from store import THUMB_DIR
@@ -99,12 +100,56 @@ def preview_source(asset):
     return {"has_thumb": True, "source": source, "engine": engine, "label": label}
 
 
+def _thumb_fail_path(asset):
+    return _thumb_path(asset).with_suffix(".fail")
+
+
+def record_thumb_failure(asset, reason, no_blender=False):
+    """Remember that preview generation failed for this exact file state, so the
+    warm pass stops re-attempting it after every scan. The marker shares the
+    thumbnail's cache key (path + mtime), so editing the file retires it
+    automatically; an explicit re-bake (delete_cached_thumb) clears it."""
+    try:
+        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        _thumb_fail_path(asset).write_text(json.dumps({
+            "reason": str(reason or "")[:500],
+            "no_blender": bool(no_blender),
+            "ts": time.time(),
+        }), encoding="utf-8")
+    except Exception:
+        log.exception("record_thumb_failure failed for %s", asset.get("path", "?"))
+
+
+def get_thumb_failure(asset):
+    """The recorded generation failure for this file state, or None. A failure
+    recorded only because Blender was missing stops counting the moment a
+    Blender is available, so those retry with no manual step."""
+    try:
+        p = _thumb_fail_path(asset)
+        if not p.exists():
+            return None
+        info = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if info.get("no_blender") and blender_available():
+        return None
+    return info
+
+
+def clear_thumb_failure(asset):
+    try:
+        _thumb_fail_path(asset).unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def delete_cached_thumb(asset):
     """Remove this asset's cached thumbnail JPEG, if present.
 
     Returns True when a file was actually deleted. The next get_or_make() call
     re-bakes the thumbnail from source — for a .blend that re-reads the preview
     embedded in the file, which is the fix for a tile that cached blank/stale."""
+    clear_thumb_failure(asset)   # an explicit re-bake retries a known failure
     try:
         out = _thumb_path(asset)
         if out.exists():
@@ -130,6 +175,7 @@ def get_or_make(asset):
     try:
         ok = source_maker(asset, out)
         if ok:
+            clear_thumb_failure(asset)
             return out
         if asset["kind"] == "hdri":
             log.warning("HDR/EXR thumb failed for %s (backends: %s)",
@@ -148,7 +194,10 @@ def save_thumbnail_bytes(asset, data):
         THUMB_DIR.mkdir(parents=True, exist_ok=True)
         with Image.open(io.BytesIO(data)) as img:
             img.load()
-            return _save_downscaled(img, _thumb_path(asset))
+            ok = _save_downscaled(img, _thumb_path(asset))
+            if ok:
+                clear_thumb_failure(asset)
+            return ok
     except Exception:
         log.exception("save_thumbnail_bytes failed for %s", asset.get("path", "?"))
         return False
@@ -2552,7 +2601,9 @@ def render_model_preview(asset):
     None. Works for any extension in BLENDER_RENDER_EXTS."""
     out = _thumb_path(asset)
     if render_model(asset["path"], out):
+        clear_thumb_failure(asset)
         return out
+    record_thumb_failure(asset, LAST_RENDER_ERROR or "Render produced no image.")
     return None
 
 
