@@ -193,6 +193,10 @@ def scan_library(library_path, on_file=None):
             ext = os.path.splitext(fname)[1].lower()
             if ext not in ALL_EXTS:
                 continue
+            # In-flight temp copies from Hangar's crash-safe .blend saves — not
+            # assets, and gone again the moment the save commits.
+            if fname.lower().endswith(".hangar-save.blend"):
+                continue
             full = os.path.join(root, fname)
             try:
                 st = os.stat(full)

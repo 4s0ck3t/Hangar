@@ -1281,6 +1281,55 @@ def _blend_asset_dir(path):
 #           "extract" = export previews for already-marked datablocks only
 #   target: "objects" | "collections" | "materials" | "all"
 # Writes <outdir>/manifest.json = [{"name","kind","file"}] and one PNG per asset.
+# Prepended to every Blender script that saves the user's .blend. The original
+# file is NEVER overwritten by Blender itself: the script writes a finished
+# copy alongside it, and Hangar swaps it into place only after Blender has
+# exited cleanly (see _commit_blend_save). A save killed mid-write — the
+# subprocess timeout, a crash, a shutdown — can then at worst leave a stale
+# temp file, never a truncated .blend ("Missing DNA block").
+_SAFE_SAVE_SNIPPET = r'''
+import bpy
+
+
+def hangar_safe_save(compress=False):
+    tmp = bpy.data.filepath + ".hangar-save.blend"
+    bpy.ops.wm.save_as_mainfile(filepath=tmp, copy=True, compress=bool(compress))
+    print("HANGAR_SAVED_TMP", flush=True)
+'''
+
+BLEND_SAVE_TMP_SUFFIX = ".hangar-save.blend"
+
+
+def _blend_save_tmp(blend_path):
+    return str(blend_path) + BLEND_SAVE_TMP_SUFFIX
+
+
+def _cleanup_blend_save_tmp(blend_path):
+    try:
+        os.unlink(_fs(_blend_save_tmp(blend_path)))
+    except OSError:
+        pass
+
+
+def _commit_blend_save(blend_path, proc):
+    """Swap a write script's finished temp copy over the original .blend.
+    Returns None on success, else a human-readable error. Only acts when the
+    script printed HANGAR_SAVED_TMP (i.e. Blender finished writing); in every
+    failure mode the original file is left untouched."""
+    tmp = _blend_save_tmp(blend_path)
+    if "HANGAR_SAVED_TMP" not in (getattr(proc, "stdout", "") or ""):
+        _cleanup_blend_save_tmp(blend_path)
+        return ("Blender didn't finish writing the file — "
+                "your original .blend was left untouched.")
+    try:
+        os.replace(_fs(tmp), _fs(blend_path))
+        return None
+    except OSError as e:
+        _cleanup_blend_save_tmp(blend_path)
+        return (f"Couldn't swap the saved file into place ({e}) — "
+                f"your original .blend was left untouched.")
+
+
 _MARK_ASSETS_SCRIPT = r'''
 import bpy, sys, os, json, re
 
@@ -1353,7 +1402,7 @@ def main():
         # Cycles renders in background mode and can crash. Names are enough;
         # Blender generates previews the next time the file is opened normally.
         try:
-            bpy.ops.wm.save_mainfile(compress=bpy.data.use_autopack)
+            hangar_safe_save(compress=bpy.data.use_autopack)
         except Exception as e:
             print("HANGAR_MARK_SAVE_FAIL:", e, flush=True)
 
@@ -1373,7 +1422,7 @@ def main():
             except Exception as e:
                 print("HANGAR_UNMARK_SKIP:", getattr(db, "name", "?"), e, flush=True)
         try:
-            bpy.ops.wm.save_mainfile(compress=bpy.data.use_autopack)
+            hangar_safe_save(compress=bpy.data.use_autopack)
         except Exception as e:
             print("HANGAR_UNMARK_SAVE_FAIL:", e, flush=True)
 
@@ -1455,7 +1504,7 @@ if "tags" in meta and meta["tags"] is not None:
         if t:
             ad.tags.new(t)
 try:
-    bpy.ops.wm.save_mainfile()
+    hangar_safe_save()
     print("HANGAR_META_DONE:", name)
 except Exception as e:
     print("HANGAR_META_FAIL:", e)
@@ -1473,11 +1522,12 @@ def write_blend_asset_meta(blend_path, name, kind, meta):
         return {"ok": False, "error": "File isn't accessible right now."}
     import subprocess
     import tempfile
+    _cleanup_blend_save_tmp(blend_path)   # stale copy from an earlier kill
     with tempfile.TemporaryDirectory() as td:
         script = os.path.join(td, "hangar_write_meta.py")
         metafile = os.path.join(td, "meta.json")
         with open(script, "w", encoding="utf-8") as fh:
-            fh.write(_WRITE_META_SCRIPT)
+            fh.write(_SAFE_SAVE_SNIPPET + _WRITE_META_SCRIPT)
         with open(metafile, "w", encoding="utf-8") as fh:
             json.dump(meta, fh)
         try:
@@ -1495,7 +1545,11 @@ def write_blend_asset_meta(blend_path, name, kind, meta):
             return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
     _record_render_log(blender, blend_path, proc)
     if "HANGAR_META_DONE" in (proc.stdout or ""):
+        save_err = _commit_blend_save(blend_path, proc)
+        if save_err:
+            return {"ok": False, "error": save_err}
         return {"ok": True}
+    _cleanup_blend_save_tmp(blend_path)
     if "not found" in (proc.stdout or ""):
         return {"ok": False, "error": f"Couldn't find “{name}” in the file."}
     return {"ok": False, "error": _render_failure_summary(proc)}
@@ -1521,7 +1575,7 @@ for img in list(bpy.data.images):
         failed += 1
         print("HANGAR_PACK_SKIP:", img.name, e, flush=True)
 try:
-    bpy.ops.wm.save_mainfile()
+    hangar_safe_save()
     print("HANGAR_PACK_DONE: packed=%d failed=%d" % (packed, failed), flush=True)
 except Exception as e:
     print("HANGAR_PACK_FAIL:", e, flush=True)
@@ -1540,10 +1594,11 @@ def pack_blend_textures(blend_path):
         return {"ok": False, "error": "File isn't accessible right now."}
     import subprocess
     import tempfile
+    _cleanup_blend_save_tmp(blend_path)   # stale copy from an earlier kill
     with tempfile.TemporaryDirectory() as td:
         script = os.path.join(td, "hangar_pack.py")
         with open(script, "w", encoding="utf-8") as fh:
-            fh.write(_PACK_TEXTURES_SCRIPT)
+            fh.write(_SAFE_SAVE_SNIPPET + _PACK_TEXTURES_SCRIPT)
         try:
             proc = subprocess.run(
                 [blender, "--background", "--factory-startup", "--disable-autoexec",
@@ -1560,7 +1615,11 @@ def pack_blend_textures(blend_path):
     _record_render_log(blender, blend_path, proc)
     m = re.search(r"HANGAR_PACK_DONE: packed=(\d+) failed=(\d+)", proc.stdout or "")
     if m:
+        save_err = _commit_blend_save(blend_path, proc)
+        if save_err:
+            return {"ok": False, "error": save_err}
         return {"ok": True, "packed": int(m.group(1)), "failed": int(m.group(2))}
+    _cleanup_blend_save_tmp(blend_path)
     return {"ok": False, "error": _render_failure_summary(proc)}
 
 
@@ -1636,10 +1695,11 @@ def _run_blend_assets(blender, blend_path, action, target):
     import tempfile
     outdir = _blend_asset_dir(blend_path)
     outdir.mkdir(parents=True, exist_ok=True)
+    _cleanup_blend_save_tmp(blend_path)   # stale copy from an earlier kill
     with tempfile.TemporaryDirectory() as td:
         script = os.path.join(td, "hangar_mark_assets.py")
         with open(script, "w", encoding="utf-8") as fh:
-            fh.write(_MARK_ASSETS_SCRIPT)
+            fh.write(_SAFE_SAVE_SNIPPET + _MARK_ASSETS_SCRIPT)
         try:
             proc = subprocess.run(
                 [blender, "--background", "--factory-startup", "--disable-autoexec",
@@ -1657,7 +1717,11 @@ def _run_blend_assets(blender, blend_path, action, target):
     m = re.search(r"HANGAR_MARK_DONE: marked=(\d+) unmarked=(\d+)", proc.stdout or "")
     if not m:
         # DONE line never printed — script failed before finishing
+        _cleanup_blend_save_tmp(blend_path)
         return {"ok": False, "error": _render_failure_summary(proc)}
+    save_err = _commit_blend_save(blend_path, proc)
+    if save_err:
+        return {"ok": False, "error": save_err}
     marked = int(m.group(1))
     unmarked = int(m.group(2))
     return {"ok": True, "marked": marked, "unmarked": unmarked,
