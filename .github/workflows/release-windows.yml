@@ -84,6 +84,8 @@ jobs:
           --exclude-module pythonnet
           --exclude-module clr
           --exclude-module clr_loader
+          --exclude-module tkinter
+          --exclude-module _tkinter
           desktop.py
 
       - name: Self-test native webview (diagnostic — never fails the build)

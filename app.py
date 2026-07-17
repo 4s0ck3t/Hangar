@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.10"
+__version__ = "0.15.11"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -568,9 +568,36 @@ def pick_folder():
     """Open a native OS folder chooser (browser-mode fallback).
 
     The desktop app runs in an Edge/Chrome --app window (no JS bridge), so this
-    Tk-based server-side picker handles folder selection there and in a plain
-    browser. The frontend falls back to a path prompt if Tk is unavailable.
+    server-side picker handles folder selection there and in a plain browser.
+    On Windows it shells out to PowerShell's FolderBrowserDialog — always
+    present, and it keeps tkinter (whose bundled Tcl data broke fresh installs
+    when PyInstaller's collection changed) out of the frozen build entirely.
+    Elsewhere (dev installs) Tk remains the fallback; the frontend falls back
+    to a typed-path prompt if neither is available.
     """
+    if platform.system() == "Windows":
+        ps = (
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+            "Add-Type -AssemblyName System.Windows.Forms; "
+            "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+            "$d.Description = 'Choose an asset folder'; "
+            "$d.ShowNewFolderButton = $true; "
+            "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }"
+        )
+        try:
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden",
+                 "-Command", ps],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=600, **thumbs._no_window(),
+            )
+            path = (proc.stdout or "").strip()
+            return jsonify({"path": path or None, "cancelled": not path})
+        except subprocess.TimeoutExpired:
+            return jsonify({"path": None, "cancelled": True})
+        except Exception as e:
+            return jsonify({"path": None, "error": str(e),
+                            "unsupported": True}), 200
     try:
         import tkinter as tk
         from tkinter import filedialog
