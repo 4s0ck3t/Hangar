@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.12"
+__version__ = "0.15.13"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -513,6 +513,20 @@ def _run_repair_all(generation):
                           failed=failed, failures=list(failures))
     with REPAIR_LOCK:
         REPAIR.update(running=False, current="", finished_at=time.time())
+    # Persist the outcome: the run can take many minutes and the user may have
+    # walked away (or restarted Hangar) — the damaged-files view shows this
+    # summary until the next run instead of relying on a transient toast. An
+    # empty run (nothing was flagged) doesn't overwrite the last real one.
+    if not targets:
+        return
+    try:
+        store.set_setting("last_repair_summary", json.dumps({
+            "finished_at": time.time(), "total": len(targets),
+            "restored": restored, "repaired": repaired, "failed": failed,
+            "failures": failures[:100],
+        }))
+    except Exception:
+        pass
 
 
 @app.post("/api/blend-health/repair-all")
@@ -531,7 +545,13 @@ def blend_repair_all():
 @app.get("/api/blend-health/repair-status")
 def blend_repair_status():
     with REPAIR_LOCK:
-        return jsonify(dict(REPAIR))
+        out = dict(REPAIR)
+    try:
+        raw = store.get_setting("last_repair_summary")
+        out["last"] = json.loads(raw) if raw else None
+    except Exception:
+        out["last"] = None
+    return jsonify(out)
 
 
 # ---- pages ----------------------------------------------------------------

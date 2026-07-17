@@ -3677,6 +3677,49 @@ function updateHealthBtn() {
   // "Repair all" only makes sense inside the damaged-files view.
   const r = $("#repairAllBtn");
   if (r) r.classList.toggle("hidden", !state.filter.corrupt);
+  updateHealthSummaryBanner();
+}
+
+// Persistent banner above the damaged-files grid: live per-file progress while
+// a Repair-all run is going (self-repolls, so re-entering the view mid-run
+// picks it back up), and the last run's outcome — with every failure and its
+// reason — afterwards. The server stores the summary, so it survives restarts;
+// a fleeting toast is not the record of a multi-minute batch.
+let _hsPolling = false;
+async function updateHealthSummaryBanner() {
+  const el = $("#healthSummary");
+  if (!el) return;
+  if (!state.filter.corrupt) { el.classList.add("hidden"); return; }
+  let st;
+  try { st = await api("blend-health/repair-status"); }
+  catch (_) { el.classList.add("hidden"); return; }
+  if (!state.filter.corrupt) { el.classList.add("hidden"); return; }  // view changed mid-fetch
+  if (st.running) {
+    el.innerHTML = `🛠 Fixing damaged files… <b>${st.done}</b>/${st.total} ` +
+      `<span class="hs-dim">${esc(baseName(st.current || ""))} — restored ${st.restored}, ` +
+      `rebuilt ${st.repaired}, beyond saving ${st.failed}</span>`;
+    el.classList.remove("hidden");
+    if (!_hsPolling) {
+      _hsPolling = true;
+      setTimeout(() => { _hsPolling = false; updateHealthSummaryBanner(); }, 800);
+    }
+    return;
+  }
+  const last = st.finished_at ? st : st.last;
+  if (!last || !last.total) { el.classList.add("hidden"); return; }
+  const when = last.finished_at
+    ? new Date(last.finished_at * 1000).toLocaleString() : "";
+  let html = `🛠 Last repair run${when ? ` <span class="hs-dim">(${esc(when)})</span>` : ""}: ` +
+    `<b>${last.restored}</b> restored from .blend1, <b>${last.repaired}</b> rebuilt` +
+    `<span class="${last.failed ? "hs-fail" : ""}">, <b>${last.failed}</b> beyond saving</span>.`;
+  if (last.failed && last.failures && last.failures.length) {
+    html += `<div class="hs-dim">These couldn't be fixed — restore them from their asset packs:</div><ul>`;
+    html += last.failures.map((f) =>
+      `<li><b>${esc(baseName(f.path))}</b> <span class="hs-dim" title="${esc(f.path)}">${esc(f.error)}</span></li>`).join("");
+    html += `</ul>`;
+  }
+  el.innerHTML = html;
+  el.classList.remove("hidden");
 }
 // File health: verify every .blend's structure server-side (catches files an
 // interrupted save truncated — the ones Blender rejects with "Missing DNA
@@ -3722,6 +3765,7 @@ if (_repairAllBtn) _repairAllBtn.onclick = async () => {
   let st;
   try { st = await api("blend-health/repair-all", { method: "POST" }); }
   catch (_) { _repairAllBtn.disabled = false; return; }
+  updateHealthSummaryBanner();   // show live progress in the banner immediately
   while (st && st.running) {
     $("#activeFilter").textContent = st.total
       ? `🛠 Fixing damaged files… ${st.done}/${st.total}`

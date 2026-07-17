@@ -1220,3 +1220,18 @@ button, input, select { font-family: inherit; color: inherit; }
   font-family: var(--mono); font-size: 10px; color: var(--faint);
   word-break: break-all; line-height: 1.4;
 }
+
+/* Damaged-files view: persistent repair progress / last-run summary banner */
+.health-summary {
+  margin: 10px 14px 0; padding: 10px 14px; border-radius: var(--radius);
+  background: var(--raised); border: 1px solid var(--line);
+  color: var(--ink); font-size: 13px; line-height: 1.55;
+}
+.health-summary b { color: var(--signal); }
+.health-summary .hs-fail b, .health-summary .hs-fail { color: var(--warn); }
+.health-summary .hs-dim { color: var(--mute); }
+.health-summary ul {
+  margin: 6px 0 0; padding-left: 18px; max-height: 150px; overflow-y: auto;
+}
+.health-summary li { color: var(--mute); }
+.health-summary li b { color: var(--ink); }
