@@ -2789,7 +2789,7 @@ async function openDrawer(id, idx) {
       ${a.exists === false ? `<div class="d-missing">⚠ This file isn't accessible right now — the drive/folder may be disconnected, moved, or deleted. <button class="d-recheck" id="dRecheck">Recheck</button></div>` : ""}
       ${a.blend_corrupt ? `<div class="d-missing">🩺 This .blend is damaged (truncated — Blender can't open it).${a.blend_backup
         ? ` A .blend1 backup exists next to it. <button class="d-recheck" id="dRestoreBackup">Restore backup</button>`
-        : ` No .blend1 backup was found next to it — restore this file from its original asset pack.`}</div>` : ""}
+        : ` No .blend1 backup was found. Hangar can try to rebuild it — everything saved before the cut-off is salvageable; anything after it is gone. <button class="d-recheck" id="dRepairBlend">Attempt repair</button>`}</div>` : ""}
       <div class="d-format-row">
         <span class="d-format-badge" style="color:${color};border-color:${color}40">${esc(ext)}</span>
         <span class="d-kind-label">${esc(a.kind)}</span>
@@ -2909,6 +2909,27 @@ async function openDrawer(id, idx) {
     } else {
       restoreBtn.disabled = false; restoreBtn.textContent = "Restore backup";
       toast((r && r.error) || "Restore failed.", "error");
+    }
+  };
+
+  // Rebuild a truncated .blend (trim + DNA graft from a same-version donor,
+  // verified by actually opening it in Blender before it's swapped in).
+  const repairBtn = $("#dRepairBlend");
+  if (repairBtn) repairBtn.onclick = async () => {
+    repairBtn.disabled = true; repairBtn.textContent = "Repairing…";
+    toast("Attempting repair — Blender will verify the result, this can take a minute.");
+    let r; try { r = await post(`assets/${a.id}/repair`); } catch (_) { r = null; }
+    if (r && r.ok) {
+      const what = r.objects >= 0 ? `${r.objects} object${r.objects === 1 ? "" : "s"} recovered` : "verified";
+      toast(`Repaired and opened in Blender — ${what}. ` +
+            `${fmtSize(r.lost_bytes)} at the end of the file was beyond saving. ` +
+            `The damaged copy was kept as .blend.corrupt.`, "success");
+      thumbBust[a.id] = Date.now();
+      openDrawer(a.id, drawerIdx);
+      refresh();
+    } else {
+      repairBtn.disabled = false; repairBtn.textContent = "Attempt repair";
+      toast((r && r.error) || "Repair failed.", "error");
     }
   };
 

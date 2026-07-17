@@ -880,6 +880,196 @@ def blend_backup_path(path):
     return str(path) + "1"
 
 
+def _read_blend_raw_tolerant(path):
+    """Read a .blend's uncompressed bytes, salvaging as much as possible from a
+    truncated file. For compressed files (gzip / zstd) every complete
+    compression frame decodes; only the frame the cut landed in is lost."""
+    import io
+    try:
+        with open(_fs(path), "rb") as fh:
+            magic = fh.read(4)
+    except OSError:
+        return None
+    out = io.BytesIO()
+    try:
+        if magic[:2] == b"\x1f\x8b":                    # gzip
+            import gzip
+            with gzip.open(_fs(path), "rb") as fh:
+                try:
+                    while True:
+                        chunk = fh.read(1 << 20)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                except (EOFError, OSError):
+                    pass                                 # keep what decoded
+        elif magic == b"\x28\xb5\x2f\xfd":              # zstd
+            try:
+                import zstandard
+            except ImportError:
+                return None
+            with open(_fs(path), "rb") as fh:
+                reader = zstandard.ZstdDecompressor().stream_reader(
+                    fh, read_across_frames=True)
+                try:
+                    while True:
+                        chunk = reader.read(1 << 20)
+                        if not chunk:
+                            break
+                        out.write(chunk)
+                except zstandard.ZstdError:
+                    pass                                 # keep complete frames
+        else:
+            with open(_fs(path), "rb") as fh:
+                return fh.read()
+    except OSError:
+        return None
+    return out.getvalue()
+
+
+def _extract_dna1(donor_path, want_head):
+    """The (header + data) bytes of a donor .blend's DNA1 block — but only when
+    the donor's 12-byte file header matches the damaged file's exactly (same
+    Blender version, pointer size, endianness), since SDNA describes that
+    specific build's structs."""
+    raw = _read_blend_raw_tolerant(donor_path)
+    if not raw or len(raw) < 12 or raw[:12] != want_head:
+        return None
+    is_64 = raw[7:8] == b"-"
+    endian = "<" if raw[8:9] == b"v" else ">"
+    bh = 24 if is_64 else 20
+    pos = 12
+    while pos + bh <= len(raw):
+        code = raw[pos:pos + 4]
+        length = struct.unpack(endian + "i", raw[pos + 4:pos + 8])[0]
+        if length < 0 or code == b"ENDB":
+            return None
+        if pos + bh + length > len(raw):
+            return None
+        if code == b"DNA1":
+            return raw[pos:pos + bh + length]
+        pos += bh + length
+    return None
+
+
+def repair_blend(path, donor_paths=()):
+    """Best-effort reconstruction of a truncated .blend (interrupted save).
+
+    Everything Blender wrote before the cut is intact on disk; what's missing
+    is the tail — usually including the DNA1 struct catalog, without which
+    Blender refuses the whole file. DNA1 depends only on the Blender build
+    that saved the file, NOT on the file's content, so a DNA1 grafted from any
+    healthy file saved by the same version lets Blender load every complete
+    datablock again. Data after the cut is unrecoverable.
+
+    Writes the rebuilt file (uncompressed) to <path>.hangar-repair.blend and
+    returns {"ok", "error", "method", "out_path", "blocks", "lost_bytes",
+    "donor"}. Never touches the original."""
+    raw = _read_blend_raw_tolerant(path)
+    if raw is None or len(raw) < 12 or raw[:7] != b"BLENDER":
+        return {"ok": False, "error": "The file's own header is gone — "
+                                      "nothing left to recover."}
+    head = raw[:12]
+    is_64 = head[7:8] == b"-"
+    endian = "<" if head[8:9] == b"v" else ">"
+    bh = 24 if is_64 else 20
+    pos = 12
+    end_complete = 12
+    blocks = 0
+    saw_dna = False
+    while pos + bh <= len(raw):
+        code = raw[pos:pos + 4]
+        length = struct.unpack(endian + "i", raw[pos + 4:pos + 8])[0]
+        if length < 0 or code == b"ENDB":
+            break
+        if pos + bh + length > len(raw):
+            break                                       # partial block — cut here
+        if code == b"DNA1":
+            saw_dna = True
+        pos += bh + length
+        end_complete = pos
+        blocks += 1
+    if blocks == 0:
+        return {"ok": False, "error": "No complete data blocks survived — "
+                                      "the file can't be repaired."}
+    endb = b"ENDB" + struct.pack(endian + "i", 0) + b"\0" * (bh - 8)
+    donor_used = ""
+    if saw_dna:
+        rebuilt = raw[:end_complete] + endb             # only the tail marker lost
+        method = "terminator"
+    else:
+        dna = None
+        for dp in donor_paths:
+            try:
+                dna = _extract_dna1(dp, head)
+            except Exception:
+                dna = None
+            if dna:
+                donor_used = str(dp)
+                break
+        if not dna:
+            ver = head[9:12].decode("ascii", "replace")
+            return {"ok": False, "error":
+                    f"No healthy .blend saved by the same Blender version "
+                    f"({ver[0]}.{ver[1:]}) was found to borrow the DNA catalog "
+                    f"from — add one to a library and retry."}
+        rebuilt = raw[:end_complete] + dna + endb
+        method = "dna-graft"
+    out_path = str(path) + ".hangar-repair.blend"
+    try:
+        with open(_fs(out_path), "wb") as fh:
+            fh.write(rebuilt)
+    except OSError as e:
+        return {"ok": False, "error": f"Couldn't write the repaired file: {e}"}
+    ok, err = verify_blend(out_path)
+    if not ok:
+        try:
+            os.unlink(_fs(out_path))
+        except OSError:
+            pass
+        return {"ok": False, "error": f"Rebuild failed verification: {err}"}
+    return {"ok": True, "error": "", "method": method, "out_path": out_path,
+            "blocks": blocks, "lost_bytes": max(0, len(raw) - end_complete),
+            "donor": donor_used}
+
+
+def blender_load_test(path, timeout=300):
+    """Open a .blend in headless Blender to prove it actually loads. Returns
+    (ok, error, object_count). With no Blender available returns (True, "", -1)
+    — the structural check is then the only gate. A failed load leaves
+    bpy.data.filepath empty (Blender falls back to the startup file), which is
+    what distinguishes success from Blender soldiering on after an error."""
+    import subprocess
+    import tempfile
+    blender = find_blender()
+    if not blender:
+        return True, "", -1
+    script = ("import bpy\n"
+              "if bpy.data.filepath:\n"
+              "    print('HANGAR_LOAD_OK objects=%d' % len(bpy.data.objects), flush=True)\n"
+              "else:\n"
+              "    print('HANGAR_LOAD_EMPTY', flush=True)\n")
+    with tempfile.TemporaryDirectory() as td:
+        sp = os.path.join(td, "hangar_load_test.py")
+        with open(sp, "w", encoding="utf-8") as fh:
+            fh.write(script)
+        try:
+            proc = subprocess.run(
+                [blender, "--background", "--factory-startup",
+                 "--disable-autoexec", path, "-P", sp],
+                timeout=min(timeout, RENDER_TIMEOUT), capture_output=True,
+                text=True, env=_blender_env(), **_no_window(),
+            )
+        except subprocess.TimeoutExpired:
+            return False, "Blender timed out opening the repaired file.", -1
+        except Exception as e:
+            return False, f"Couldn't launch Blender: {e}", -1
+    m = re.search(r"HANGAR_LOAD_OK objects=(\d+)", proc.stdout or "")
+    if m:
+        return True, "", int(m.group(1))
+    return False, _render_failure_summary(proc) or "Blender couldn't load it.", -1
+
+
 def _blend_field_ident(name):
     """The bare C identifier from a DNA field name (`*mat[4]` -> `mat`)."""
     m = re.search(r"[A-Za-z_]\w*", name)

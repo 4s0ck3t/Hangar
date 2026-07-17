@@ -690,6 +690,20 @@ def list_blend_assets():
     return [dict(r) for r in rows]
 
 
+def donor_blend_candidates(path, limit=60):
+    """Healthy .blend files to borrow a DNA1 catalog from when repairing
+    `path` — same-folder files first (an asset pack is usually saved by one
+    Blender version), smallest first (donors get read in full)."""
+    folder = os.path.dirname(path)
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT path FROM assets WHERE ext='.blend' AND missing=0 "
+            "AND blend_corrupt=0 AND path!=? "
+            "ORDER BY CASE WHEN path LIKE ? THEN 0 ELSE 1 END, size ASC LIMIT ?",
+            (path, folder + os.sep + "%", limit)).fetchall()
+    return [r["path"] for r in rows]
+
+
 def set_blend_corrupt(asset_id, corrupt):
     with connect() as conn:
         conn.execute("UPDATE assets SET blend_corrupt=? WHERE id=?",

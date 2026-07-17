@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.9"
+__version__ = "0.15.10"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -411,6 +411,45 @@ def restore_blend_backup(asset_id):
         HEALTH["corrupt"] = [c for c in HEALTH["corrupt"] if c["id"] != asset_id]
     return jsonify({"ok": ok, "verified": ok,
                     "error": "" if ok else f"Restored copy still fails: {err}"})
+
+
+@app.post("/api/assets/<int:asset_id>/repair")
+def repair_asset(asset_id):
+    """Rebuild a truncated .blend: trim to the last complete block, graft a
+    DNA1 catalog from a healthy same-version donor file if the original's was
+    lost, terminate with ENDB, then prove the result opens in Blender before
+    swapping it in. Salvages everything saved before the cut; data after it is
+    gone. The damaged file is kept as .blend.corrupt."""
+    asset = store.get_asset(asset_id)
+    if not asset or asset["ext"] != ".blend":
+        return jsonify({"error": "Asset not found or not a .blend."}), 404
+    path = asset["path"]
+    donors = store.donor_blend_candidates(path)
+    result = thumbs.repair_blend(path, donors)
+    if not result.get("ok"):
+        return jsonify({"ok": False, "error": result.get("error", "Repair failed.")})
+    out = result["out_path"]
+    loaded, err, n_objects = thumbs.blender_load_test(out)
+    if not loaded:
+        try:
+            os.unlink(thumbs._fs(out))
+        except OSError:
+            pass
+        return jsonify({"ok": False, "error":
+                        f"Rebuilt the file, but Blender still can't open it ({err}). "
+                        f"Too much was lost — restore it from your asset pack."})
+    try:
+        os.replace(thumbs._fs(path), thumbs._fs(path + ".corrupt"))
+        os.replace(thumbs._fs(out), thumbs._fs(path))
+    except OSError as e:
+        return jsonify({"ok": False, "error": f"Couldn't swap the repaired file in: {e}"})
+    store.refresh_asset_file(asset_id, path)
+    store.set_blend_corrupt(asset_id, False)
+    with HEALTH_LOCK:
+        HEALTH["corrupt"] = [c for c in HEALTH["corrupt"] if c["id"] != asset_id]
+    return jsonify({"ok": True, "method": result["method"],
+                    "objects": n_objects, "lost_bytes": result["lost_bytes"],
+                    "donor": os.path.basename(result.get("donor") or "")})
 
 
 # ---- pages ----------------------------------------------------------------
