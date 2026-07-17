@@ -704,6 +704,15 @@ def donor_blend_candidates(path, limit=60):
     return [r["path"] for r in rows]
 
 
+def list_corrupt_blends():
+    """id + path of every .blend flagged damaged by the health check."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path FROM assets WHERE missing=0 AND ext='.blend' "
+            "AND blend_corrupt>0 ORDER BY path").fetchall()
+    return [dict(r) for r in rows]
+
+
 def set_blend_corrupt(asset_id, corrupt):
     with connect() as conn:
         conn.execute("UPDATE assets SET blend_corrupt=? WHERE id=?",

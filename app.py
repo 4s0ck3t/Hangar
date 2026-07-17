@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.11"
+__version__ = "0.15.12"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -381,53 +381,51 @@ def blend_health_status():
         return jsonify(dict(HEALTH))
 
 
-@app.post("/api/assets/<int:asset_id>/restore-backup")
-def restore_blend_backup(asset_id):
-    """Replace a damaged .blend with its .blend1 sibling (Blender's previous-
-    version backup). The damaged file is kept next to it as .blend.corrupt, and
-    the backup is verified before it's used. Only copies — .blend1 stays put."""
-    asset = store.get_asset(asset_id)
-    if not asset or asset["ext"] != ".blend":
-        return jsonify({"error": "Asset not found or not a .blend."}), 404
+def _mark_blend_fixed(asset_id, path):
+    """Post-fix bookkeeping shared by restore/repair: re-stat the file, clear
+    the corrupt flag, drop it from the live health result list."""
+    store.refresh_asset_file(asset_id, path)
+    store.set_blend_corrupt(asset_id, False)
+    with HEALTH_LOCK:
+        HEALTH["corrupt"] = [c for c in HEALTH["corrupt"] if c["id"] != asset_id]
+
+
+def _restore_blend_from_backup(asset):
+    """Replace a damaged .blend with its verified .blend1 sibling. The damaged
+    file is kept as .blend.corrupt; .blend1 stays put (copy, not move).
+    Returns {"ok", "error"}."""
     path = asset["path"]
     backup = thumbs.blend_backup_path(path)
     if not os.path.exists(thumbs._fs(backup)):
-        return jsonify({"ok": False, "error": "No .blend1 backup exists next to this file."})
+        return {"ok": False, "error": "No .blend1 backup exists next to this file."}
     ok, err = thumbs.verify_blend(backup)
     if not ok:
-        return jsonify({"ok": False,
-                        "error": f"The .blend1 backup is damaged too ({err}) — "
-                                 f"restore from your asset pack instead."})
+        return {"ok": False,
+                "error": f"The .blend1 backup is damaged too ({err}) — "
+                         f"restore from your asset pack instead."}
     try:
         if os.path.exists(thumbs._fs(path)):
             os.replace(thumbs._fs(path), thumbs._fs(path + ".corrupt"))
         shutil.copy2(thumbs._fs(backup), thumbs._fs(path))
     except OSError as e:
-        return jsonify({"ok": False, "error": f"Restore failed: {e}"})
-    store.refresh_asset_file(asset_id, path)
+        return {"ok": False, "error": f"Restore failed: {e}"}
     ok, err = thumbs.verify_blend(path)
-    store.set_blend_corrupt(asset_id, not ok)
-    with HEALTH_LOCK:
-        HEALTH["corrupt"] = [c for c in HEALTH["corrupt"] if c["id"] != asset_id]
-    return jsonify({"ok": ok, "verified": ok,
-                    "error": "" if ok else f"Restored copy still fails: {err}"})
+    if not ok:
+        return {"ok": False, "error": f"Restored copy still fails: {err}"}
+    _mark_blend_fixed(asset["id"], path)
+    return {"ok": True, "error": ""}
 
 
-@app.post("/api/assets/<int:asset_id>/repair")
-def repair_asset(asset_id):
-    """Rebuild a truncated .blend: trim to the last complete block, graft a
-    DNA1 catalog from a healthy same-version donor file if the original's was
-    lost, terminate with ENDB, then prove the result opens in Blender before
-    swapping it in. Salvages everything saved before the cut; data after it is
-    gone. The damaged file is kept as .blend.corrupt."""
-    asset = store.get_asset(asset_id)
-    if not asset or asset["ext"] != ".blend":
-        return jsonify({"error": "Asset not found or not a .blend."}), 404
+def _repair_blend_asset(asset):
+    """Rebuild a truncated .blend (trim + DNA graft from a same-version donor),
+    prove the result opens in Blender, then swap it in, keeping the damaged
+    file as .blend.corrupt. Returns {"ok", "error", "method", "objects",
+    "lost_bytes", "donor"}."""
     path = asset["path"]
     donors = store.donor_blend_candidates(path)
     result = thumbs.repair_blend(path, donors)
     if not result.get("ok"):
-        return jsonify({"ok": False, "error": result.get("error", "Repair failed.")})
+        return {"ok": False, "error": result.get("error", "Repair failed.")}
     out = result["out_path"]
     loaded, err, n_objects = thumbs.blender_load_test(out)
     if not loaded:
@@ -435,21 +433,105 @@ def repair_asset(asset_id):
             os.unlink(thumbs._fs(out))
         except OSError:
             pass
-        return jsonify({"ok": False, "error":
-                        f"Rebuilt the file, but Blender still can't open it ({err}). "
-                        f"Too much was lost — restore it from your asset pack."})
+        return {"ok": False, "error":
+                f"Rebuilt the file, but Blender still can't open it ({err}). "
+                f"Too much was lost — restore it from your asset pack."}
     try:
         os.replace(thumbs._fs(path), thumbs._fs(path + ".corrupt"))
         os.replace(thumbs._fs(out), thumbs._fs(path))
     except OSError as e:
-        return jsonify({"ok": False, "error": f"Couldn't swap the repaired file in: {e}"})
-    store.refresh_asset_file(asset_id, path)
-    store.set_blend_corrupt(asset_id, False)
-    with HEALTH_LOCK:
-        HEALTH["corrupt"] = [c for c in HEALTH["corrupt"] if c["id"] != asset_id]
-    return jsonify({"ok": True, "method": result["method"],
-                    "objects": n_objects, "lost_bytes": result["lost_bytes"],
-                    "donor": os.path.basename(result.get("donor") or "")})
+        return {"ok": False, "error": f"Couldn't swap the repaired file in: {e}"}
+    _mark_blend_fixed(asset["id"], path)
+    return {"ok": True, "error": "", "method": result["method"],
+            "objects": n_objects, "lost_bytes": result["lost_bytes"],
+            "donor": os.path.basename(result.get("donor") or "")}
+
+
+@app.post("/api/assets/<int:asset_id>/restore-backup")
+def restore_blend_backup(asset_id):
+    asset = store.get_asset(asset_id)
+    if not asset or asset["ext"] != ".blend":
+        return jsonify({"error": "Asset not found or not a .blend."}), 404
+    r = _restore_blend_from_backup(asset)
+    r["verified"] = r["ok"]
+    return jsonify(r)
+
+
+@app.post("/api/assets/<int:asset_id>/repair")
+def repair_asset(asset_id):
+    asset = store.get_asset(asset_id)
+    if not asset or asset["ext"] != ".blend":
+        return jsonify({"error": "Asset not found or not a .blend."}), 404
+    return jsonify(_repair_blend_asset(asset))
+
+
+# ---- batch: fix every damaged .blend in one go ------------------------------
+# Per file, in order of fidelity: restore the verified .blend1 backup when one
+# exists (a complete previous save), else attempt the truncation repair. Runs
+# in the background with live progress; every damaged original is kept on disk
+# as .blend.corrupt.
+REPAIR = {"running": False, "done": 0, "total": 0, "current": "",
+          "restored": 0, "repaired": 0, "failed": 0, "failures": [],
+          "finished_at": 0}
+REPAIR_LOCK = threading.Lock()
+REPAIR_GEN = 0
+
+
+def _run_repair_all(generation):
+    try:
+        targets = store.list_corrupt_blends()
+    except Exception as e:
+        print(f"[Hangar] repair-all: could not list assets: {e}")
+        targets = []
+    with REPAIR_LOCK:
+        REPAIR.update(total=len(targets), done=0)
+    done = restored = repaired = failed = 0
+    failures = []
+    for t in targets:
+        if generation != REPAIR_GEN:
+            return
+        with REPAIR_LOCK:
+            REPAIR.update(current=t["path"])
+        asset = {"id": t["id"], "path": t["path"], "ext": ".blend"}
+        try:
+            r = _restore_blend_from_backup(asset)
+            if r["ok"]:
+                restored += 1
+            else:
+                r = _repair_blend_asset(asset)
+                if r["ok"]:
+                    repaired += 1
+                else:
+                    failed += 1
+                    failures.append({"path": t["path"], "error": r["error"]})
+        except Exception as e:
+            failed += 1
+            failures.append({"path": t["path"], "error": str(e)})
+        done += 1
+        with REPAIR_LOCK:
+            REPAIR.update(done=done, restored=restored, repaired=repaired,
+                          failed=failed, failures=list(failures))
+    with REPAIR_LOCK:
+        REPAIR.update(running=False, current="", finished_at=time.time())
+
+
+@app.post("/api/blend-health/repair-all")
+def blend_repair_all():
+    global REPAIR_GEN
+    with REPAIR_LOCK:
+        if not REPAIR["running"]:
+            REPAIR_GEN += 1
+            REPAIR.update(running=True, done=0, total=0, current="",
+                          restored=0, repaired=0, failed=0, failures=[])
+            threading.Thread(target=_run_repair_all, args=(REPAIR_GEN,),
+                             daemon=True).start()
+        return jsonify(dict(REPAIR))
+
+
+@app.get("/api/blend-health/repair-status")
+def blend_repair_status():
+    with REPAIR_LOCK:
+        return jsonify(dict(REPAIR))
 
 
 # ---- pages ----------------------------------------------------------------

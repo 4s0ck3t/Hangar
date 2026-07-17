@@ -3674,6 +3674,9 @@ if (_linkedBtn) _linkedBtn.onclick = () => {
 function updateHealthBtn() {
   const b = $("#healthBtn");
   if (b) b.classList.toggle("active", state.filter.corrupt);
+  // "Repair all" only makes sense inside the damaged-files view.
+  const r = $("#repairAllBtn");
+  if (r) r.classList.toggle("hidden", !state.filter.corrupt);
 }
 // File health: verify every .blend's structure server-side (catches files an
 // interrupted save truncated — the ones Blender rejects with "Missing DNA
@@ -3699,8 +3702,40 @@ if (_healthBtn) _healthBtn.onclick = async () => {
   const bad = (st && st.corrupt) || [];
   const restorable = bad.filter((c) => c.has_backup).length;
   toast(bad.length
-    ? `🩺 ${bad.length} damaged .blend file${bad.length > 1 ? "s" : ""} found — ${restorable} restorable from .blend1 backups. Open one for details.`
+    ? `🩺 ${bad.length} damaged .blend file${bad.length > 1 ? "s" : ""} found — ${restorable} restorable from .blend1 backups. Open one for details, or hit 🛠 Repair all.`
     : "🩺 All .blend files passed the structure check.");
+  refresh();
+};
+
+// One pass over every damaged .blend: .blend1 restore first (a complete
+// previous save beats a rebuild), truncation repair second, each result
+// verified before it replaces anything. Sequential — Blender validates every
+// rebuilt file, so a big damaged set takes a while; progress shows per file.
+const _repairAllBtn = $("#repairAllBtn");
+if (_repairAllBtn) _repairAllBtn.onclick = async () => {
+  if (!confirm(
+    "Attempt to fix every damaged .blend?\n\n" +
+    "Files with a healthy .blend1 backup are restored from it; the rest are " +
+    "rebuilt and verified in Blender. Every damaged original is kept next to " +
+    "its fixed file as .blend.corrupt — nothing is deleted.")) return;
+  _repairAllBtn.disabled = true;
+  let st;
+  try { st = await api("blend-health/repair-all", { method: "POST" }); }
+  catch (_) { _repairAllBtn.disabled = false; return; }
+  while (st && st.running) {
+    $("#activeFilter").textContent = st.total
+      ? `🛠 Fixing damaged files… ${st.done}/${st.total}`
+      : "🛠 Fixing damaged files…";
+    await new Promise((r) => setTimeout(r, 600));
+    try { st = await api("blend-health/repair-status"); } catch (_) { break; }
+  }
+  _repairAllBtn.disabled = false;
+  if (!st || !st.total) { toast("Nothing flagged as damaged — run 🩺 File health first."); refresh(); return; }
+  const parts = [];
+  if (st.restored) parts.push(`${st.restored} restored from .blend1`);
+  if (st.repaired) parts.push(`${st.repaired} rebuilt`);
+  if (st.failed) parts.push(`${st.failed} beyond saving (re-download those)`);
+  toast(`🛠 Done — ${parts.join(", ")}.`, st.failed ? undefined : "success");
   refresh();
 };
 
