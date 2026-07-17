@@ -690,10 +690,12 @@ def list_blend_assets():
     return [dict(r) for r in rows]
 
 
-def donor_blend_candidates(path, limit=60):
+def donor_blend_candidates(path, limit=2000):
     """Healthy .blend files to borrow a DNA1 catalog from when repairing
     `path` — same-folder files first (an asset pack is usually saved by one
-    Blender version), smallest first (donors get read in full)."""
+    Blender version), smallest first. Candidates are only header-peeked (12
+    bytes) until one matches the damaged file's Blender version, so a large
+    list is cheap."""
     folder = os.path.dirname(path)
     with connect() as conn:
         rows = conn.execute(
