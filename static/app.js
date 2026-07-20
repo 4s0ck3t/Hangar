@@ -2921,7 +2921,11 @@ async function openDrawer(id, idx) {
     let r; try { r = await post(`assets/${a.id}/repair`); } catch (_) { r = null; }
     if (r && r.ok) {
       const what = r.objects >= 0 ? `${r.objects} object${r.objects === 1 ? "" : "s"} recovered` : "verified";
-      toast(`Repaired and opened in Blender — ${what}. ` +
+      // Only warn about lost content when whole datablocks had to be dropped to
+      // make it load — a clean rebuild discards just the incomplete tail record.
+      const partial = r.dropped_ids
+        ? ` The last ${r.dropped_ids} datablock${r.dropped_ids === 1 ? "" : "s"} had to be dropped to make it load — check what survived.` : "";
+      toast(`Repaired and opened in Blender — ${what}.${partial} ` +
             `${fmtSize(r.lost_bytes)} at the end of the file was beyond saving. ` +
             `The damaged copy was kept as .blend.corrupt.`, "success");
       thumbBust[a.id] = Date.now();

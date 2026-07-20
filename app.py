@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.14"
+__version__ = "0.15.15"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -416,35 +416,58 @@ def _restore_blend_from_backup(asset):
     return {"ok": True, "error": ""}
 
 
+# When a rebuild cut at a clean ID boundary still crashes Blender on load,
+# back off by whole ID groups: drop one more, then a few, then many. Content
+# (objects/meshes) sits in the last ID groups, so small steps come first.
+REPAIR_DROPS = (0, 1, 2, 4, 8, 16, 32, 64)
+
+
 def _repair_blend_asset(asset):
     """Rebuild a truncated .blend (trim + DNA graft from a same-version donor),
     prove the result opens in Blender, then swap it in, keeping the damaged
-    file as .blend.corrupt. Returns {"ok", "error", "method", "objects",
-    "lost_bytes", "donor"}."""
+    file as .blend.corrupt. Backs off to partial salvage when the full rebuild
+    crashes Blender. Returns {"ok", "error", "method", "objects",
+    "lost_bytes", "donor", "salvaged"}."""
     path = asset["path"]
     donors = store.donor_blend_candidates(path)
-    result = thumbs.repair_blend(path, donors)
-    if not result.get("ok"):
-        return {"ok": False, "error": result.get("error", "Repair failed.")}
-    out = result["out_path"]
-    loaded, err, n_objects = thumbs.blender_load_test(out)
-    if not loaded:
+    result = err = None
+    tried_blocks = set()   # a drop that lands on the same block count is a no-op
+    for drop in REPAIR_DROPS:
+        result = thumbs.repair_blend(path, donors, drop_ids=drop)
+        if not result.get("ok"):
+            if drop == 0:
+                # First rebuild failed structurally (no donor / nothing
+                # salvageable) — dropping groups can't fix that.
+                return {"ok": False, "error": result.get("error", "Repair failed.")}
+            break              # ran out of groups to drop — stop the ladder
+        if result["blocks"] in tried_blocks:
+            try:
+                os.unlink(thumbs._fs(result["out_path"]))
+            except OSError:
+                pass
+            continue
+        tried_blocks.add(result["blocks"])
+        out = result["out_path"]
+        loaded, err, n_objects = thumbs.blender_load_test(out)
+        if loaded:
+            try:
+                os.replace(thumbs._fs(path), thumbs._fs(path + ".corrupt"))
+                os.replace(thumbs._fs(out), thumbs._fs(path))
+            except OSError as e:
+                return {"ok": False, "error": f"Couldn't swap the repaired file in: {e}"}
+            _mark_blend_fixed(asset["id"], path)
+            return {"ok": True, "error": "", "method": result["method"],
+                    "objects": n_objects, "lost_bytes": result["lost_bytes"],
+                    "salvaged": result.get("salvaged"), "dropped_ids": drop,
+                    "donor": os.path.basename(result.get("donor") or "")}
         try:
             os.unlink(thumbs._fs(out))
         except OSError:
             pass
-        return {"ok": False, "error":
-                f"Rebuilt the file, but Blender still can't open it ({err}). "
-                f"Too much was lost — restore it from your asset pack."}
-    try:
-        os.replace(thumbs._fs(path), thumbs._fs(path + ".corrupt"))
-        os.replace(thumbs._fs(out), thumbs._fs(path))
-    except OSError as e:
-        return {"ok": False, "error": f"Couldn't swap the repaired file in: {e}"}
-    _mark_blend_fixed(asset["id"], path)
-    return {"ok": True, "error": "", "method": result["method"],
-            "objects": n_objects, "lost_bytes": result["lost_bytes"],
-            "donor": os.path.basename(result.get("donor") or "")}
+    return {"ok": False, "error":
+            f"Rebuilt the file, but no version of it loads in Blender — even "
+            f"after dropping the damaged tail datablocks ({err or 'crash on load'}). "
+            f"Restore it from your asset pack."}
 
 
 @app.post("/api/assets/<int:asset_id>/restore-backup")

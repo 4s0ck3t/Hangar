@@ -1011,7 +1011,7 @@ def _extract_dna1(donor_path, want_head):
     return None
 
 
-def repair_blend(path, donor_paths=()):
+def repair_blend(path, donor_paths=(), drop_ids=0):
     """Best-effort reconstruction of a truncated .blend (interrupted save).
 
     Everything Blender wrote before the cut is intact on disk; what's missing
@@ -1020,6 +1020,15 @@ def repair_blend(path, donor_paths=()):
     that saved the file, NOT on the file's content, so a DNA1 grafted from any
     healthy file saved by the same version lets Blender load every complete
     datablock again. Data after the cut is unrecoverable.
+
+    A .blend is a sequence of ID groups: an ID block (OB, ME, SC, …) followed
+    by the DATA blocks holding its arrays. Keeping an ID whose trailing DATA
+    was cut off segfaults Blender's loader, so the rebuild always cuts at an
+    ID-group boundary. drop_ids=k removes the last k ID groups before the cut
+    (k=0 keeps every group whose blocks are all complete): when even a clean
+    boundary crashes the loader, backing off group-by-group can still find a
+    loadable partial salvage. Dropped IDs referenced elsewhere become NULL
+    links, which Blender handles as ordinary missing data.
 
     Writes the rebuilt file (uncompressed) to <path>.hangar-repair.blend and
     returns {"ok", "error", "method", "out_path", "blocks", "lost_bytes",
@@ -1036,24 +1045,48 @@ def repair_blend(path, donor_paths=()):
     endian = "<"
     bh = 24 if is_64 else 20
     pos = 12
-    end_complete = 12
-    blocks = 0
-    saw_dna = False
+    block_ends = []                                     # file offset after each complete block
+    id_starts = []                                      # byte start of each non-DATA (ID) block
+    dna_end = None                                      # end offset of the DNA1 block, if complete
+    truncated_tail = False
     while pos + bh <= len(raw):
         code = raw[pos:pos + 4]
         length = struct.unpack(endian + "i", raw[pos + 4:pos + 8])[0]
         if length < 0 or code == b"ENDB":
             break
         if pos + bh + length > len(raw):
-            break                                       # partial block — cut here
+            truncated_tail = True                       # partial block — cut here
+            break
+        if code != b"DATA":
+            id_starts.append(pos)
         if code == b"DNA1":
-            saw_dna = True
+            dna_end = pos + bh + length
         pos += bh + length
-        end_complete = pos
-        blocks += 1
-    if blocks == 0:
+        block_ends.append(pos)
+    else:
+        truncated_tail = pos != len(raw)
+    if not block_ends:
         return {"ok": False, "error": "No complete data blocks survived — "
                                       "the file can't be repaired."}
+    last_complete = block_ends[-1]
+    # Cut at an ID-group boundary. The final group is suspect whenever the file
+    # kept going past the last complete block (its DATA may be missing), so it
+    # goes too; drop_ids removes that many more whole groups.
+    suspect = 1 if (truncated_tail or last_complete < len(raw)) else 0
+    n_drop = suspect + max(0, int(drop_ids))
+    cut_candidates = [s for s in id_starts if s <= last_complete]
+    if n_drop == 0:
+        end_complete = last_complete
+    else:
+        if n_drop >= len(cut_candidates):
+            return {"ok": False, "error": "Nothing loadable remains after "
+                                          "dropping the damaged tail."}
+        end_complete = cut_candidates[len(cut_candidates) - n_drop]
+    blocks = sum(1 for e in block_ends if e <= end_complete)
+    if blocks == 0:
+        return {"ok": False, "error": "Nothing loadable remains after "
+                                      "dropping the damaged tail."}
+    saw_dna = dna_end is not None and dna_end <= end_complete
     endb = b"ENDB" + struct.pack(endian + "i", 0) + b"\0" * (bh - 8)
     donor_used = ""
     if saw_dna:
@@ -1110,6 +1143,7 @@ def repair_blend(path, donor_paths=()):
         return {"ok": False, "error": f"Rebuild failed verification: {err}"}
     return {"ok": True, "error": "", "method": method, "out_path": out_path,
             "blocks": blocks, "lost_bytes": max(0, len(raw) - end_complete),
+            "salvaged": round(end_complete / max(1, len(raw)), 3),
             "donor": donor_used}
 
 
@@ -1124,8 +1158,22 @@ def blender_load_test(path, timeout=300):
     blender = find_blender()
     if not blender:
         return True, "", -1
+    # Blender writes Object datablocks near the end of a file, so a truncation
+    # salvage often holds meshes whose objects were in the lost tail. Rebuild
+    # those as plain objects and re-save (this only ever runs on Hangar's own
+    # repair temp file), so the salvage shows its content instead of opening
+    # seemingly empty.
     script = ("import bpy\n"
               "if bpy.data.filepath:\n"
+              "    if not bpy.data.objects and bpy.data.meshes:\n"
+              "        try:\n"
+              "            for me in list(bpy.data.meshes):\n"
+              "                ob = bpy.data.objects.new(me.name, me)\n"
+              "                bpy.context.scene.collection.objects.link(ob)\n"
+              "            bpy.ops.wm.save_as_mainfile(filepath=bpy.data.filepath)\n"
+              "            print('HANGAR_RELINKED', flush=True)\n"
+              "        except Exception as e:\n"
+              "            print('HANGAR_RELINK_FAIL:', e, flush=True)\n"
               "    print('HANGAR_LOAD_OK objects=%d' % len(bpy.data.objects), flush=True)\n"
               "else:\n"
               "    print('HANGAR_LOAD_EMPTY', flush=True)\n")
@@ -1147,7 +1195,10 @@ def blender_load_test(path, timeout=300):
     m = re.search(r"HANGAR_LOAD_OK objects=(\d+)", proc.stdout or "")
     if m:
         return True, "", int(m.group(1))
-    return False, _render_failure_summary(proc) or "Blender couldn't load it.", -1
+    if "HANGAR_LOAD_EMPTY" in (proc.stdout or ""):
+        return False, "Blender rejected the file and fell back to an empty scene.", -1
+    return False, (f"Blender crashed while opening it "
+                   f"(exit code {proc.returncode})."), -1
 
 
 def _blend_field_ident(name):
