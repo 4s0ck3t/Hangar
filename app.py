@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.15"
+__version__ = "0.15.16"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -704,22 +704,34 @@ def pick_folder():
         ps = (
             "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
             "Add-Type -AssemblyName System.Windows.Forms; "
+            "$owner = New-Object System.Windows.Forms.Form; "
+            "$owner.TopMost = $true; "
+            "$owner.ShowInTaskbar = $false; "
+            "$owner.StartPosition = 'CenterScreen'; "
+            "$owner.Size = New-Object System.Drawing.Size(1,1); "
+            "$owner.Opacity = 0; "
             "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
             "$d.Description = 'Choose an asset folder'; "
             "$d.ShowNewFolderButton = $true; "
-            "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }"
+            "try { "
+            "  if ($d.ShowDialog($owner) -eq 'OK') { Write-Output $d.SelectedPath } "
+            "} finally { $owner.Dispose(); $d.Dispose(); }"
         )
         try:
             proc = subprocess.run(
-                ["powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden",
-                 "-Command", ps],
+                ["powershell", "-NoProfile", "-STA", "-Command", ps],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=600, **thumbs._no_window(),
             )
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "").strip()
+                return jsonify({"path": None, "error": err or "Folder picker failed.",
+                                "unsupported": True}), 200
             path = (proc.stdout or "").strip()
             return jsonify({"path": path or None, "cancelled": not path})
         except subprocess.TimeoutExpired:
-            return jsonify({"path": None, "cancelled": True})
+            return jsonify({"path": None, "error": "Folder picker timed out.",
+                            "unsupported": True}), 200
         except Exception as e:
             return jsonify({"path": None, "error": str(e),
                             "unsupported": True}), 200
@@ -749,8 +761,8 @@ def add_library():
     if not path.exists() or not path.is_dir():
         return jsonify({"error": f"That folder doesn't exist: {raw}"}), 400
     lib = store.add_library(str(path), data.get("name"))
-    _start_scan([(lib["path"], lib["name"])])
-    return jsonify({"library": lib, "scanning": True})
+    started = _start_scan([(lib["path"], lib["name"])])
+    return jsonify({"library": lib, "scanning": started})
 
 
 @app.delete("/api/libraries/<int:library_id>")

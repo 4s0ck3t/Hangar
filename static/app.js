@@ -3286,6 +3286,7 @@ async function chooseFolder() {
   const r = await post("pick-folder");
   if (r && r.path) return r.path;
   if (r && r.cancelled) return null;
+  if (r && r.error) toast(r.error, "error");
   return prompt("Paste the full path to an asset folder:") || null;
 }
 
@@ -3359,7 +3360,8 @@ $("#addFolderBtn").onclick = async () => {
   const r = await post("libraries", { path });
   if (r.error) { toast(r.error, "error"); return; }
   await loadState();
-  startScanPolling();
+  if (r.scanning) startScanPolling();
+  else toast("Folder added. A scan is already running; use Rescan all when it finishes.", "success");
 };
 
 $("#rescanBtn").onclick = async () => {
