@@ -114,13 +114,7 @@
   <footer class="statusbar">
     <div class="status-left">
       <span id="statusSummary" class="status-summary"></span>
-      <div id="scanProgress" class="scan-progress hidden">
-        <span class="scan-spinner"></span>
-        <span id="scanText" class="scan-text"></span>
-        <span class="scan-bar"><span id="scanFill" class="scan-fill"></span></span>
-        <span id="scanPct" class="scan-pct"></span>
-        <span id="scanFile" class="scan-file"></span>
-      </div>
+      <div id="taskStrip" class="task-strip hidden"></div>
     </div>
     <div class="status-right">
       <span id="statusBreakdown" class="status-breakdown"></span>
@@ -182,8 +176,8 @@
       <textarea id="updateNotes" class="diag-text" readonly spellcheck="false"></textarea>
       <div class="update-bar">
         <div id="updateProgress" class="update-progress hidden">
-          <span class="scan-bar"><span id="updateFill" class="scan-fill"></span></span>
-          <span id="updatePct" class="scan-pct">0%</span>
+          <span class="task-bar update-bar-track"><span id="updateFill" class="task-fill"></span></span>
+          <span id="updatePct" class="task-pct">0%</span>
         </div>
         <button id="updateLaunchBtn" class="diag-copy hidden">Restart into new version</button>
         <button id="updateDownloadBtn" class="diag-copy">Download &amp; install</button>

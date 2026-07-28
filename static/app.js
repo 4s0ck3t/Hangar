@@ -252,6 +252,46 @@ function renderStatusBar(counts, version) {
   if (version) $("#statusVersion").textContent = `Hangar v${version}`;
 }
 
+// ---- background-task strip -------------------------------------------------
+// Every long-running job (indexing, preview baking, health check, repair,
+// restore, update download) registers here and gets its own pill in the status
+// bar. Concurrent jobs each keep their own pill instead of overwriting a
+// shared progress widget.
+const Tasks = {
+  _map: new Map(),
+  set(id, t) { this._map.set(id, t); this._render(); },
+  done(id) { if (this._map.delete(id)) this._render(); },
+  _render() {
+    const strip = $("#taskStrip");
+    const tasks = [...this._map.values()];
+    $("#statusSummary").classList.toggle("hidden", tasks.length > 0);
+    strip.classList.toggle("hidden", !tasks.length);
+    strip.replaceChildren(...tasks.map((t) => {
+      const pill = document.createElement("span");
+      pill.className = "task-pill";
+      const pct = t.pct != null ? Math.max(0, Math.min(100, t.pct))
+        : t.total ? Math.round((t.done || 0) / t.total * 100) : null;
+      const detail = t.detail || (t.total
+        ? `${(t.done || 0).toLocaleString()}/${t.total.toLocaleString()}` : "");
+      // The current filename is long — only show it when it has the bar to itself.
+      const fname = tasks.length === 1 && t.file
+        ? `<span class="task-file">${esc(String(t.file).replace(/.*[\\/]/, ""))}</span>`
+        : "";
+      pill.innerHTML =
+        `<span class="scan-spinner"></span>` +
+        `<span class="task-label">${esc(t.label)}</span>` +
+        (detail ? `<span class="task-detail">${esc(detail)}</span>` : "") +
+        (pct != null
+          ? `<span class="task-bar"><span class="task-fill" style="width:${pct}%"></span></span>` +
+            `<span class="task-pct">${pct}%</span>`
+          : "") +
+        fname;
+      if (t.file) pill.title = t.file;
+      return pill;
+    }));
+  },
+};
+
 function renderKindFilters(counts, cats) {
   cats = cats || [];
   const modelByExt = counts.model_by_ext || {};
@@ -2301,24 +2341,14 @@ async function regenerateSelectedPreviews(assets) {
 
 function startRegenPolling() {
   if (state.regenTimer) return;
-  $("#statusSummary").classList.add("hidden");
-  $("#scanProgress").classList.remove("hidden");
   const tick = async () => {
     let s;
     try { s = await api("assets/batch/render/status"); } catch (_) { return; }
-    $("#scanText").textContent = `Regenerating previews — ${s.done}/${s.total}`;
-    $("#scanFill").style.width = (s.pct || 0) + "%";
-    $("#scanPct").textContent = (s.pct || 0) + "%";
-    if (s.current) {
-      $("#scanFile").textContent = s.current.replace(/.*[\\/]/, "");
-      $("#scanFile").title = s.current;
-    } else {
-      $("#scanFile").textContent = ""; $("#scanFile").title = "";
-    }
+    Tasks.set("regen", { label: "Regenerating previews", done: s.done,
+                         total: s.total, pct: s.pct || 0, file: s.current });
     if (!s.running) {
       clearInterval(state.regenTimer); state.regenTimer = null;
-      $("#scanProgress").classList.add("hidden");
-      $("#statusSummary").classList.remove("hidden");
+      Tasks.done("regen");
       // Bust caches so the freshly rendered tiles reload instead of showing the
       // browser-cached blurry version, then repaint the grid + open drawer.
       const ids = [..._regenIds];
@@ -2568,11 +2598,22 @@ function renderGrid(assets, total) {
     _currentAssets = []; _displaySections = [];
     grid.replaceChildren();
     empty.classList.remove("hidden");
-    empty.innerHTML = total === 0 && !state.search && !state.filter.tag
+    // "No assets indexed yet" is only true with an empty library AND no active
+    // filter — a filter (no-author, favorites, …) that matches nothing must say
+    // so, not claim the library is empty.
+    const f = state.filter;
+    const anyFilter = state.search || f.kind || f.ext || f.tag || f.collection ||
+      f.category || f.folder || f.subtype || f.resolution || f.favorite ||
+      f.missing || f.missing_blend_textures || f.duplicates || f.corrupt ||
+      f.noAuthor || f.linked;
+    empty.innerHTML = total === 0 && !anyFilter
       ? `<h2>No assets indexed yet</h2>
          <p>Add a folder of models, textures and HDRIs and Hangar will index it.
          Your files are never moved or copied.</p>
          <button onclick="document.getElementById('addFolderBtn').click()">Add asset folder</button>`
+      : f.noAuthor
+      ? `<h2>No unattributed assets</h2>
+         <p>Every indexed asset has author metadata — nothing needs attributing.</p>`
       : `<h2>Nothing matches</h2><p>Try a different search or clear the active filter.</p>`;
     return;
   }
@@ -3295,8 +3336,6 @@ function startScanPolling(warmOnly = false) {
   // warmOnly = boot-time pre-baking with no fresh index, so skip the
   // "indexed N assets" toast but still show the progress bar.
   state.wasScanning = !warmOnly;
-  $("#statusSummary").classList.add("hidden");
-  $("#scanProgress").classList.remove("hidden");
   $("#rescanBtn").disabled = true;
   state.scanTimer = setInterval(pollScan, 350);
   pollScan();
@@ -3306,10 +3345,9 @@ async function pollScan() {
   const s = await api("scan/status");
   const warm = s.warm || {};
   if (s.running) {
-    $("#scanText").textContent =
-      `${s.library || "library"} — ${s.scanned.toLocaleString()}/${s.total.toLocaleString()} files`;
-    $("#scanFill").style.width = s.pct + "%";
-    $("#scanPct").textContent = s.pct + "%";
+    Tasks.set("scan", { label: `Indexing ${s.library || "library"}`,
+                        detail: `${s.scanned.toLocaleString()}/${s.total.toLocaleString()} files`,
+                        pct: s.pct });
     await loadState();
   } else if (warm.running) {
     // Indexing is done; previews are now pre-baking in the background. Keep the
@@ -3319,25 +3357,13 @@ async function pollScan() {
       toast(`Indexed ${s.indexed.toLocaleString()} assets — checking previews…`, "success");
       refresh();
     }
-    const scanText = $("#scanText");
-    scanText.textContent =
-      `Generating missing previews — ${warm.done.toLocaleString()}/${warm.total.toLocaleString()}`;
-    if (warm.current) {
-      const fname = warm.current.replace(/.*[\\/]/, "");
-      $("#scanFile").textContent = fname;
-      $("#scanFile").title = warm.current;
-    } else {
-      $("#scanFile").textContent = "";
-      $("#scanFile").title = "";
-    }
-    $("#scanFill").style.width = warm.pct + "%";
-    $("#scanPct").textContent = warm.pct + "%";
+    Tasks.set("scan", { label: "Generating missing previews", done: warm.done,
+                        total: warm.total, pct: warm.pct, file: warm.current });
     // Periodically repaint so freshly-baked thumbnails replace badge tiles.
     if (warm.done % 40 === 0) refresh();
   } else {
     clearInterval(state.scanTimer); state.scanTimer = null;
-    $("#scanProgress").classList.add("hidden");
-    $("#statusSummary").classList.remove("hidden");
+    Tasks.done("scan");
     $("#rescanBtn").disabled = false;
     if (state.wasScanning) {
       state.wasScanning = false;
@@ -3493,26 +3519,14 @@ function _setPill(text, handler) {
   pill.onclick = handler;
 }
 
-// Show the background download on the shared status-bar progress bar, but never
-// fight a scan or a regenerate pass that already owns it.
+// Show the background download in the status bar's task strip.
 function _updateStatusBar(pct, stage) {
-  if (state.scanTimer || state.regenTimer) return;
-  state.updateBar = true;
-  $("#statusSummary").classList.add("hidden");
-  $("#scanProgress").classList.remove("hidden");
-  $("#scanText").textContent = stage === "copying"
-    ? `Reusing current install for v${_updateInfo.latest}…`
-    : `Downloading update v${_updateInfo.latest}`;
-  $("#scanFill").style.width = pct + "%";
-  $("#scanPct").textContent = pct + "%";
-  $("#scanFile").textContent = ""; $("#scanFile").title = "";
+  Tasks.set("update", { label: stage === "copying"
+      ? `Reusing current install for v${_updateInfo.latest}`
+      : `Downloading update v${_updateInfo.latest}`, pct });
 }
 function _clearUpdateStatusBar() {
-  if (!state.updateBar) return;
-  state.updateBar = false;
-  if (state.scanTimer || state.regenTimer) return;   // someone else owns it now
-  $("#scanProgress").classList.add("hidden");
-  $("#statusSummary").classList.remove("hidden");
+  Tasks.done("update");
 }
 
 function startUpdatePolling() {
@@ -3796,13 +3810,22 @@ if (_healthBtn) _healthBtn.onclick = async () => {
   renderGridSkeleton();
   let st;
   try { st = await api("blend-health/scan", { method: "POST" }); } catch (_) { refresh(); return; }
-  while (st && st.running && state.filter.corrupt) {
-    $("#activeFilter").textContent =
-      `🩺 Checking .blend files… ${st.done}/${st.total}`;
-    await new Promise((r) => setTimeout(r, 400));
-    try { st = await api("blend-health/status"); } catch (_) { break; }
+  // Keep polling even if the user clicks away mid-scan — the check keeps
+  // running server-side, and the status-bar pill is where they track it.
+  try {
+    while (st && st.running) {
+      Tasks.set("health", { label: "🩺 Checking .blend files",
+                            done: st.done, total: st.total });
+      if (state.filter.corrupt) {
+        $("#activeFilter").textContent =
+          `🩺 Checking .blend files… ${st.done}/${st.total}`;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      try { st = await api("blend-health/status"); } catch (_) { break; }
+    }
+  } finally {
+    Tasks.done("health");
   }
-  if (!state.filter.corrupt) return;   // user moved on mid-scan
   const bad = (st && st.corrupt) || [];
   const restorable = bad.filter((c) => c.has_backup).length;
   toast(bad.length
@@ -3827,12 +3850,20 @@ if (_repairAllBtn) _repairAllBtn.onclick = async () => {
   try { st = await api("blend-health/repair-all", { method: "POST" }); }
   catch (_) { _repairAllBtn.disabled = false; return; }
   updateHealthSummaryBanner();   // show live progress in the banner immediately
-  while (st && st.running) {
-    $("#activeFilter").textContent = st.total
-      ? `🛠 Fixing damaged files… ${st.done}/${st.total}`
-      : "🛠 Fixing damaged files…";
-    await new Promise((r) => setTimeout(r, 600));
-    try { st = await api("blend-health/repair-status"); } catch (_) { break; }
+  try {
+    while (st && st.running) {
+      Tasks.set("repair", { label: "🛠 Fixing damaged files",
+                            done: st.done, total: st.total || 0 });
+      if (state.filter.corrupt) {
+        $("#activeFilter").textContent = st.total
+          ? `🛠 Fixing damaged files… ${st.done}/${st.total}`
+          : "🛠 Fixing damaged files…";
+      }
+      await new Promise((r) => setTimeout(r, 600));
+      try { st = await api("blend-health/repair-status"); } catch (_) { break; }
+    }
+  } finally {
+    Tasks.done("repair");
   }
   _repairAllBtn.disabled = false;
   if (!st || !st.total) { toast("Nothing flagged as damaged — run 🩺 File health first."); refresh(); return; }
@@ -3866,12 +3897,22 @@ if (_restoreSourceBtn) _restoreSourceBtn.onclick = async () => {
   catch (_) { _restoreSourceBtn.disabled = false; return; }
   if (st && st.error) { toast(st.error, "error"); _restoreSourceBtn.disabled = false; return; }
   updateHealthSummaryBanner();   // live progress in the banner immediately
-  while (st && st.running) {
-    $("#activeFilter").textContent = st.phase === "indexing"
-      ? `📂 Searching recovery folder… ${(st.indexed || 0).toLocaleString()} files found`
-      : `📂 Restoring… ${st.done}/${st.total}`;
-    await new Promise((r) => setTimeout(r, 600));
-    try { st = await api("blend-health/restore-source/status"); } catch (_) { break; }
+  try {
+    while (st && st.running) {
+      const text = st.phase === "indexing"
+        ? `📂 Searching recovery folder… ${(st.indexed || 0).toLocaleString()} files found`
+        : `📂 Restoring… ${st.done}/${st.total}`;
+      Tasks.set("restore", st.phase === "indexing"
+        ? { label: "📂 Searching recovery folder",
+            detail: `${(st.indexed || 0).toLocaleString()} files found` }
+        : { label: "📂 Restoring from recovery folder",
+            done: st.done, total: st.total });
+      if (state.filter.corrupt) $("#activeFilter").textContent = text;
+      await new Promise((r) => setTimeout(r, 600));
+      try { st = await api("blend-health/restore-source/status"); } catch (_) { break; }
+    }
+  } finally {
+    Tasks.done("restore");
   }
   _restoreSourceBtn.disabled = false;
   if (!st || !st.total) {

@@ -258,22 +258,25 @@ button, input, select { font-family: inherit; color: inherit; }
 .status-breakdown { color: var(--faint); white-space: nowrap; }
 .status-version { color: var(--faint); white-space: nowrap; font-family: var(--mono); font-size: 11px; opacity: .7; }
 
-.scan-progress { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
-.scan-text {
-  color: var(--mute); white-space: nowrap; overflow: hidden;
-  text-overflow: ellipsis; max-width: 46ch;
+.task-strip { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; overflow: hidden; }
+.task-pill {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: rgba(255,255,255,.03); min-width: 0;
 }
-.scan-bar {
-  flex: 1; max-width: 280px; height: 4px; border-radius: 3px;
+.task-label { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 34ch; }
+.task-detail { color: var(--mute); white-space: nowrap; }
+.task-bar {
+  width: 72px; height: 4px; border-radius: 3px; flex: none;
   background: var(--raised-hi); overflow: hidden;
 }
-.scan-fill {
+.task-fill {
   display: block; height: 100%; width: 0%;
   background: linear-gradient(90deg, var(--signal), #f0c674);
   transition: width .25s ease;
 }
-.scan-pct { color: var(--signal); min-width: 4ch; text-align: right; }
-.scan-file { color: var(--mute); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.task-pct { color: var(--signal); min-width: 4ch; text-align: right; }
+.task-file { color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px; }
 .scan-spinner {
   width: 11px; height: 11px; border-radius: 50%; flex: none;
   border: 2px solid var(--raised-hi); border-top-color: var(--signal);
@@ -957,6 +960,7 @@ button, input, select { font-family: inherit; color: inherit; }
 .update-pill:hover { background: linear-gradient(90deg, rgba(232,176,75,.30), rgba(232,121,74,.30)); }
 .update-bar { display: flex; align-items: center; gap: 12px; margin: 0 14px 14px; }
 .update-progress { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+.update-progress .update-bar-track { flex: 1; width: auto; max-width: none; }
 .update-bar .diag-copy { margin-left: 0; }
 .update-bar .diag-copy.hidden { display: none; }
 .update-progress.hidden { display: none; }
