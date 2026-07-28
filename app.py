@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.16"
+__version__ = "0.15.17"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -571,6 +571,260 @@ def blend_repair_status():
         out = dict(REPAIR)
     try:
         raw = store.get_setting("last_repair_summary")
+        out["last"] = json.loads(raw) if raw else None
+    except Exception:
+        out["last"] = None
+    return jsonify(out)
+
+
+# ---- restore from a recovery folder (NAS / rescued-drive copies) ------------
+# When a drive lost data but a recovery of it exists elsewhere, this walks the
+# recovery folder for .blend files, matches them to the library's damaged /
+# missing / previously-rebuilt files by name, verifies each candidate's block
+# structure, and swaps verified copies in atomically. It also reconciles the
+# two sides: recovered files that exist in several copies, recovered files the
+# library never had, and leftover .corrupt siblings — so a messy recovery
+# doesn't leave duplicates or strays behind.
+
+# Recycle bins and volume metadata never hold wanted recoveries; recovery-tool
+# output dirs (found.000 etc.) *do*, so nothing else is skipped.
+RESTORE_SKIP_DIRS = {"$recycle.bin", "system volume information", ".trashes",
+                     ".trash", ".trash-1000"}
+
+RESTORE = {"running": False, "phase": "", "source": "", "done": 0, "total": 0,
+           "current": "", "indexed": 0, "replaced": 0, "upgraded": 0,
+           "recovered": 0, "already_ok": 0, "failed": 0, "failures": [],
+           "cleaned": 0, "dup_sources": 0, "extra_sources": 0,
+           "finished_at": 0}
+RESTORE_LOCK = threading.Lock()
+RESTORE_GEN = 0
+
+
+def _index_restore_source(source, generation):
+    """Map lowercase basename -> [paths] for every .blend under `source`.
+    Returns None if a newer run superseded this one mid-walk."""
+    by_name = {}
+    n = 0
+    for dirpath, dirnames, filenames in os.walk(source):
+        if generation != RESTORE_GEN:
+            return None
+        dirnames[:] = [d for d in dirnames
+                       if d.lower() not in RESTORE_SKIP_DIRS]
+        for fn in filenames:
+            if not fn.lower().endswith(".blend"):
+                continue
+            by_name.setdefault(fn.lower(), []).append(os.path.join(dirpath, fn))
+            n += 1
+        with RESTORE_LOCK:
+            RESTORE.update(indexed=n, current=dirpath)
+    return by_name
+
+
+def _suffix_overlap(a, b):
+    """How many trailing path components two paths share (case-insensitive).
+    'NAS/recovered/Doors/Barn_02.blend' vs 'E:/Assets/Doors/Barn_02.blend'
+    → 2. The recovery copy whose folder structure matches the library's spot
+    is the right one when the same filename exists in several places."""
+    pa = [p.lower() for p in re.split(r"[\\/]+", a) if p]
+    pb = [p.lower() for p in re.split(r"[\\/]+", b) if p]
+    n = 0
+    while n < min(len(pa), len(pb)) and pa[-1 - n] == pb[-1 - n]:
+        n += 1
+    return n
+
+
+def _restore_from_candidates(target_path, cand_paths):
+    """Try recovery candidates best-first; the first whose structure verifies
+    is copied in atomically. The temp copy sits next to the target and is
+    re-verified before the swap — a network read that quietly truncated must
+    never replace anything. Returns (outcome, error) where outcome is
+    'replaced' / 'already_ok' / 'failed'."""
+    tpath = thumbs._fs(target_path)
+    ranked = []
+    for c in cand_paths:
+        try:
+            st = os.stat(thumbs._fs(c))
+        except OSError:
+            continue
+        ranked.append((c, st.st_size, st.st_mtime))
+    # Best folder-structure match first, then the largest (most content),
+    # then the newest.
+    ranked.sort(key=lambda t: (-_suffix_overlap(target_path, t[0]),
+                               -t[1], -t[2]))
+    last_err = "No copy of it was found in the recovery folder."
+    for cand, csize, _ in ranked:
+        if os.path.normcase(os.path.abspath(thumbs._fs(cand))) == \
+           os.path.normcase(os.path.abspath(tpath)):
+            continue          # the search was pointed at the library itself
+        ok, err = thumbs.verify_blend(cand)
+        if not ok:
+            last_err = f"Every recovered copy of it is damaged too ({err})"
+            continue
+        try:
+            if os.path.exists(tpath) and os.path.getsize(tpath) == csize:
+                cur_ok, _e = thumbs.verify_blend(target_path)
+                if cur_ok:
+                    return "already_ok", ""   # same size + both healthy
+        except OSError:
+            pass
+        tmp = tpath + ".hangar-restore"
+        try:
+            os.makedirs(os.path.dirname(tpath), exist_ok=True)
+            shutil.copy2(thumbs._fs(cand), tmp)
+            ok, err = thumbs.verify_blend(tmp)
+            if not ok:
+                os.unlink(tmp)
+                last_err = (f"The copy from the recovery folder arrived "
+                            f"damaged ({err})")
+                continue
+            os.replace(tmp, tpath)
+        except OSError as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            last_err = f"Couldn't copy it in: {e}"
+            continue
+        return "replaced", ""
+    return "failed", last_err
+
+
+def _run_restore_source(generation, source):
+    with RESTORE_LOCK:
+        RESTORE.update(phase="indexing", source=source)
+    by_name = _index_restore_source(source, generation)
+    if by_name is None:
+        return
+
+    # Damaged and vanished files first; then files an earlier Repair-all
+    # rebuilt (their .blend.corrupt sibling marks them) — a rebuild dropped
+    # tail datablocks, so a full recovered copy always beats it.
+    targets = []
+    for t in store.list_restore_targets():
+        t["why"] = "missing" if t.get("missing") else "damaged"
+        targets.append(t)
+    seen = {t["id"] for t in targets}
+    for t in store.list_blend_assets():
+        if t["id"] not in seen and \
+           os.path.exists(thumbs._fs(t["path"] + ".corrupt")):
+            t["why"] = "rebuilt"
+            targets.append(t)
+
+    with RESTORE_LOCK:
+        RESTORE.update(phase="restoring", total=len(targets), done=0)
+    done = replaced = upgraded = recovered = already_ok = failed = cleaned = 0
+    failures = []
+    for t in targets:
+        if generation != RESTORE_GEN:
+            return
+        path = t["path"]
+        with RESTORE_LOCK:
+            RESTORE.update(current=path)
+        try:
+            cands = by_name.get(os.path.basename(path).lower(), [])
+            outcome, err = _restore_from_candidates(path, cands)
+        except Exception as e:
+            outcome, err = "failed", f"Restore failed: {e}"
+        if outcome == "failed":
+            if t["why"] == "rebuilt":
+                # Still a working rebuild — finding no better copy isn't a
+                # failure worth alarming anyone about.
+                pass
+            else:
+                failed += 1
+                failures.append({"path": path, "error": err})
+        else:
+            if outcome == "replaced":
+                if t["why"] == "missing":
+                    recovered += 1
+                elif t["why"] == "rebuilt":
+                    upgraded += 1
+                else:
+                    replaced += 1
+            else:
+                already_ok += 1
+            # The file on disk is now verified healthy — the damaged sibling a
+            # repair kept around is junk. Ben's rule: no strays left behind.
+            corrupt_sib = thumbs._fs(path + ".corrupt")
+            if os.path.exists(corrupt_sib):
+                try:
+                    os.unlink(corrupt_sib)
+                    cleaned += 1
+                except OSError:
+                    pass
+            try:
+                _mark_blend_fixed(t["id"], path)
+            except Exception:
+                pass
+        done += 1
+        with RESTORE_LOCK:
+            RESTORE.update(done=done, replaced=replaced, upgraded=upgraded,
+                           recovered=recovered, already_ok=already_ok,
+                           failed=failed, cleaned=cleaned,
+                           failures=list(failures))
+
+    # Reconcile the two sides so the recovery doesn't hide surprises:
+    # duplicated recoveries, and recovered files the library never indexed.
+    lib_names = store.all_blend_basenames()
+    dup_examples, extra_examples = [], []
+    dup_sources = extra_sources = 0
+    for name, paths in sorted(by_name.items()):
+        if len(paths) > 1 and name in lib_names:
+            dup_sources += 1
+            if len(dup_examples) < 20:
+                dup_examples.append({"name": os.path.basename(paths[0]),
+                                     "count": len(paths)})
+        if name not in lib_names:
+            extra_sources += len(paths)
+            extra_examples.extend(paths[:2])
+    extra_examples = extra_examples[:50]
+
+    with RESTORE_LOCK:
+        RESTORE.update(running=False, phase="", current="",
+                       dup_sources=dup_sources, extra_sources=extra_sources,
+                       finished_at=time.time())
+    if not targets:
+        return
+    try:
+        store.set_setting("last_restore_summary", json.dumps({
+            "finished_at": time.time(), "source": source,
+            "total": len(targets), "replaced": replaced,
+            "upgraded": upgraded, "recovered": recovered,
+            "already_ok": already_ok, "failed": failed, "cleaned": cleaned,
+            "failures": failures[:100], "dup_sources": dup_sources,
+            "dup_examples": dup_examples, "extra_sources": extra_sources,
+            "extra_examples": extra_examples,
+        }))
+    except Exception:
+        pass
+
+
+@app.post("/api/blend-health/restore-source")
+def blend_restore_source():
+    global RESTORE_GEN
+    source = ((request.get_json(silent=True) or {}).get("source") or "").strip()
+    if not source or not os.path.isdir(thumbs._fs(source)):
+        return jsonify({"error": "That folder doesn't exist or isn't "
+                                 "reachable right now."}), 400
+    with RESTORE_LOCK:
+        if not RESTORE["running"]:
+            RESTORE_GEN += 1
+            RESTORE.update(running=True, phase="indexing", source=source,
+                           done=0, total=0, current="", indexed=0, replaced=0,
+                           upgraded=0, recovered=0, already_ok=0, failed=0,
+                           failures=[], cleaned=0, dup_sources=0,
+                           extra_sources=0, finished_at=0)
+            threading.Thread(target=_run_restore_source,
+                             args=(RESTORE_GEN, source), daemon=True).start()
+        return jsonify(dict(RESTORE))
+
+
+@app.get("/api/blend-health/restore-source/status")
+def blend_restore_status():
+    with RESTORE_LOCK:
+        out = dict(RESTORE)
+    try:
+        raw = store.get_setting("last_restore_summary")
         out["last"] = json.loads(raw) if raw else None
     except Exception:
         out["last"] = None

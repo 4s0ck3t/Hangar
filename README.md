@@ -135,6 +135,31 @@ an embedded preview — use **Render preview** for those.
 
 ---
 
+## File health & repair
+
+For libraries on drives that have had a rough life (unplugged mid-write, data
+loss), Hangar can check and fix `.blend` files:
+
+- **🩺 File health** verifies every indexed `.blend`'s block structure (no
+  Blender needed) and collects the damaged ones into their own view.
+- **🛠 Repair all** fixes what it can in one pass: verified `.blend1` backups
+  are restored where they exist; truncated files are rebuilt (trimmed to a
+  clean datablock boundary + DNA catalog grafted from a same-version file) and
+  each rebuild is proven to open in Blender before it replaces anything.
+  Damaged originals are kept next to their fixed file as `.blend.corrupt`.
+- **📂 Restore from folder…** points Hangar at a recovery copy of the library
+  (a NAS backup, a rescued drive). Every damaged, lost or rebuilt file is
+  looked up there by filename — when the same name exists in several places,
+  the copy whose folder layout matches the library wins. A candidate only
+  replaces a library file after its structure verifies (twice: on the source,
+  and again after the copy), so a damaged recovery can never overwrite
+  anything. Afterwards it reconciles the two sides: recovered files that exist
+  in duplicate, recovered files the library doesn't have at all, and leftover
+  `.corrupt` copies of now-healthy files (removed) — so nothing rescued gets
+  duplicated or left behind.
+
+---
+
 ## Build standalone executables
 
 CI builds both platforms automatically on every `v*` tag (see

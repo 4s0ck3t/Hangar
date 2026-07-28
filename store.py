@@ -715,6 +715,26 @@ def list_corrupt_blends():
     return [dict(r) for r in rows]
 
 
+def list_restore_targets():
+    """Everything a recovery-folder restore could fix: .blends flagged damaged
+    by the health check, plus .blends whose file has vanished from disk
+    entirely (the drive lost them; the index still knows where they lived)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path, blend_corrupt, missing FROM assets "
+            "WHERE ext='.blend' AND (blend_corrupt>0 OR missing=1) "
+            "ORDER BY path").fetchall()
+    return [dict(r) for r in rows]
+
+
+def all_blend_basenames():
+    """Lowercase basename of every indexed .blend, missing ones included —
+    the reference set for spotting recovered files the library never had."""
+    with connect() as conn:
+        rows = conn.execute("SELECT path FROM assets WHERE ext='.blend'").fetchall()
+    return {os.path.basename(r["path"]).lower() for r in rows}
+
+
 def set_blend_corrupt(asset_id, corrupt):
     with connect() as conn:
         conn.execute("UPDATE assets SET blend_corrupt=? WHERE id=?",

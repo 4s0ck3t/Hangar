@@ -47,6 +47,28 @@ A material ships as many maps sharing a base name (`wood_diffuse`, `wood_normal`
   /hdri-backends + `desktop.log` & `last_render.log`. The status-bar **Logs** button opens a
   copy-all modal so users can export the launcher log (incl. why the native window fell back).
 
+## .blend file health / repair / recovery-folder restore
+All in the damaged-files view (`state.filter.corrupt`), server side in `app.py`:
+- **Health check** (`/api/blend-health/scan`): `thumbs.verify_blend` walks every block
+  header to ENDB, requires DNA1 (pure Python, gzip/zstd tolerant). Flags `blend_corrupt`.
+- **Repair all** (`/api/blend-health/repair-all`): per file, verified `.blend1` restore
+  first, else `thumbs.repair_blend` (trim to ID-group boundary + DNA1 graft from a
+  same-version donor, `REPAIR_DROPS` back-off ladder), each rebuild proven via
+  `thumbs.blender_load_test` before the swap; originals kept as `.blend.corrupt`.
+  Summary persisted as setting `last_repair_summary`.
+- **Restore from folder** (`/api/blend-health/restore-source`, `_run_restore_source`):
+  walks a recovery folder (NAS copy / rescued drive) for `.blend`s, matches library
+  targets by lowercase basename — targets = `store.list_restore_targets()` (corrupt or
+  missing) plus healthy files with a `.corrupt` sibling (earlier rebuilds, upgraded to
+  full copies). Ties broken by `_suffix_overlap` (shared trailing path components), then
+  size, then mtime. A candidate must pass `verify_blend` on the source AND on the temp
+  copy next to the target before `os.replace` swaps it in; `.corrupt` siblings of
+  now-healthy files are deleted (`cleaned`). Ends with a reconciliation report
+  (`dup_sources` — same name in several source copies; `extra_sources` — recovered files
+  the library never indexed), persisted as `last_restore_summary`. The banner
+  (`updateHealthSummaryBanner`) shows live progress of either job, then whichever
+  summary finished most recently.
+
 ## Auto-categorization (keyword rule engine)
 Connecter-style rule-based classification — deterministic, no ML. Categories carry a
 `kind` scope (`model`/`hdri`/`texture`/`material`, or `""` = shared): a scoped rule only

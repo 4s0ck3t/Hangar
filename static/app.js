@@ -3680,9 +3680,12 @@ if (_linkedBtn) _linkedBtn.onclick = () => {
 function updateHealthBtn() {
   const b = $("#healthBtn");
   if (b) b.classList.toggle("active", state.filter.corrupt);
-  // "Repair all" only makes sense inside the damaged-files view.
+  // "Repair all" / "Restore from folder" only make sense inside the
+  // damaged-files view.
   const r = $("#repairAllBtn");
   if (r) r.classList.toggle("hidden", !state.filter.corrupt);
+  const rs = $("#restoreSourceBtn");
+  if (rs) rs.classList.toggle("hidden", !state.filter.corrupt);
   updateHealthSummaryBanner();
 }
 
@@ -3692,39 +3695,91 @@ function updateHealthBtn() {
 // reason — afterwards. The server stores the summary, so it survives restarts;
 // a fleeting toast is not the record of a multi-minute batch.
 let _hsPolling = false;
-async function updateHealthSummaryBanner() {
-  const el = $("#healthSummary");
-  if (!el) return;
-  if (!state.filter.corrupt) { el.classList.add("hidden"); return; }
-  let st;
-  try { st = await api("blend-health/repair-status"); }
-  catch (_) { el.classList.add("hidden"); return; }
-  if (!state.filter.corrupt) { el.classList.add("hidden"); return; }  // view changed mid-fetch
-  if (st.running) {
-    el.innerHTML = `🛠 Fixing damaged files… <b>${st.done}</b>/${st.total} ` +
-      `<span class="hs-dim">${esc(baseName(st.current || ""))} — restored ${st.restored}, ` +
-      `rebuilt ${st.repaired}, beyond saving ${st.failed}</span>`;
-    el.classList.remove("hidden");
-    if (!_hsPolling) {
-      _hsPolling = true;
-      setTimeout(() => { _hsPolling = false; updateHealthSummaryBanner(); }, 800);
-    }
-    return;
-  }
-  const last = st.finished_at ? st : st.last;
-  if (!last || !last.total) { el.classList.add("hidden"); return; }
+function _hsRepoll() {
+  if (_hsPolling) return;
+  _hsPolling = true;
+  setTimeout(() => { _hsPolling = false; updateHealthSummaryBanner(); }, 800);
+}
+function _repairSummaryHtml(last) {
   const when = last.finished_at
     ? new Date(last.finished_at * 1000).toLocaleString() : "";
   let html = `🛠 Last repair run${when ? ` <span class="hs-dim">(${esc(when)})</span>` : ""}: ` +
     `<b>${last.restored}</b> restored from .blend1, <b>${last.repaired}</b> rebuilt` +
     `<span class="${last.failed ? "hs-fail" : ""}">, <b>${last.failed}</b> beyond saving</span>.`;
   if (last.failed && last.failures && last.failures.length) {
-    html += `<div class="hs-dim">These couldn't be fixed — restore them from their asset packs:</div><ul>`;
+    html += `<div class="hs-dim">These couldn't be fixed — restore them from their asset packs, or point 📂 Restore from folder… at a recovery copy:</div><ul>`;
     html += last.failures.map((f) =>
       `<li><b>${esc(baseName(f.path))}</b> <span class="hs-dim" title="${esc(f.path)}">${esc(f.error)}</span></li>`).join("");
     html += `</ul>`;
   }
-  el.innerHTML = html;
+  return html;
+}
+function _restoreSummaryHtml(last) {
+  const when = last.finished_at
+    ? new Date(last.finished_at * 1000).toLocaleString() : "";
+  const parts = [];
+  if (last.replaced) parts.push(`<b>${last.replaced}</b> damaged file${last.replaced === 1 ? "" : "s"} replaced`);
+  if (last.recovered) parts.push(`<b>${last.recovered}</b> lost file${last.recovered === 1 ? "" : "s"} brought back`);
+  if (last.upgraded) parts.push(`<b>${last.upgraded}</b> rebuilt file${last.upgraded === 1 ? "" : "s"} upgraded to full copies`);
+  if (last.already_ok) parts.push(`${last.already_ok} already fine`);
+  if (!parts.length) parts.push("nothing needed replacing");
+  let html = `📂 Last restore from <b title="${esc(last.source || "")}">${esc(baseName(last.source || "") || last.source || "recovery folder")}</b>` +
+    `${when ? ` <span class="hs-dim">(${esc(when)})</span>` : ""}: ${parts.join(", ")}` +
+    `<span class="${last.failed ? "hs-fail" : ""}">${last.failed ? `, <b>${last.failed}</b> still broken` : ""}</span>.`;
+  if (last.cleaned) html += ` <span class="hs-dim">Cleaned up ${last.cleaned} leftover .corrupt cop${last.cleaned === 1 ? "y" : "ies"}.</span>`;
+  if (last.dup_sources) {
+    html += `<div class="hs-dim">⚠ ${last.dup_sources} of the recovered files exist in more than one copy on the source` +
+      ((last.dup_examples || []).length
+        ? ` (e.g. ${last.dup_examples.slice(0, 3).map((d) => `${esc(d.name)} ×${d.count}`).join(", ")})`
+        : "") + ` — the copy matching the library's folder layout was used.</div>`;
+  }
+  if (last.extra_sources) {
+    const ex = (last.extra_examples || []).slice(0, 5).map(baseName).map(esc).join(", ");
+    html += `<div class="hs-dim">📦 ${last.extra_sources} recovered .blend file${last.extra_sources === 1 ? "" : "s"} aren't in this library at all${ex ? ` (e.g. ${ex})` : ""} — worth a look so nothing rescued gets left behind.</div>`;
+  }
+  if (last.failed && last.failures && last.failures.length) {
+    html += `<div class="hs-dim">No healthy copy was found for:</div><ul>`;
+    html += last.failures.map((f) =>
+      `<li><b>${esc(baseName(f.path))}</b> <span class="hs-dim" title="${esc(f.path)}">${esc(f.error)}</span></li>`).join("");
+    html += `</ul>`;
+  }
+  return html;
+}
+async function updateHealthSummaryBanner() {
+  const el = $("#healthSummary");
+  if (!el) return;
+  if (!state.filter.corrupt) { el.classList.add("hidden"); return; }
+  let st = null, rst = null;
+  try { st = await api("blend-health/repair-status"); } catch (_) { /* keep null */ }
+  try { rst = await api("blend-health/restore-source/status"); } catch (_) { /* keep null */ }
+  if (!state.filter.corrupt) { el.classList.add("hidden"); return; }  // view changed mid-fetch
+  if (!st && !rst) { el.classList.add("hidden"); return; }
+  if (rst && rst.running) {
+    el.innerHTML = rst.phase === "indexing"
+      ? `📂 Searching the recovery folder… <b>${rst.indexed.toLocaleString()}</b> .blend files found ` +
+        `<span class="hs-dim">${esc(rst.current || "")}</span>`
+      : `📂 Restoring from recovery folder… <b>${rst.done}</b>/${rst.total} ` +
+        `<span class="hs-dim">${esc(baseName(rst.current || ""))} — replaced ${rst.replaced + rst.recovered + rst.upgraded}, ` +
+        `still broken ${rst.failed}</span>`;
+    el.classList.remove("hidden");
+    _hsRepoll();
+    return;
+  }
+  if (st && st.running) {
+    el.innerHTML = `🛠 Fixing damaged files… <b>${st.done}</b>/${st.total} ` +
+      `<span class="hs-dim">${esc(baseName(st.current || ""))} — restored ${st.restored}, ` +
+      `rebuilt ${st.repaired}, beyond saving ${st.failed}</span>`;
+    el.classList.remove("hidden");
+    _hsRepoll();
+    return;
+  }
+  // Neither running — show whichever run finished most recently.
+  const rlast = st && (st.finished_at ? st : st.last);
+  const slast = rst && (rst.finished_at ? rst : rst.last);
+  const rOk = rlast && rlast.total, sOk = slast && slast.total;
+  if (!rOk && !sOk) { el.classList.add("hidden"); return; }
+  const pickRestore = sOk && (!rOk || (slast.finished_at || 0) >= (rlast.finished_at || 0));
+  el.innerHTML = pickRestore ? _restoreSummaryHtml(slast) : _repairSummaryHtml(rlast);
   el.classList.remove("hidden");
 }
 // File health: verify every .blend's structure server-side (catches files an
@@ -3786,6 +3841,50 @@ if (_repairAllBtn) _repairAllBtn.onclick = async () => {
   if (st.repaired) parts.push(`${st.repaired} rebuilt`);
   if (st.failed) parts.push(`${st.failed} beyond saving (re-download those)`);
   toast(`🛠 Done — ${parts.join(", ")}.`, st.failed ? undefined : "success");
+  refresh();
+};
+
+// Restore from a recovery folder: point Hangar at a NAS copy / rescued drive,
+// it matches recovered .blends to the library's damaged, lost and rebuilt
+// files by name (folder layout breaks ties), verifies every candidate's
+// structure, and swaps verified copies in. Ends with a reconciliation report:
+// duplicated recoveries, recovered files the library never had, and any
+// leftover .corrupt strays it cleaned up.
+const _restoreSourceBtn = $("#restoreSourceBtn");
+if (_restoreSourceBtn) _restoreSourceBtn.onclick = async () => {
+  const source = await chooseFolder();
+  if (!source) return;
+  if (!confirm(
+    `Search for healthy copies in:\n${source}\n\n` +
+    "Every damaged, lost or rebuilt .blend in the library is looked up there " +
+    "by name. A copy only replaces a library file after its structure " +
+    "verifies — a damaged recovery never overwrites anything. Leftover " +
+    ".corrupt copies of files that get a verified replacement are removed.")) return;
+  _restoreSourceBtn.disabled = true;
+  let st;
+  try { st = await post("blend-health/restore-source", { source }); }
+  catch (_) { _restoreSourceBtn.disabled = false; return; }
+  if (st && st.error) { toast(st.error, "error"); _restoreSourceBtn.disabled = false; return; }
+  updateHealthSummaryBanner();   // live progress in the banner immediately
+  while (st && st.running) {
+    $("#activeFilter").textContent = st.phase === "indexing"
+      ? `📂 Searching recovery folder… ${(st.indexed || 0).toLocaleString()} files found`
+      : `📂 Restoring… ${st.done}/${st.total}`;
+    await new Promise((r) => setTimeout(r, 600));
+    try { st = await api("blend-health/restore-source/status"); } catch (_) { break; }
+  }
+  _restoreSourceBtn.disabled = false;
+  if (!st || !st.total) {
+    toast("Nothing in the library needs restoring — run 🩺 File health first if that seems wrong.");
+    refresh(); return;
+  }
+  const fixed = (st.replaced || 0) + (st.recovered || 0) + (st.upgraded || 0);
+  const parts2 = [];
+  if (fixed) parts2.push(`${fixed} file${fixed === 1 ? "" : "s"} restored from the recovery folder`);
+  if (st.already_ok) parts2.push(`${st.already_ok} already fine`);
+  if (st.failed) parts2.push(`${st.failed} still broken (no healthy copy found)`);
+  toast(`📂 Done — ${parts2.join(", ") || "nothing needed replacing"}.`,
+        st.failed ? undefined : "success");
   refresh();
 };
 
