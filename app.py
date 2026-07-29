@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.29"
+__version__ = "0.15.30"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -2918,6 +2918,18 @@ def update_check():
         return jsonify({"ok": False, "error": msg}), 200
     latest = (rel.get("tag_name") or "").lstrip("v")
     asset = _platform_asset(rel.get("assets", []))
+    # A tag-triggered GitHub release can briefly exist before Actions has
+    # uploaded Hangar-windows.zip / update-manifest.json. If the boot-time check
+    # caches that asset-less release, the frontend only has html_url and the
+    # update pill opens the GitHub webpage for up to an hour. Refresh once when
+    # a newer release is known but no downloadable package was present.
+    if not force and _version_tuple(latest) > _version_tuple(__version__) and not asset:
+        try:
+            rel = _fetch_latest_release(force=True)
+            latest = (rel.get("tag_name") or "").lstrip("v")
+            asset = _platform_asset(rel.get("assets", []))
+        except Exception:
+            pass
     # Prefer the small app-only package when this install's runtime matches the
     # release's — the normal case, since most releases only touch our own code
     # and the UI, not the heavy bundled runtime (Python/numpy/trimesh/Pillow/…).

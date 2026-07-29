@@ -1186,9 +1186,12 @@ async function refresh() {
   else if (f.author) renderGroupedByFolder(data.assets, "", { parentOnly: true });
   else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
-  // Hide breadcrumbs when not in a folder-filtered view.
-  const crumbBar = $("#folderBreadcrumb");
-  if (crumbBar) crumbBar.classList.add("hidden");
+  // Hide breadcrumbs when not in a folder-filtered view. Folder renderers own
+  // the breadcrumb contents; don't hide the bar right after they create it.
+  if (!folderGrouped) {
+    const crumbBar = $("#folderBreadcrumb");
+    if (crumbBar) crumbBar.classList.add("hidden");
+  }
   const texBar = $("#texfixBar");
   if (texBar) texBar.classList.toggle(
     "hidden", !f.missing_blend_textures || !data.assets.length);
@@ -1591,6 +1594,9 @@ function renderClickablePath(label, fullPath, libRoot) {
   const parts = label.split(/[\\/]/).filter(p => p);
   if (!parts.length) { span.textContent = label; return span; }
   const root = (libRoot || "").replace(/[\\/]+$/, "");
+  const full = (fullPath || "").replace(/[\\/]+$/, "");
+  const fullParts = full.split(/[\\/]/).filter(p => p);
+  const tailStart = Math.max(0, fullParts.length - parts.length);
   for (let i = 0; i < parts.length; i++) {
     if (i > 0) span.appendChild(document.createTextNode(" \\ "));
     const seg = document.createElement("span");
@@ -1598,7 +1604,9 @@ function renderClickablePath(label, fullPath, libRoot) {
     seg.textContent = parts[i];
     // Build absolute path for this depth so clicking "iMeshh" filters
     // to root + "\\iMeshh" rather than the full sub-folder.
-    const segPath = root ? root + "\\" + parts.slice(0, i + 1).join("\\") : parts.slice(0, i + 1).join("\\");
+    const segPath = root
+      ? root + "\\" + parts.slice(0, i + 1).join("\\")
+      : fullParts.slice(0, tailStart + i + 1).join("\\");
     seg.title = `Show everything in ${segPath}`;
     seg.onclick = (e) => { e.stopPropagation(); e.preventDefault(); filterToFolder(segPath); };
     span.appendChild(seg);
