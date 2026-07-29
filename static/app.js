@@ -287,6 +287,14 @@ const Tasks = {
           : "") +
         fname;
       if (t.file) pill.title = t.file;
+      if (t.onStop) {
+        const stop = document.createElement("button");
+        stop.className = "task-stop";
+        stop.title = "Stop";
+        stop.textContent = "✕";
+        stop.onclick = () => { stop.disabled = true; t.onStop(); };
+        pill.appendChild(stop);
+      }
       return pill;
     }));
   },
@@ -3904,16 +3912,21 @@ if (_restoreSourceBtn) _restoreSourceBtn.onclick = async () => {
   catch (_) { _restoreSourceBtn.disabled = false; return; }
   if (st && st.error) { toast(st.error, "error"); _restoreSourceBtn.disabled = false; return; }
   updateHealthSummaryBanner();   // live progress in the banner immediately
+  const stopRestore = async () => {
+    try { await post("blend-health/restore-source/cancel"); } catch (_) { /* poll notices */ }
+  };
   try {
     while (st && st.running) {
       const text = st.phase === "indexing"
         ? `📂 Searching recovery folder… ${(st.indexed || 0).toLocaleString()} files found`
         : `📂 Restoring… ${st.done}/${st.total}`;
-      Tasks.set("restore", st.phase === "indexing"
+      const spec = st.phase === "indexing"
         ? { label: "📂 Searching recovery folder",
             detail: `${(st.indexed || 0).toLocaleString()} files found` }
         : { label: "📂 Restoring from recovery folder",
-            done: st.done, total: st.total });
+            done: st.done, total: st.total };
+      spec.onStop = stopRestore;
+      Tasks.set("restore", spec);
       if (state.filter.corrupt) $("#activeFilter").textContent = text;
       await new Promise((r) => setTimeout(r, 600));
       try { st = await api("blend-health/restore-source/status"); } catch (_) { break; }
@@ -3922,6 +3935,11 @@ if (_restoreSourceBtn) _restoreSourceBtn.onclick = async () => {
     Tasks.done("restore");
   }
   _restoreSourceBtn.disabled = false;
+  if (st && st.cancelled) {
+    const fixed = (st.replaced || 0) + (st.recovered || 0) + (st.upgraded || 0);
+    toast(`📂 Stopped — ${fixed ? `${fixed} file${fixed === 1 ? "" : "s"} restored first` : "nothing replaced yet"}.`);
+    refresh(); return;
+  }
   if (!st || !st.total) {
     toast("Nothing in the library needs restoring — run 🩺 File health first if that seems wrong.");
     refresh(); return;

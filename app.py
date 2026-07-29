@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.21"
+__version__ = "0.15.22"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -613,7 +613,7 @@ RESTORE = {"running": False, "phase": "", "source": "", "done": 0, "total": 0,
            "current": "", "indexed": 0, "replaced": 0, "upgraded": 0,
            "recovered": 0, "already_ok": 0, "failed": 0, "failures": [],
            "cleaned": 0, "dup_sources": 0, "extra_sources": 0,
-           "finished_at": 0}
+           "finished_at": 0, "cancelled": False}
 RESTORE_LOCK = threading.Lock()
 RESTORE_GEN = 0
 
@@ -634,7 +634,8 @@ def _index_restore_source(source, generation):
             by_name.setdefault(fn.lower(), []).append(os.path.join(dirpath, fn))
             n += 1
         with RESTORE_LOCK:
-            RESTORE.update(indexed=n, current=dirpath)
+            if generation == RESTORE_GEN:   # don't repaint state after a cancel
+                RESTORE.update(indexed=n, current=dirpath)
     return by_name
 
 
@@ -776,10 +777,11 @@ def _run_restore_source(generation, source):
                 pass
         done += 1
         with RESTORE_LOCK:
-            RESTORE.update(done=done, replaced=replaced, upgraded=upgraded,
-                           recovered=recovered, already_ok=already_ok,
-                           failed=failed, cleaned=cleaned,
-                           failures=list(failures))
+            if generation == RESTORE_GEN:   # cancelled/superseded — stop painting
+                RESTORE.update(done=done, replaced=replaced, upgraded=upgraded,
+                               recovered=recovered, already_ok=already_ok,
+                               failed=failed, cleaned=cleaned,
+                               failures=list(failures))
 
     # Reconcile the two sides so the recovery doesn't hide surprises:
     # duplicated recoveries, and recovered files the library never indexed.
@@ -798,6 +800,10 @@ def _run_restore_source(generation, source):
     extra_examples = extra_examples[:50]
 
     with RESTORE_LOCK:
+        if generation != RESTORE_GEN:
+            # Cancelled (or superseded) — the cancel endpoint / new run owns the
+            # state now, and a partial summary would misread as a full run.
+            return
         RESTORE.update(running=False, phase="", current="",
                        dup_sources=dup_sources, extra_sources=extra_sources,
                        finished_at=time.time())
@@ -831,9 +837,23 @@ def blend_restore_source():
                            done=0, total=0, current="", indexed=0, replaced=0,
                            upgraded=0, recovered=0, already_ok=0, failed=0,
                            failures=[], cleaned=0, dup_sources=0,
-                           extra_sources=0, finished_at=0)
+                           extra_sources=0, finished_at=0, cancelled=False)
             threading.Thread(target=_run_restore_source,
                              args=(RESTORE_GEN, source), daemon=True).start()
+        return jsonify(dict(RESTORE))
+
+
+@app.post("/api/blend-health/restore-source/cancel")
+def blend_restore_cancel():
+    """Stop a running restore. Bumping the generation makes the worker bow out
+    at its next check; the file it may be mid-verifying finishes safely (a copy
+    only ever lands via verify + atomic replace) and nothing else is touched."""
+    global RESTORE_GEN
+    with RESTORE_LOCK:
+        if RESTORE["running"]:
+            RESTORE_GEN += 1
+            RESTORE.update(running=False, phase="", current="",
+                           cancelled=True, finished_at=time.time())
         return jsonify(dict(RESTORE))
 
 
