@@ -1186,6 +1186,9 @@ async function refresh() {
   else if (f.author) renderGroupedByFolder(data.assets, "", { parentOnly: true });
   else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
+  // Hide breadcrumbs when not in a folder-filtered view.
+  const crumbBar = $("#folderBreadcrumb");
+  if (crumbBar) crumbBar.classList.add("hidden");
   const texBar = $("#texfixBar");
   if (texBar) texBar.classList.toggle(
     "hidden", !f.missing_blend_textures || !data.assets.length);
@@ -1360,7 +1363,7 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
   const libRoot = (libraryPath || "").replace(/[\\/]+$/, "");
 
   // Group by full parent directory path; compute display label relative to root.
-  const groups = new Map();  // fullParentPath → {label, items[]}
+  const groups = new Map();  // fullParentPath → {label, items[], fullPath}
   for (const a of assets) {
     const parentDir = (a.path || "").replace(/[\\/][^\\/]+$/, "");
     let label = parentDir;
@@ -1373,13 +1376,25 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
       label = parentDir.slice(libRoot.length).replace(/^[\\/]+/, "") || "(root)";
     }
     if (!groups.has(parentDir)) groups.set(parentDir, {
-      label, subtitle, key: `folder:${parentDir}`, items: []
+      label, subtitle, key: `folder:${parentDir}`, items: [], fullPath: parentDir
     });
     groups.get(parentDir).items.push(a);
   }
 
   const sections = [...groups.values()]
     .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+
+  // Breadcrumbs above the grid when filtering by folder (or author with parent).
+  const crumbBar = $("#folderBreadcrumb");
+  if (crumbBar) {
+    const crumbs = renderBreadcrumbs(libraryPath);
+    if (crumbs) {
+      crumbBar.innerHTML = crumbs;
+      crumbBar.classList.remove("hidden");
+    } else {
+      crumbBar.classList.add("hidden");
+    }
+  }
 
   const ordered = [];
   const secOf = [];
@@ -1391,11 +1406,23 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
     section.className = "grid-section" + (collapsed ? " collapsed" : "");
     const head = document.createElement("div");
     head.className = "section-head";
-    head.innerHTML =
-      `<span class="section-ico">📁</span>` +
-      `<span class="section-name">${esc(s.label)}</span>` +
-      (s.subtitle ? `<span class="section-subtitle">${esc(s.subtitle)}</span>` : "") +
-      `<span class="section-count">${s.items.length}</span>`;
+    // Build clickable path segments for the section label.
+    const nameSpan = renderClickablePath(s.label, s.fullPath, libRoot);
+    const ico = document.createElement("span");
+    ico.className = "section-ico";
+    ico.textContent = "📁";
+    const count = document.createElement("span");
+    count.className = "section-count";
+    count.textContent = s.items.length;
+    head.appendChild(ico);
+    head.appendChild(nameSpan);
+    if (s.subtitle) {
+      const sub = document.createElement("span");
+      sub.className = "section-subtitle";
+      sub.textContent = s.subtitle;
+      head.appendChild(sub);
+    }
+    head.appendChild(count);
     head.prepend(sectionCollapseButton(s.key, s.label));
     section.appendChild(head);
     const sgrid = document.createElement("div");
@@ -1546,6 +1573,60 @@ function filterByAuthor(name) {
   state.filter.author = name;
   state.search = ""; const s = $("#search"); if (s) s.value = "";
   refresh();
+}
+
+function filterToFolder(path) {
+  resetFilter();
+  state.filter.folder = path;
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  refresh();
+}
+
+// Turn a relative path label ("iMeshh\\Ceiling Fans\\Subfolder") into
+// clickable breadcrumb-style <span> elements where each segment narrows the
+// filter to that folder level.
+function renderClickablePath(label, fullPath, libRoot) {
+  const span = document.createElement("span");
+  span.className = "section-name";
+  const parts = label.split(/[\\/]/).filter(p => p);
+  if (!parts.length) { span.textContent = label; return span; }
+  const root = (libRoot || "").replace(/[\\/]+$/, "");
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) span.appendChild(document.createTextNode(" \\ "));
+    const seg = document.createElement("span");
+    seg.className = "path-seg";
+    seg.textContent = parts[i];
+    // Build absolute path for this depth so clicking "iMeshh" filters
+    // to root + "\\iMeshh" rather than the full sub-folder.
+    const segPath = root ? root + "\\" + parts.slice(0, i + 1).join("\\") : parts.slice(0, i + 1).join("\\");
+    seg.title = `Show everything in ${segPath}`;
+    seg.onclick = (e) => { e.stopPropagation(); e.preventDefault(); filterToFolder(segPath); };
+    span.appendChild(seg);
+  }
+  return span;
+}
+
+// Breadcrumb bar above the grid when filtered to a folder.
+// Returns HTML string for the #folderBreadcrumb element.
+function renderBreadcrumbs(folderPath) {
+  if (!folderPath) return "";
+  const parts = folderPath.replace(/[\\/]+$/, "").split(/[\\/]/).filter(p => p);
+  if (!parts.length) return "";
+  let html = `<span class="crumb"><a onclick="filterToFolder('')">🏠 Home</a></span>`;
+  for (let i = 0; i < parts.length; i++) {
+    const full = parts.slice(0, i + 1).join("\\");
+    html += `<span class="crumb-sep">›</span>`;
+    if (i === parts.length - 1) {
+      html += `<span class="crumb crumb-active">${esc(parts[i])}</span>`;
+    } else {
+      html += `<span class="crumb"><a onclick="filterToFolder('${escAttr(full)}')">${esc(parts[i])}</a></span>`;
+    }
+  }
+  return html;
+}
+
+function escAttr(s) {
+  return (s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#39;");
 }
 
 function buildCard(a, i) {
