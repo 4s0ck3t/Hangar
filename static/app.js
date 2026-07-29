@@ -1505,11 +1505,21 @@ function buildCard(a, i) {
     ? `<span class="set-badge" title="${a.set_count} texture maps in this set">⛃ ${a.set_count} maps</span>`
     : "";
   // Immediate parent folder name, so a tile shows where on disk it lives.
+  // In the duplicates view the copies often share the same parent folder NAME
+  // (Bedroom/ vs Bedroom/ in a different tree), so telling them apart needs
+  // the whole directory path — shown on the tile, full path on hover.
   const parts = (a.path || "").replace(/[\\/]+$/, "").split(/[\\/]/);
   const folder = parts.length > 1 ? parts[parts.length - 2] : "";
-  const folderLine = folder
-    ? `<div class="card-folder" title="${esc(a.path || "")}">🗀 ${esc(folder)}</div>`
-    : "";
+  let folderLine = "";
+  if (state.filter.duplicates && parts.length > 1) {
+    const dir = parts.slice(0, -1).join("/");
+    folderLine =
+      `<div class="card-folder card-folder-full" title="${esc(a.path || "")}">🗀 ${esc(dir)}</div>`;
+    card.title = a.path || "";
+  } else if (folder) {
+    folderLine =
+      `<div class="card-folder" title="${esc(a.path || "")}">🗀 ${esc(folder)}</div>`;
+  }
   // Author (source pack) on the tile, so you can see origin at a glance.
   const authorLine = a.author
     ? `<div class="card-author" title="Author: ${esc(a.author)}">👤 ${esc(a.author)}</div>`
