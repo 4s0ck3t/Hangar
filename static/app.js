@@ -23,6 +23,30 @@ const MODEL_EXT_GROUPS = [
   { label: "3DS",     exts: [".3ds"] },
 ];
 
+function modelExtGroups(modelByExt) {
+  modelByExt = modelByExt || {};
+  const seen = new Set();
+  const groups = MODEL_EXT_GROUPS
+    .map((g) => {
+      const exts = g.exts.filter((e) => (modelByExt[e] || 0) > 0);
+      exts.forEach((e) => seen.add(e));
+      return { label: g.label, exts, count: exts.reduce((s, e) => s + (modelByExt[e] || 0), 0) };
+    })
+    .filter((g) => g.count > 0);
+  for (const ext of Object.keys(modelByExt).sort()) {
+    if (seen.has(ext) || !(modelByExt[ext] || 0)) continue;
+    groups.push({ label: ext.replace(".", "").toUpperCase(), exts: [ext], count: modelByExt[ext] });
+  }
+  return groups;
+}
+
+function modelFormatLabel(extKey) {
+  const grp = MODEL_EXT_GROUPS.find((g) => g.exts.join(",") === extKey);
+  if (grp) return grp.label;
+  const exts = (extKey || "").split(",").filter(Boolean);
+  return exts.length === 1 ? exts[0].replace(".", "").toUpperCase() : extKey;
+}
+
 function loadCollapsed() {
   // Default (first run / no saved choice): only Models expanded.
   const DEFAULT = ["texture", "hdri", "material"];
@@ -385,6 +409,7 @@ const Tasks = {
 function renderKindFilters(counts, cats) {
   cats = cats || [];
   const modelByExt = counts.model_by_ext || {};
+  const modelFormats = modelExtGroups(modelByExt);
   const items = [
     ["", "all", counts.total],
     ["model", "model", counts.by_kind.model || 0],
@@ -395,8 +420,7 @@ function renderKindFilters(counts, cats) {
   const ul = $("#kindFilters"); ul.innerHTML = "";
   for (const [kind, key, count] of items) {
     const kindCats = cats.filter((c) => (c.kind || "") === kind);
-    const hasExt = kind === "model" && count > 0 &&
-      MODEL_EXT_GROUPS.some((g) => g.exts.some((e) => (modelByExt[e] || 0) > 0));
+    const hasExt = kind === "model" && count > 0 && modelFormats.length > 0;
     const hasChildren = kindCats.length > 0 || hasExt;
     const collapsed = state.collapsed.has(kind);
 
@@ -451,25 +475,20 @@ function renderKindFilters(counts, cats) {
 
     if (collapsed) continue;  // children hidden
 
-    // Categories nested under their type, hierarchically (Furniture > Chairs),
-    // with each category's represented folders shown below it (Furniture > Beds
-    // — a physical grouping, distinct from the category-nesting tree).
-    renderCategoryTree(ul, kindCats, null, 1);
-
-    // Model file-format subcategories, under Models below its categories.
+    // Model file-format subcategories sit directly under Models so Blender/FBX/
+    // OBJ filtering is always easy to reach, even when there are many categories.
     if (kind === "model" && count > 0) {
-      for (const grp of MODEL_EXT_GROUPS) {
-        const grpCount = grp.exts.reduce((s, e) => s + (modelByExt[e] || 0), 0);
-        if (!grpCount) continue;
+      for (const grp of modelFormats) {
         const sub = document.createElement("li");
         sub.className = "sub-item";
         const extKey = grp.exts.join(",");
         const subActive = state.filter.kind === "model" && state.filter.ext === extKey
-          && !state.filter.favorite && !state.filter.tag && !state.filter.collection;
+          && !state.filter.favorite && !state.filter.tag && !state.filter.collection
+          && !state.filter.category && !state.filter.folder;
         if (subActive) sub.classList.add("active");
         sub.innerHTML =
           `<span class="sub-dot"></span>` +
-          `<span>${esc(grp.label)}</span><span class="count">${grpCount}</span>`;
+          `<span>${esc(grp.label)}</span><span class="count">${grp.count}</span>`;
         sub.onclick = (e) => {
           e.stopPropagation();
           resetFilter();
@@ -480,6 +499,11 @@ function renderKindFilters(counts, cats) {
         ul.appendChild(sub);
       }
     }
+
+    // Categories nested under their type, hierarchically (Furniture > Chairs),
+    // with each category's represented folders shown below it (Furniture > Beds
+    // — a physical grouping, distinct from the category-nesting tree).
+    renderCategoryTree(ul, kindCats, null, 1);
   }
 
   const fav = document.createElement("li");
@@ -1642,10 +1666,7 @@ function updateActiveLabel(total) {
     : state.filter.category ? state.filter.category
     : state.filter.folder ? `📁 ${baseName(state.filter.folder)}`
     : state.filter.collection ? state.filter.collection
-    : state.filter.ext ? (() => {
-        const grp = MODEL_EXT_GROUPS.find(g => g.exts.join(",") === state.filter.ext);
-        return grp ? grp.label : state.filter.ext;
-      })()
+    : state.filter.ext ? modelFormatLabel(state.filter.ext)
     : KIND_LABELS[state.filter.kind || "all"];
   $("#activeFilter").textContent = `${label} · ${total}`;
 }
@@ -3871,11 +3892,20 @@ function startUpdatePolling() {
 // Kick off (or resume) the download in the background — no modal step. Used by
 // the manual "Check for updates" button and the status-bar pill, so the user
 // just gets a "Restart to finish" button once it's downloaded.
-function beginBackgroundUpdate() {
+async function _ensureUpdateAssetUrl() {
+  if (!_updateInfo || _updateInfo.asset_url) return !!(_updateInfo && _updateInfo.asset_url);
+  try {
+    const fresh = await api("update/check?force=1");
+    if (fresh && fresh.ok && fresh.update_available) _updateInfo = fresh;
+  } catch (_) {}
+  return !!(_updateInfo && _updateInfo.asset_url);
+}
+
+async function beginBackgroundUpdate() {
   if (!_updateInfo) return;
   if (_updateReady) { launchUpdate(); return; }      // already downloaded → restart now
   if (_updatePoll) { openUpdateModal(); return; }    // already downloading → show progress
-  if (!_updateInfo.asset_url) {                       // no build attached → open releases page
+  if (!(await _ensureUpdateAssetUrl())) {             // no build attached → open releases page
     window.open(_updateInfo.html_url || "https://github.com/4s0ck3t/Hangar/releases", "_blank");
     return;
   }
@@ -3891,7 +3921,7 @@ function beginBackgroundUpdate() {
 
 async function startUpdateDownload() {
   if (!_updateInfo) return;
-  if (!_updateInfo.asset_url) { window.open(_updateInfo.html_url || "https://github.com/4s0ck3t/Hangar/releases", "_blank"); return; }
+  if (!(await _ensureUpdateAssetUrl())) { window.open(_updateInfo.html_url || "https://github.com/4s0ck3t/Hangar/releases", "_blank"); return; }
   const btn = $("#updateDownloadBtn");
   btn.disabled = true; btn.textContent = "Downloading…";
   $("#updateProgress").classList.remove("hidden");
