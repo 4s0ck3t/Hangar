@@ -25,7 +25,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.18"
+__version__ = "0.15.19"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -143,7 +143,7 @@ def _start_scan(libs):
 # scroll-render would.
 WARM = {"running": False, "done": 0, "total": 0, "rendered": 0, "failed": 0,
         "current": "", "blender": False, "last_error": "", "by_ext": {},
-        "finished_at": 0, "known_failed": 0}
+        "finished_at": 0, "known_failed": 0, "offline": 0}
 WARM_LOCK = threading.Lock()
 WARM_GEN = 0  # bumped on each new scan so an in-flight warm pass bows out
 
@@ -158,11 +158,27 @@ def _run_warm(generation):
         return
     targets = []
     known_failed = 0
+    offline = 0
+    # A whole disconnected drive means thousands of doomed attempts — check each
+    # library root once and skip everything under a dead one without a per-file
+    # stat storm.
+    dead_roots = tuple(
+        lib["path"].rstrip("/\\") + os.sep for lib in store.list_libraries()
+        if not lib["available"])
     for asset in all_targets:
         if generation != WARM_GEN:
             return
         try:
             if thumbs.has_cached_thumb(asset):
+                continue
+            # Its drive/folder isn't connected right now — an attempt would just
+            # fail (and read as "generating previews" for files that aren't
+            # there). Skip until the folder is back.
+            if dead_roots and asset["path"].startswith(dead_roots):
+                offline += 1
+                continue
+            if not os.path.exists(thumbs._fs(asset["path"])):
+                offline += 1
                 continue
             # Generation already failed for this exact file state (same path +
             # mtime) — don't burn another pass on it. It retries when the file
@@ -178,7 +194,8 @@ def _run_warm(generation):
     with WARM_LOCK:
         WARM.update(running=True, done=0, total=len(targets), rendered=0,
                     failed=0, current="", blender=blender_ok, last_error="",
-                    by_ext={}, finished_at=0, known_failed=known_failed)
+                    by_ext={}, finished_at=0, known_failed=known_failed,
+                    offline=offline)
     done = rendered = failed = 0
     last_error = ""
     # Per-extension outcome tally so diagnostics can show exactly what happened

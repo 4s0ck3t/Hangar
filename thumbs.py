@@ -114,6 +114,10 @@ def record_thumb_failure(asset, reason, no_blender=False):
         _thumb_fail_path(asset).write_text(json.dumps({
             "reason": str(reason or "")[:500],
             "no_blender": bool(no_blender),
+            # A failure only counts against a file we could actually read at the
+            # time — one recorded while its drive was disconnected must not stop
+            # the retry after the drive comes back.
+            "src_seen": os.path.exists(_fs(asset["path"])),
             "ts": time.time(),
         }), encoding="utf-8")
     except Exception:
@@ -130,6 +134,11 @@ def get_thumb_failure(asset):
             return None
         info = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
+        return None
+    if not info.get("src_seen"):
+        # Recorded while the source was unreadable (offline drive), or by an
+        # older Hangar that didn't note it — retry; a genuine failure re-records
+        # with src_seen set.
         return None
     if info.get("no_blender") and blender_available():
         return None

@@ -3369,6 +3369,13 @@ async function pollScan() {
       state.wasScanning = false;
       toast(`Done — ${s.indexed.toLocaleString()} assets indexed`, "success");
     }
+    // Files on a disconnected drive are skipped, not attempted — say so once
+    // instead of looking like previews are being generated for absent files.
+    if (warm.offline) {
+      toast(`${warm.offline.toLocaleString()} preview${warm.offline === 1 ? "" : "s"} ` +
+            `skipped — their library folder isn't connected. They'll generate ` +
+            `when it's back.`);
+    }
     // USD/FBX/Alembic need Blender to preview — if the warm pass couldn't find
     // it, say so once instead of leaving the user with silent blank tiles.
     if (warm.failed && !warm.blender) {
