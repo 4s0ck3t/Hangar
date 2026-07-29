@@ -25,9 +25,11 @@
       <span class="brand-sub">asset bay</span>
     </div>
 
-    <button class="add-folder" id="addFolderBtn">
-      <span class="af-ico">⊕</span> Add asset folder
-    </button>
+    <div class="side-tools">
+      <button id="dataDirBtn" class="rescan" title="Open Hangar's data folder (index, thumbnails)">Hangar files</button>
+      <button id="diagBtn" class="rescan" title="Diagnostics & logs">Logs</button>
+      <button id="rescanBtn" class="rescan">Rescan all</button>
+    </div>
 
     <nav class="nav">
       <div class="nav-group">
@@ -47,6 +49,9 @@
       <div class="nav-group">
         <div class="nav-label">Folders</div>
         <ul id="libraryList" class="library-list"></ul>
+        <button class="add-folder" id="addFolderBtn">
+          <span class="af-ico">⊕</span> Add asset folder
+        </button>
       </div>
 
       <div id="missingPanel" class="nav-group missing-panel hidden">
@@ -124,9 +129,6 @@
     <div class="status-right">
       <span id="statusBreakdown" class="status-breakdown"></span>
       <span id="statusVersion" class="status-version" title="Hangar version"></span>
-      <button id="dataDirBtn" class="rescan" title="Open Hangar's data folder (index, thumbnails)">Hangar files</button>
-      <button id="diagBtn" class="rescan" title="Diagnostics & logs">Logs</button>
-      <button id="rescanBtn" class="rescan">Rescan all</button>
     </div>
   </footer>
 

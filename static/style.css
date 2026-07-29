@@ -70,8 +70,15 @@ button, input, select { font-family: inherit; color: inherit; }
   letter-spacing: .12em; margin-left: auto;
 }
 
+.side-tools {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 0 14px 10px;
+}
+.side-tools .rescan { padding: 4px 9px; }
+
 .add-folder {
-  margin: 0 14px 8px; padding: 10px 12px; display: flex; align-items: center; gap: 9px;
+  margin: 6px 14px 8px; padding: 10px 12px; display: flex; align-items: center; gap: 9px;
+  width: calc(100% - 28px);
   background: var(--raised); border: 1px solid var(--line);
   border-radius: var(--radius); color: var(--ink);
   text-align: left; cursor: pointer; font-size: 13px;
