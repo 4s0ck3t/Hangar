@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.27"
+__version__ = "0.15.28"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -859,13 +859,12 @@ def blend_restore_cancel():
 
 # ---- fix missing .blend textures from a folder ------------------------------
 # For every .blend flagged as referencing absent texture images, look the
-# missing files up (by name) in a user-chosen folder and copy matches to the
-# exact path the .blend references — //relative resolved against the .blend's
-# folder. Create-only: an existing file is never overwritten, and the .blend
-# itself is never modified.
+# missing files up (by name) in a user-chosen folder. Hangar copies HDRI files
+# beside the .blend and ordinary textures into a sibling textures folder, then
+# relinks the .blend image reference to that portable local copy.
 TEXFIX = {"running": False, "phase": "", "source": "", "current": "",
-          "indexed": 0, "done": 0, "total": 0, "fixed": 0, "already_ok": 0,
-          "unresolved": 0, "blends_fixed": 0, "finished_at": 0,
+          "indexed": 0, "done": 0, "total": 0, "fixed": 0, "relinked": 0,
+          "already_ok": 0, "unresolved": 0, "blends_fixed": 0, "finished_at": 0,
           "cancelled": False}
 TEXFIX_LOCK = threading.Lock()
 TEXFIX_GEN = 0
@@ -878,6 +877,20 @@ def _resolve_tex_path(blend_path, ref):
     if ref.startswith("//"):     # Blender: relative to the .blend's folder
         ref = os.path.join(os.path.dirname(blend_path), ref[2:].lstrip("/\\"))
     return os.path.normpath(ref.replace("\\", os.sep))
+
+
+def _texfix_local_target(blend_path, found_path):
+    blend_dir = os.path.dirname(blend_path)
+    name = os.path.basename(found_path)
+    ext = os.path.splitext(name)[1].lower()
+    if ext in (".hdr", ".exr"):
+        return os.path.join(blend_dir, name)
+    tex_dir = os.path.join(blend_dir, "textures")
+    if not os.path.isdir(thumbs._fs(tex_dir)):
+        singular = os.path.join(blend_dir, "texture")
+        if os.path.isdir(thumbs._fs(singular)):
+            tex_dir = singular
+    return os.path.join(tex_dir, name)
 
 
 def _run_texfix(generation, source):
@@ -897,8 +910,8 @@ def _run_texfix(generation, source):
     with TEXFIX_LOCK:
         if generation == TEXFIX_GEN:
             TEXFIX.update(phase="fixing", total=len(targets), done=0, current="")
-    done = fixed = already = unresolved = blends_fixed = 0
-    placed_list, notfound_list = [], []
+    done = fixed = relinked = already = unresolved = blends_fixed = 0
+    placed_list, relinked_list, notfound_list = [], [], []
     for t in targets:
         if generation != TEXFIX_GEN:
             return
@@ -908,6 +921,7 @@ def _run_texfix(generation, source):
             refs = [_resolve_tex_path(t["path"], m.get("path"))
                     for m in (info.get("missing_textures") or [])]
             refs = [r for r in refs if r]
+            relink_map = {}
             for target in refs:
                 if os.path.exists(thumbs._fs(target)):
                     already += 1
@@ -918,13 +932,20 @@ def _run_texfix(generation, source):
                                key=lambda c: -_suffix_overlap(c, target))
                 ok = False
                 for cand in cands:
-                    tmp = target + ".hangar-texfix"
+                    local_target = _texfix_local_target(t["path"], cand)
+                    tmp = local_target + ".hangar-texfix"
                     try:
-                        os.makedirs(os.path.dirname(thumbs._fs(target)),
+                        os.makedirs(os.path.dirname(thumbs._fs(local_target)),
                                     exist_ok=True)
+                        if os.path.exists(thumbs._fs(local_target)) \
+                                and os.path.getsize(thumbs._fs(local_target)) > 0:
+                            relink_map[target] = local_target
+                            ok = True
+                            break
                         shutil.copy2(thumbs._fs(cand), thumbs._fs(tmp))
                         if os.path.getsize(thumbs._fs(tmp)) > 0:
-                            os.replace(thumbs._fs(tmp), thumbs._fs(target))
+                            os.replace(thumbs._fs(tmp), thumbs._fs(local_target))
+                            relink_map[target] = local_target
                             ok = True
                             break
                         os.unlink(thumbs._fs(tmp))
@@ -934,16 +955,38 @@ def _run_texfix(generation, source):
                         except OSError:
                             pass
                 if ok:
-                    fixed += 1
                     placed += 1
+                    fixed += 1
                     if len(placed_list) < 200:
-                        placed_list.append({"blend": t["path"], "target": target})
+                        placed_list.append({
+                            "blend": t["path"],
+                            "target": relink_map.get(target) or target,
+                        })
                 else:
                     unresolved += 1
                     if len(notfound_list) < 200:
                         notfound_list.append({"blend": t["path"], "ref": target})
+            if relink_map:
+                r = thumbs.relink_blend_textures(t["path"], relink_map)
+                changed = int(r.get("changed") or 0) if r.get("ok") else 0
+                relinked += changed
+                if changed and len(relinked_list) < 200:
+                    for old, new in list(relink_map.items())[:changed]:
+                        if len(relinked_list) >= 200:
+                            break
+                        relinked_list.append({
+                            "blend": t["path"], "from": old, "to": new,
+                        })
+                if changed < len(relink_map):
+                    unresolved += len(relink_map) - changed
             still = sum(1 for r in refs
                         if not os.path.exists(thumbs._fs(r)))
+            if relink_map:
+                try:
+                    info2 = thumbs.inspect_blend(t["path"]) or {}
+                    still = len(info2.get("missing_textures") or [])
+                except Exception:
+                    pass
             store.set_blend_missing_textures(t["id"], still)
             if placed:
                 # The inspect cache keys on the .blend's mtime, which placing
@@ -956,7 +999,8 @@ def _run_texfix(generation, source):
         done += 1
         with TEXFIX_LOCK:
             if generation == TEXFIX_GEN:
-                TEXFIX.update(done=done, fixed=fixed, already_ok=already,
+                TEXFIX.update(done=done, fixed=fixed, relinked=relinked,
+                              already_ok=already,
                               unresolved=unresolved, blends_fixed=blends_fixed,
                               current=t["path"])
     with TEXFIX_LOCK:
@@ -969,9 +1013,11 @@ def _run_texfix(generation, source):
     try:
         store.set_setting("last_texfix_summary", json.dumps({
             "finished_at": time.time(), "source": source, "total": len(targets),
-            "fixed": fixed, "already_ok": already, "unresolved": unresolved,
+            "fixed": fixed, "relinked": relinked, "already_ok": already,
+            "unresolved": unresolved,
             "blends_fixed": blends_fixed,
-            "placed": placed_list, "notfound": notfound_list,
+            "placed": placed_list, "relinked_files": relinked_list,
+            "notfound": notfound_list,
         }))
     except Exception:
         pass
@@ -989,6 +1035,7 @@ def blend_texfix():
             TEXFIX_GEN += 1
             TEXFIX.update(running=True, phase="indexing", source=source,
                           current="", indexed=0, done=0, total=0, fixed=0,
+                          relinked=0,
                           already_ok=0, unresolved=0, blends_fixed=0,
                           finished_at=0, cancelled=False)
             threading.Thread(target=_run_texfix,

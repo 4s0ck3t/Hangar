@@ -4049,6 +4049,7 @@ function _texfixSummaryHtml(last) {
     ? new Date(last.finished_at * 1000).toLocaleString() : "";
   const parts = [];
   if (last.fixed) parts.push(`<b>${last.fixed}</b> texture file${last.fixed === 1 ? "" : "s"} restored`);
+  if (last.relinked) parts.push(`<b>${last.relinked}</b> texture link${last.relinked === 1 ? "" : "s"} updated`);
   if (last.blends_fixed) parts.push(`<b>${last.blends_fixed}</b> .blend${last.blends_fixed === 1 ? "" : "s"} fully fixed`);
   if (last.already_ok) parts.push(`${last.already_ok} already in place`);
   if (!parts.length) parts.push("nothing needed fixing");
@@ -4063,6 +4064,14 @@ function _texfixSummaryHtml(last) {
       `<li><b title="${esc(p.target)}">${esc(baseName(p.target))}</b> ` +
       `<span class="hs-dim" title="${esc(p.blend)}">→ ${esc(baseName(p.blend))}</span></li>`).join("");
     if (last.placed.length > cap) html += `<li class="hs-dim">…and ${last.placed.length - cap} more</li>`;
+    html += `</ul>`;
+  }
+  if ((last.relinked_files || []).length) {
+    html += `<div class="hs-dim">Relinked in .blend:</div><ul>`;
+    html += last.relinked_files.slice(0, cap).map((p) =>
+      `<li><b title="${esc(p.to)}">${esc(baseName(p.to))}</b> ` +
+      `<span class="hs-dim" title="${esc(p.from)}">replaced old path for ${esc(baseName(p.blend))}</span></li>`).join("");
+    if (last.relinked_files.length > cap) html += `<li class="hs-dim">...and ${last.relinked_files.length - cap} more</li>`;
     html += `</ul>`;
   }
   if ((last.notfound || []).length) {
@@ -4090,17 +4099,17 @@ async function updateTexfixBanner() {
 }
 
 // Fix missing .blend textures from a folder: scan it for the absent image
-// files by name and copy matches to the exact paths the .blends reference.
-// Create-only on disk; the .blend files themselves are never modified.
+// files by name, copy them beside the .blend or into its textures folder, then
+// relink the .blend to those portable local copies.
 const _texfixBtn = $("#texfixBtn");
 if (_texfixBtn) _texfixBtn.onclick = async () => {
   const source = await chooseFolder();
   if (!source) return;
   if (!confirm(
     `Search for the missing texture files in:\n${source}\n\n` +
-    "Found images are copied to the exact locations the .blend files " +
-    "reference. Existing files are never overwritten, and the .blend files " +
-    "themselves aren't touched.")) return;
+    "HDR/EXR files are copied beside the .blend. Other image textures are " +
+    "copied into its textures folder. Hangar then relinks the .blend to " +
+    "those local copies.")) return;
   _texfixBtn.disabled = true;
   let st;
   try { st = await post("blend-health/texfix", { source }); }
@@ -4131,6 +4140,7 @@ if (_texfixBtn) _texfixBtn.onclick = async () => {
   }
   const parts = [];
   if (st.fixed) parts.push(`${st.fixed} texture file${st.fixed === 1 ? "" : "s"} restored`);
+  if (st.relinked) parts.push(`${st.relinked} texture link${st.relinked === 1 ? "" : "s"} updated`);
   if (st.blends_fixed) parts.push(`${st.blends_fixed} .blend${st.blends_fixed === 1 ? "" : "s"} fully fixed`);
   if (st.unresolved) parts.push(`${st.unresolved} not found in that folder`);
   toast(`🧩 Done — ${parts.join(", ") || "nothing needed fixing"}. Full list shown in the view.`,

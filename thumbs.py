@@ -2031,6 +2031,99 @@ def pack_blend_textures(blend_path):
     return {"ok": False, "error": _render_failure_summary(proc)}
 
 
+_RELINK_TEXTURES_SCRIPT = r'''
+import bpy, json, os, sys
+
+argv = sys.argv[sys.argv.index("--") + 1:]
+mapfile = argv[0]
+with open(mapfile, "r", encoding="utf-8") as fh:
+    mapping = json.load(fh)
+
+base = os.path.dirname(bpy.data.filepath)
+norm_map = {os.path.normcase(os.path.normpath(k)): v for k, v in mapping.items()}
+changed = 0
+for img in bpy.data.images:
+    fp = (getattr(img, "filepath", "") or "").strip()
+    if not fp or "<" in fp:
+        continue
+    resolved = fp
+    if resolved.startswith("//"):
+        resolved = os.path.join(base, resolved[2:].lstrip("/\\"))
+    key = os.path.normcase(os.path.normpath(resolved))
+    new_path = norm_map.get(key)
+    if not new_path:
+        continue
+    try:
+        img.filepath = new_path
+        changed += 1
+        print("HANGAR_RELINKED:", fp, "->", new_path, flush=True)
+    except Exception as e:
+        print("HANGAR_RELINK_SKIP:", fp, e, flush=True)
+
+if changed:
+    try:
+        hangar_safe_save()
+    except Exception as e:
+        print("HANGAR_RELINK_FAIL:", e, flush=True)
+print("HANGAR_RELINK_DONE: changed=%d" % changed, flush=True)
+'''
+
+
+def relink_blend_textures(blend_path, mapping):
+    """Point missing image references in a .blend at found files.
+
+    `mapping` is {old_resolved_path: new_existing_path}. This is the fallback
+    when the old absolute path can't be recreated locally (for example a .blend
+    made under another Windows user profile).
+    """
+    mapping = {str(k): str(v) for k, v in (mapping or {}).items() if k and v}
+    if not mapping:
+        return {"ok": True, "changed": 0}
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "changed": 0,
+                "error": "Blender wasn't found - set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "changed": 0,
+                "error": "File isn't accessible right now."}
+    import subprocess
+    import tempfile
+    _cleanup_blend_save_tmp(blend_path)
+    with tempfile.TemporaryDirectory() as td:
+        script = os.path.join(td, "hangar_relink_textures.py")
+        mapfile = os.path.join(td, "mapping.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_SAFE_SAVE_SNIPPET + _RELINK_TEXTURES_SCRIPT)
+        with open(mapfile, "w", encoding="utf-8") as fh:
+            json.dump(mapping, fh)
+        try:
+            proc = subprocess.run(
+                [blender, "--background", "--factory-startup", "--disable-autoexec",
+                 blend_path, "-P", script, "--", mapfile],
+                timeout=RENDER_TIMEOUT, capture_output=True, text=True,
+                env=_blender_env(), **_no_window(),
+            )
+        except subprocess.TimeoutExpired as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "changed": 0,
+                    "error": f"Timed out after {RENDER_TIMEOUT}s."}
+        except Exception as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "changed": 0,
+                    "error": f"Couldn't launch Blender: {e}"}
+    _record_render_log(blender, blend_path, proc)
+    m = re.search(r"HANGAR_RELINK_DONE: changed=(\d+)", proc.stdout or "")
+    if m:
+        changed = int(m.group(1))
+        if changed:
+            save_err = _commit_blend_save(blend_path, proc)
+            if save_err:
+                return {"ok": False, "changed": 0, "error": save_err}
+        return {"ok": True, "changed": changed}
+    _cleanup_blend_save_tmp(blend_path)
+    return {"ok": False, "changed": 0, "error": _render_failure_summary(proc)}
+
+
 # Extract one marked datablock into its own .blend. bpy.data.libraries.write
 # writes the named object/collection plus every datablock it depends on (mesh,
 # materials, textures), leaving the source file untouched.
