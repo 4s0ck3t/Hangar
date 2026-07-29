@@ -9,7 +9,7 @@ const KIND_LABELS = {
   hdri: "HDRIs", material: "Materials",
 };
 
-// Groups of model extensions shown as sidebar subcategories.
+// Groups of model extensions shown as top-bar checkbox filters.
 const MODEL_EXT_GROUPS = [
   { label: "Blender", exts: [".blend"] },
   { label: "FBX",     exts: [".fbx"] },
@@ -41,10 +41,22 @@ function modelExtGroups(modelByExt) {
 }
 
 function modelFormatLabel(extKey) {
-  const grp = MODEL_EXT_GROUPS.find((g) => g.exts.join(",") === extKey);
-  if (grp) return grp.label;
   const exts = (extKey || "").split(",").filter(Boolean);
-  return exts.length === 1 ? exts[0].replace(".", "").toUpperCase() : extKey;
+  if (!exts.length) return "";
+  const selected = new Set(exts);
+  const labels = [];
+  for (const grp of MODEL_EXT_GROUPS) {
+    if (grp.exts.some((e) => selected.has(e))) {
+      labels.push(grp.label);
+      grp.exts.forEach((e) => selected.delete(e));
+    }
+  }
+  for (const ext of [...selected].sort()) labels.push(ext.replace(".", "").toUpperCase());
+  return labels.join(" + ");
+}
+
+function selectedModelExts() {
+  return new Set((state.filter.ext || "").split(",").filter(Boolean));
 }
 
 function loadCollapsed() {
@@ -62,6 +74,7 @@ const state = {
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
+let appCounts = null;
 const $ = (s) => document.querySelector(s);
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
@@ -256,13 +269,65 @@ async function loadState() {
   categoryFolders = s.category_folders || [];
   appCaps.blenderReady = !!s.blender_render;
   appCaps.renderExts = s.blender_render_exts || [];
+  appCounts = s.counts || {};
   renderKindFilters(s.counts, allCategories);
+  renderModelFormatFilters(s.counts);
   renderCollectionFilters(s.collections);
   renderLibraries(s.libraries);
   renderOfflineBanner(s.libraries);
   renderStatusBar(s.counts, s.version);
   renderMissingPanel(s.counts);
   return s;
+}
+
+function renderModelFormatFilters(counts) {
+  const bar = $("#modelFormatFilters");
+  if (!bar) return;
+  const formats = modelExtGroups((counts && counts.model_by_ext) || {});
+  bar.innerHTML = "";
+  if (!formats.length) {
+    bar.classList.add("hidden");
+    return;
+  }
+  const selected = selectedModelExts();
+  const title = document.createElement("span");
+  title.className = "format-label";
+  title.textContent = "Models";
+  bar.appendChild(title);
+  for (const grp of formats) {
+    const id = "fmt_" + grp.exts.join("_").replace(/[^a-z0-9_]/gi, "");
+    const label = document.createElement("label");
+    label.className = "format-check";
+    label.title = `${grp.label} (${grp.count.toLocaleString()})`;
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.id = id;
+    input.checked = grp.exts.some((e) => selected.has(e));
+    input.onchange = () => {
+      const next = selectedModelExts();
+      for (const ext of grp.exts) {
+        if (input.checked) next.add(ext);
+        else next.delete(ext);
+      }
+      state.filter.ext = [...next].sort().join(",");
+      if (state.filter.ext) {
+        state.filter.kind = "model";
+        state.filter.subtype = "";
+        state.filter.resolution = "";
+      }
+      refresh();
+    };
+    label.appendChild(input);
+    const text = document.createElement("span");
+    text.textContent = grp.label;
+    label.appendChild(text);
+    const count = document.createElement("span");
+    count.className = "format-count";
+    count.textContent = grp.count.toLocaleString();
+    label.appendChild(count);
+    bar.appendChild(label);
+  }
+  bar.classList.remove("hidden");
 }
 
 // ---- missing-files sidebar panel ------------------------------------------
@@ -408,8 +473,6 @@ const Tasks = {
 
 function renderKindFilters(counts, cats) {
   cats = cats || [];
-  const modelByExt = counts.model_by_ext || {};
-  const modelFormats = modelExtGroups(modelByExt);
   const items = [
     ["", "all", counts.total],
     ["model", "model", counts.by_kind.model || 0],
@@ -420,8 +483,7 @@ function renderKindFilters(counts, cats) {
   const ul = $("#kindFilters"); ul.innerHTML = "";
   for (const [kind, key, count] of items) {
     const kindCats = cats.filter((c) => (c.kind || "") === kind);
-    const hasExt = kind === "model" && count > 0 && modelFormats.length > 0;
-    const hasChildren = kindCats.length > 0 || hasExt;
+    const hasChildren = kindCats.length > 0;
     const collapsed = state.collapsed.has(kind);
 
     const li = document.createElement("li");
@@ -474,31 +536,6 @@ function renderKindFilters(counts, cats) {
     ul.appendChild(li);
 
     if (collapsed) continue;  // children hidden
-
-    // Model file-format subcategories sit directly under Models so Blender/FBX/
-    // OBJ filtering is always easy to reach, even when there are many categories.
-    if (kind === "model" && count > 0) {
-      for (const grp of modelFormats) {
-        const sub = document.createElement("li");
-        sub.className = "sub-item";
-        const extKey = grp.exts.join(",");
-        const subActive = state.filter.kind === "model" && state.filter.ext === extKey
-          && !state.filter.favorite && !state.filter.tag && !state.filter.collection
-          && !state.filter.category && !state.filter.folder;
-        if (subActive) sub.classList.add("active");
-        sub.innerHTML =
-          `<span class="sub-dot"></span>` +
-          `<span>${esc(grp.label)}</span><span class="count">${grp.count}</span>`;
-        sub.onclick = (e) => {
-          e.stopPropagation();
-          resetFilter();
-          state.filter.kind = "model";
-          state.filter.ext = extKey;
-          refresh();
-        };
-        ul.appendChild(sub);
-      }
-    }
 
     // Categories nested under their type, hierarchically (Furniture > Chairs),
     // with each category's represented folders shown below it (Furniture > Beds
@@ -1235,6 +1272,7 @@ async function refresh() {
   // Nothing on screen yet (first load / coming from an empty view) → show
   // shimmering placeholder tiles instead of a blank pane while we fetch.
   if (!$("#grid").querySelector(".card")) renderGridSkeleton();
+  renderModelFormatFilters(appCounts);
   const f = state.filter;
   // Duplicates view: every file that is byte-identical to at least one other
   // file, grouped by content. It's its own mode, so it overrides the
