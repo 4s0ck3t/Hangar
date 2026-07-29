@@ -4,6 +4,7 @@ Run as a desktop app:   python desktop.py
 Run as a local web app: python app.py  (opens in your browser)
 """
 
+import base64
 import hashlib
 import json
 import mimetypes
@@ -25,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.19"
+__version__ = "0.15.20"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -972,25 +973,99 @@ def pick_folder():
     to a typed-path prompt if neither is available.
     """
     if platform.system() == "Windows":
-        ps = (
-            "[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
-            "Add-Type -AssemblyName System.Windows.Forms; "
-            "$owner = New-Object System.Windows.Forms.Form; "
-            "$owner.TopMost = $true; "
-            "$owner.ShowInTaskbar = $false; "
-            "$owner.StartPosition = 'CenterScreen'; "
-            "$owner.Size = New-Object System.Drawing.Size(1,1); "
-            "$owner.Opacity = 0; "
-            "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
-            "$d.Description = 'Choose an asset folder'; "
-            "$d.ShowNewFolderButton = $true; "
-            "try { "
-            "  if ($d.ShowDialog($owner) -eq 'OK') { Write-Output $d.SelectedPath } "
-            "} finally { $owner.Dispose(); $d.Dispose(); }"
-        )
+        # The Explorer-style IFileOpenDialog (FOS_PICKFOLDERS), not WinForms'
+        # legacy FolderBrowserDialog: the old tree dialog can't browse to
+        # network shares that don't announce themselves (most NAS boxes) and
+        # has no path box to type \\nas\share into. The Explorer dialog shows
+        # Network / Quick Access / mapped drives and accepts typed UNC paths.
+        # Legacy dialog kept as an in-script fallback.
+        ps = r'''
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true
+$owner.ShowInTaskbar = $false
+$owner.StartPosition = 'CenterScreen'
+$owner.Size = New-Object System.Drawing.Size(1,1)
+$owner.Opacity = 0
+try {
+  $cs = @'
+using System;
+using System.Runtime.InteropServices;
+public static class HangarFolderPicker {
+    [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+    private class FileOpenDialog { }
+    [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IFileOpenDialog {
+        [PreserveSig] int Show(IntPtr hwndParent);
+        void SetFileTypes(uint cFileTypes, IntPtr rgFilterSpec);
+        void SetFileTypeIndex(uint iFileType);
+        void GetFileTypeIndex(out uint piFileType);
+        void Advise(IntPtr pfde, out uint pdwCookie);
+        void Unadvise(uint dwCookie);
+        void SetOptions(uint fos);
+        void GetOptions(out uint pfos);
+        void SetDefaultFolder(IntPtr psi);
+        void SetFolder(IntPtr psi);
+        void GetFolder(out IntPtr ppsi);
+        void GetCurrentSelection(out IntPtr ppsi);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetFileName(out IntPtr pszName);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
+        void GetResult(out IShellItem ppsi);
+        void AddPlace(IntPtr psi, uint fdap);
+        void SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
+        void Close(int hr);
+        void SetClientGuid(ref Guid guid);
+        void ClearClientData();
+        void SetFilter(IntPtr pFilter);
+        void GetResults(out IntPtr ppenum);
+        void GetSelectedItems(out IntPtr ppsai);
+    }
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"),
+     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IShellItem {
+        void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+    public static string Pick(IntPtr owner) {
+        var dlg = (IFileOpenDialog)(object)(new FileOpenDialog());
+        dlg.SetOptions(0x20 | 0x40);   // FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM
+        dlg.SetTitle("Choose an asset folder");
+        if (dlg.Show(owner) != 0) return "";
+        IShellItem item; dlg.GetResult(out item);
+        IntPtr p; item.GetDisplayName(0x80058000, out p);  // SIGDN_FILESYSPATH
+        string s = Marshal.PtrToStringUni(p);
+        Marshal.FreeCoTaskMem(p);
+        return s;
+    }
+}
+'@
+  Add-Type -TypeDefinition $cs
+  Write-Output ([HangarFolderPicker]::Pick($owner.Handle))
+} catch {
+  # Explorer dialog unavailable — legacy WinForms picker
+  $d = New-Object System.Windows.Forms.FolderBrowserDialog
+  $d.Description = 'Choose an asset folder'
+  $d.ShowNewFolderButton = $true
+  try {
+    if ($d.ShowDialog($owner) -eq 'OK') { Write-Output $d.SelectedPath }
+  } finally { $d.Dispose() }
+} finally { $owner.Dispose() }
+'''
         try:
+            # -EncodedCommand: the script has here-strings and multiline blocks
+            # that -Command's interactive-style stdin parsing chokes on.
+            enc = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
             proc = subprocess.run(
-                ["powershell", "-NoProfile", "-STA", "-Command", ps],
+                ["powershell", "-NoProfile", "-STA", "-EncodedCommand", enc],
                 capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=600, **thumbs._no_window(),
             )
