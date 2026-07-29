@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.24"
+__version__ = "0.15.25"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -855,6 +855,145 @@ def blend_restore_cancel():
             RESTORE.update(running=False, phase="", current="",
                            cancelled=True, finished_at=time.time())
         return jsonify(dict(RESTORE))
+
+
+# ---- fix missing .blend textures from a folder ------------------------------
+# For every .blend flagged as referencing absent texture images, look the
+# missing files up (by name) in a user-chosen folder and copy matches to the
+# exact path the .blend references — //relative resolved against the .blend's
+# folder. Create-only: an existing file is never overwritten, and the .blend
+# itself is never modified.
+TEXFIX = {"running": False, "phase": "", "source": "", "current": "",
+          "indexed": 0, "done": 0, "total": 0, "fixed": 0, "already_ok": 0,
+          "unresolved": 0, "blends_fixed": 0, "finished_at": 0,
+          "cancelled": False}
+TEXFIX_LOCK = threading.Lock()
+TEXFIX_GEN = 0
+
+
+def _resolve_tex_path(blend_path, ref):
+    ref = (ref or "").strip()
+    if not ref:
+        return ""
+    if ref.startswith("//"):     # Blender: relative to the .blend's folder
+        ref = os.path.join(os.path.dirname(blend_path), ref[2:].lstrip("/\\"))
+    return os.path.normpath(ref.replace("\\", os.sep))
+
+
+def _run_texfix(generation, source):
+    by_name = {}
+    n = 0
+    for dirpath, dirnames, filenames in os.walk(source):
+        if generation != TEXFIX_GEN:
+            return
+        dirnames[:] = [d for d in dirnames if d.lower() not in RESTORE_SKIP_DIRS]
+        for fn in filenames:
+            by_name.setdefault(fn.lower(), []).append(os.path.join(dirpath, fn))
+            n += 1
+        with TEXFIX_LOCK:
+            if generation == TEXFIX_GEN:
+                TEXFIX.update(indexed=n, current=dirpath)
+    targets = store.list_blend_missing_tex()
+    with TEXFIX_LOCK:
+        if generation == TEXFIX_GEN:
+            TEXFIX.update(phase="fixing", total=len(targets), done=0, current="")
+    done = fixed = already = unresolved = blends_fixed = 0
+    for t in targets:
+        if generation != TEXFIX_GEN:
+            return
+        try:
+            info = thumbs.inspect_blend(t["path"]) or {}
+            placed = 0
+            refs = [_resolve_tex_path(t["path"], m.get("path"))
+                    for m in (info.get("missing_textures") or [])]
+            refs = [r for r in refs if r]
+            for target in refs:
+                if os.path.exists(thumbs._fs(target)):
+                    already += 1
+                    continue
+                # Best structural match first — same tie-break rule as
+                # restore-from-folder (shared trailing path components win).
+                cands = sorted(by_name.get(os.path.basename(target).lower(), []),
+                               key=lambda c: -_suffix_overlap(c, target))
+                ok = False
+                for cand in cands:
+                    tmp = target + ".hangar-texfix"
+                    try:
+                        os.makedirs(os.path.dirname(thumbs._fs(target)),
+                                    exist_ok=True)
+                        shutil.copy2(thumbs._fs(cand), thumbs._fs(tmp))
+                        if os.path.getsize(thumbs._fs(tmp)) > 0:
+                            os.replace(thumbs._fs(tmp), thumbs._fs(target))
+                            ok = True
+                            break
+                        os.unlink(thumbs._fs(tmp))
+                    except OSError:
+                        try:
+                            os.unlink(thumbs._fs(tmp))
+                        except OSError:
+                            pass
+                if ok:
+                    fixed += 1
+                    placed += 1
+                else:
+                    unresolved += 1
+            still = sum(1 for r in refs
+                        if not os.path.exists(thumbs._fs(r)))
+            store.set_blend_missing_textures(t["id"], still)
+            if placed:
+                # The inspect cache keys on the .blend's mtime, which placing
+                # textures doesn't change — drop it so the drawer recomputes.
+                thumbs.clear_inspect_cache(t["path"])
+                if still == 0:
+                    blends_fixed += 1
+        except Exception:
+            unresolved += 1
+        done += 1
+        with TEXFIX_LOCK:
+            if generation == TEXFIX_GEN:
+                TEXFIX.update(done=done, fixed=fixed, already_ok=already,
+                              unresolved=unresolved, blends_fixed=blends_fixed,
+                              current=t["path"])
+    with TEXFIX_LOCK:
+        if generation == TEXFIX_GEN:
+            TEXFIX.update(running=False, phase="", current="",
+                          finished_at=time.time())
+
+
+@app.post("/api/blend-health/texfix")
+def blend_texfix():
+    global TEXFIX_GEN
+    source = ((request.get_json(silent=True) or {}).get("source") or "").strip()
+    if not source or not os.path.isdir(thumbs._fs(source)):
+        return jsonify({"error": "That folder doesn't exist or isn't "
+                                 "reachable right now."}), 400
+    with TEXFIX_LOCK:
+        if not TEXFIX["running"]:
+            TEXFIX_GEN += 1
+            TEXFIX.update(running=True, phase="indexing", source=source,
+                          current="", indexed=0, done=0, total=0, fixed=0,
+                          already_ok=0, unresolved=0, blends_fixed=0,
+                          finished_at=0, cancelled=False)
+            threading.Thread(target=_run_texfix,
+                             args=(TEXFIX_GEN, source), daemon=True).start()
+        return jsonify(dict(TEXFIX))
+
+
+@app.get("/api/blend-health/texfix/status")
+def blend_texfix_status():
+    with TEXFIX_LOCK:
+        return jsonify(dict(TEXFIX))
+
+
+@app.post("/api/blend-health/texfix/cancel")
+def blend_texfix_cancel():
+    global TEXFIX_GEN
+    with TEXFIX_LOCK:
+        if TEXFIX["running"]:
+            TEXFIX_GEN += 1
+            TEXFIX.update(running=False, phase="", current="",
+                          cancelled=True, finished_at=time.time())
+        return jsonify(dict(TEXFIX))
 
 
 @app.get("/api/blend-health/restore-source/status")

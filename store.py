@@ -556,6 +556,21 @@ def set_asset_details(asset_id, author, description, license, copyright):
         )
 
 
+def list_blend_missing_tex():
+    """Present .blend assets currently flagged as referencing absent textures."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path FROM assets WHERE missing=0 AND ext='.blend' "
+            "AND blend_missing_textures>0").fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_blend_missing_textures(asset_id, n):
+    with connect() as conn:
+        conn.execute("UPDATE assets SET blend_missing_textures=? WHERE id=?",
+                     (max(0, int(n or 0)), asset_id))
+
+
 def set_assets_author(ids, author):
     """Set the author on many assets at once (bulk re-attribution)."""
     if not ids:

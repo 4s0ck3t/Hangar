@@ -1182,8 +1182,13 @@ async function refresh() {
   if (dupes) renderGroupedByContent(data.assets);
   else if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
   else if (categoryFolderGrouped) renderGroupedByFolder(data.assets, "", { parentOnly: true });
+  // Author view: split by folder so one author's packs stay visually distinct.
+  else if (f.author) renderGroupedByFolder(data.assets, "", { parentOnly: true });
   else if (grouped) renderGroupedGrid(data.assets, f.kind, data.total);
   else renderGrid(data.assets, data.total);
+  const texBar = $("#texfixBar");
+  if (texBar) texBar.classList.toggle(
+    "hidden", !f.missing_blend_textures || !data.assets.length);
   // The renderers build _currentAssets in display order (grouped views reorder
   // by section); the drawer's prev/next must walk that same order, and the card
   // indices passed to openDrawer index into it.
@@ -4030,6 +4035,55 @@ if (_restoreSourceBtn) _restoreSourceBtn.onclick = async () => {
   toast(`📂 Done — ${parts2.join(", ") || "nothing needed replacing"}.`,
         st.failed ? undefined : "success");
   refresh();
+};
+
+// Fix missing .blend textures from a folder: scan it for the absent image
+// files by name and copy matches to the exact paths the .blends reference.
+// Create-only on disk; the .blend files themselves are never modified.
+const _texfixBtn = $("#texfixBtn");
+if (_texfixBtn) _texfixBtn.onclick = async () => {
+  const source = await chooseFolder();
+  if (!source) return;
+  if (!confirm(
+    `Search for the missing texture files in:\n${source}\n\n` +
+    "Found images are copied to the exact locations the .blend files " +
+    "reference. Existing files are never overwritten, and the .blend files " +
+    "themselves aren't touched.")) return;
+  _texfixBtn.disabled = true;
+  let st;
+  try { st = await post("blend-health/texfix", { source }); }
+  catch (_) { _texfixBtn.disabled = false; return; }
+  if (st && st.error) { toast(st.error, "error"); _texfixBtn.disabled = false; return; }
+  const stopTexfix = async () => {
+    try { await post("blend-health/texfix/cancel"); } catch (_) { /* poll notices */ }
+  };
+  try {
+    while (st && st.running) {
+      Tasks.set("texfix", st.phase === "indexing"
+        ? { label: "📂 Scanning folder for textures",
+            detail: `${(st.indexed || 0).toLocaleString()} files found`,
+            onStop: stopTexfix }
+        : { label: "🧩 Fixing missing textures", done: st.done, total: st.total,
+            onStop: stopTexfix });
+      await new Promise((r) => setTimeout(r, 600));
+      try { st = await api("blend-health/texfix/status"); } catch (_) { break; }
+    }
+  } finally {
+    Tasks.done("texfix");
+  }
+  _texfixBtn.disabled = false;
+  if (!st) return;
+  if (st.cancelled) {
+    toast(`🧩 Stopped — ${st.fixed ? `${st.fixed} texture${st.fixed === 1 ? "" : "s"} restored first` : "nothing copied yet"}.`);
+    refresh(); loadState(); return;
+  }
+  const parts = [];
+  if (st.fixed) parts.push(`${st.fixed} texture file${st.fixed === 1 ? "" : "s"} restored`);
+  if (st.blends_fixed) parts.push(`${st.blends_fixed} .blend${st.blends_fixed === 1 ? "" : "s"} fully fixed`);
+  if (st.unresolved) parts.push(`${st.unresolved} not found in that folder`);
+  toast(`🧩 Done — ${parts.join(", ") || "nothing needed fixing"}.`,
+        st.unresolved ? undefined : "success");
+  refresh(); loadState();
 };
 
 $("#updateLaunchBtn").onclick = async () => {

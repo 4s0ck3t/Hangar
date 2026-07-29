@@ -1467,6 +1467,16 @@ _ID_CODE_KIND = {
 _INSPECT_CACHE_VERSION = 6
 
 
+def clear_inspect_cache(path):
+    """Drop the cached inspection for one .blend. Needed when something OTHER
+    than the file changed the result — e.g. missing textures were restored to
+    disk, which the (mtime, size) key can't see."""
+    try:
+        (_blend_asset_dir(path) / "inspect.json").unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def inspect_blend(path):
     """Pure-Python inspection of a .blend, cached on disk by (mtime, size).
 
