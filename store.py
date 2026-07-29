@@ -873,9 +873,8 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
         join_params.append(category)
     if folder:
         # Match every asset living under this folder root (any depth).
-        prefix = folder.rstrip("/\\")
-        clauses.append("a.path LIKE ?")
-        where_params.append(prefix + os.sep + "%")
+        clauses.append("a.path LIKE ? ESCAPE '!'")
+        where_params.append(_path_like(folder))
 
     params = join_params + where_params
 

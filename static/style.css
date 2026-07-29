@@ -343,6 +343,15 @@ button, input, select { font-family: inherit; color: inherit; }
   font-family: var(--mono); font-size: 10px; color: var(--faint);
 }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.view-nav {
+  width: 28px; height: 28px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--raised); color: var(--ink);
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.view-nav:hover:not(:disabled) { border-color: var(--select); background: var(--raised-hi); }
+.view-nav:disabled { opacity: .35; cursor: default; }
 /* Thin divider between logical groups of top-bar controls. */
 .topbar-sep { width: 1px; height: 20px; background: var(--line); flex: none; }
 .topbar-sep:first-child, .topbar-sep:last-child { display: none; }

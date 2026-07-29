@@ -44,6 +44,39 @@ function esc(value) {
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[ch]));
 }
+function pathLevels(path) {
+  const raw = (path || "").replace(/[\\/]+$/, "");
+  if (!raw) return [];
+  const unc = raw.match(/^\\\\([^\\/]+)[\\/]+([^\\/]+)(.*)$/);
+  if (unc) {
+    const root = `\\\\${unc[1]}\\${unc[2]}`;
+    const rest = (unc[3] || "").replace(/^[\\/]+/, "").split(/[\\/]/).filter(Boolean);
+    const levels = [{ label: root, path: root }];
+    let cur = root;
+    for (const part of rest) {
+      cur += "\\" + part;
+      levels.push({ label: part, path: cur });
+    }
+    return levels;
+  }
+  const drive = raw.match(/^([A-Za-z]:)(.*)$/);
+  if (drive) {
+    const rest = (drive[2] || "").replace(/^[\\/]+/, "").split(/[\\/]/).filter(Boolean);
+    const levels = [{ label: drive[1], path: drive[1] + "\\" }];
+    let cur = drive[1];
+    for (const part of rest) {
+      cur += "\\" + part;
+      levels.push({ label: part, path: cur });
+    }
+    return levels;
+  }
+  const parts = raw.split(/[\\/]/).filter(Boolean);
+  let cur = "";
+  return parts.map((part) => {
+    cur = cur ? cur + "\\" + part : part;
+    return { label: part, path: cur };
+  });
+}
 function safeColor(value, fallback = "#8A8F9A") {
   const s = String(value || "").trim();
   if (/^#[0-9a-f]{3}$/i.test(s)) {
@@ -56,6 +89,55 @@ function safeColor(value, fallback = "#8A8F9A") {
 
 // The four collapsible Library types.
 const TYPE_KINDS = ["model", "texture", "hdri", "material"];
+let _viewCurrent = null;
+const _viewBack = [];
+const _viewForward = [];
+let _viewNavigating = false;
+
+function viewSnapshot() {
+  return {
+    filter: { ...state.filter },
+    search: state.search || "",
+    sort: state.sort || "name",
+  };
+}
+function viewKey(v) { return JSON.stringify(v || {}); }
+function updateViewNavButtons() {
+  const back = $("#viewBackBtn"), forward = $("#viewForwardBtn");
+  if (back) back.disabled = !_viewBack.length;
+  if (forward) forward.disabled = !_viewForward.length;
+}
+function syncViewControls() {
+  const search = $("#search"); if (search) search.value = state.search || "";
+  const sort = $("#sort"); if (sort) sort.value = state.sort || "name";
+}
+function recordViewAfterRefresh() {
+  const next = viewSnapshot();
+  if (!_viewCurrent) {
+    _viewCurrent = next;
+  } else if (!_viewNavigating && viewKey(next) !== viewKey(_viewCurrent)) {
+    _viewBack.push(_viewCurrent);
+    if (_viewBack.length > 80) _viewBack.shift();
+    _viewForward.length = 0;
+    _viewCurrent = next;
+  }
+  updateViewNavButtons();
+}
+async function goView(delta) {
+  const from = _viewCurrent || viewSnapshot();
+  const target = delta < 0 ? _viewBack.pop() : _viewForward.pop();
+  if (!target) return;
+  if (delta < 0) _viewForward.push(from);
+  else _viewBack.push(from);
+  _viewCurrent = target;
+  state.filter = { ...target.filter };
+  state.search = target.search || "";
+  state.sort = target.sort || "name";
+  syncViewControls();
+  _viewNavigating = true;
+  try { await refresh(); }
+  finally { _viewNavigating = false; updateViewNavButtons(); }
+}
 
 function persistCollapsed() {
   try { localStorage.setItem("hangar_collapsed", JSON.stringify([...state.collapsed])); }
@@ -1209,6 +1291,7 @@ async function refresh() {
   updateLinkedBtn();
   updateHealthBtn();
   updateFacetStrip();
+  recordViewAfterRefresh();
 }
 
 // Grid split into category sections (for a plain type view). Each category of
@@ -1420,9 +1503,8 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
     head.appendChild(ico);
     head.appendChild(nameSpan);
     if (s.subtitle) {
-      const sub = document.createElement("span");
+      const sub = renderClickablePath(s.subtitle, s.fullPath, "");
       sub.className = "section-subtitle";
-      sub.textContent = s.subtitle;
       head.appendChild(sub);
     }
     head.appendChild(count);
@@ -1594,9 +1676,8 @@ function renderClickablePath(label, fullPath, libRoot) {
   const parts = label.split(/[\\/]/).filter(p => p);
   if (!parts.length) { span.textContent = label; return span; }
   const root = (libRoot || "").replace(/[\\/]+$/, "");
-  const full = (fullPath || "").replace(/[\\/]+$/, "");
-  const fullParts = full.split(/[\\/]/).filter(p => p);
-  const tailStart = Math.max(0, fullParts.length - parts.length);
+  const levels = pathLevels(fullPath);
+  const tailStart = Math.max(0, levels.length - parts.length);
   for (let i = 0; i < parts.length; i++) {
     if (i > 0) span.appendChild(document.createTextNode(" \\ "));
     const seg = document.createElement("span");
@@ -1606,7 +1687,7 @@ function renderClickablePath(label, fullPath, libRoot) {
     // to root + "\\iMeshh" rather than the full sub-folder.
     const segPath = root
       ? root + "\\" + parts.slice(0, i + 1).join("\\")
-      : fullParts.slice(0, tailStart + i + 1).join("\\");
+      : (levels[tailStart + i] ? levels[tailStart + i].path : parts.slice(0, i + 1).join("\\"));
     seg.title = `Show everything in ${segPath}`;
     seg.onclick = (e) => { e.stopPropagation(); e.preventDefault(); filterToFolder(segPath); };
     span.appendChild(seg);
@@ -1618,16 +1699,16 @@ function renderClickablePath(label, fullPath, libRoot) {
 // Returns HTML string for the #folderBreadcrumb element.
 function renderBreadcrumbs(folderPath) {
   if (!folderPath) return "";
-  const parts = folderPath.replace(/[\\/]+$/, "").split(/[\\/]/).filter(p => p);
-  if (!parts.length) return "";
+  const levels = pathLevels(folderPath);
+  if (!levels.length) return "";
   let html = `<span class="crumb"><a onclick="filterToFolder('')">🏠 Home</a></span>`;
-  for (let i = 0; i < parts.length; i++) {
-    const full = parts.slice(0, i + 1).join("\\");
+  for (let i = 0; i < levels.length; i++) {
+    const item = levels[i];
     html += `<span class="crumb-sep">›</span>`;
-    if (i === parts.length - 1) {
-      html += `<span class="crumb crumb-active">${esc(parts[i])}</span>`;
+    if (i === levels.length - 1) {
+      html += `<span class="crumb crumb-active">${esc(item.label)}</span>`;
     } else {
-      html += `<span class="crumb"><a onclick="filterToFolder('${escAttr(full)}')">${esc(parts[i])}</a></span>`;
+      html += `<span class="crumb"><a onclick="filterToFolder('${escAttr(item.path)}')">${esc(item.label)}</a></span>`;
     }
   }
   return html;
@@ -3827,6 +3908,10 @@ async function manualCheckUpdate() {
   }
 }
 $("#checkUpdateBtn").onclick = manualCheckUpdate;
+const _viewBackBtn = $("#viewBackBtn");
+if (_viewBackBtn) _viewBackBtn.onclick = () => goView(-1);
+const _viewForwardBtn = $("#viewForwardBtn");
+if (_viewForwardBtn) _viewForwardBtn.onclick = () => goView(1);
 function updateDupBtn() {
   const b = $("#dupBtn");
   if (b) b.classList.toggle("active", state.filter.duplicates);
