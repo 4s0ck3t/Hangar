@@ -1474,8 +1474,9 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
   const crumbBar = $("#folderBreadcrumb");
   if (crumbBar) {
     const crumbs = renderBreadcrumbs(libraryPath);
-    if (crumbs) {
-      crumbBar.innerHTML = crumbs;
+    crumbBar.innerHTML = "";
+    if (crumbs.childNodes.length) {
+      crumbBar.appendChild(crumbs);
       crumbBar.classList.remove("hidden");
     } else {
       crumbBar.classList.add("hidden");
@@ -1695,23 +1696,50 @@ function renderClickablePath(label, fullPath, libRoot) {
   return span;
 }
 
-// Breadcrumb bar above the grid when filtered to a folder.
-// Returns HTML string for the #folderBreadcrumb element.
+// Breadcrumb bar above the grid when filtered to a folder. Builds real DOM
+// nodes with closure click handlers — NOT an HTML string — because Windows
+// paths contain backslashes that an onclick="filterToFolder('C:\Users\…')"
+// attribute would silently mangle (`\U` → `U`), corrupting the folder filter
+// so a full folder shows "Nothing matches". Each crumb carries its absolute
+// path verbatim in a closure. Returns a DocumentFragment (empty if nothing).
 function renderBreadcrumbs(folderPath) {
-  if (!folderPath) return "";
+  const frag = document.createDocumentFragment();
+  if (!folderPath) return frag;
   const levels = pathLevels(folderPath);
-  if (!levels.length) return "";
-  let html = `<span class="crumb"><a onclick="filterToFolder('')">🏠 Home</a></span>`;
+  if (!levels.length) return frag;
+
+  const addCrumb = (label, onClick, active) => {
+    const span = document.createElement("span");
+    span.className = active ? "crumb crumb-active" : "crumb";
+    if (onClick) {
+      const a = document.createElement("a");
+      a.textContent = label;
+      a.onclick = onClick;
+      span.appendChild(a);
+    } else {
+      span.textContent = label;
+    }
+    frag.appendChild(span);
+  };
+  const addSep = () => {
+    const s = document.createElement("span");
+    s.className = "crumb-sep";
+    s.textContent = "›";
+    frag.appendChild(s);
+  };
+
+  addCrumb("🏠 Home", () => filterToFolder(""), false);
   for (let i = 0; i < levels.length; i++) {
     const item = levels[i];
-    html += `<span class="crumb-sep">›</span>`;
+    addSep();
     if (i === levels.length - 1) {
-      html += `<span class="crumb crumb-active">${esc(item.label)}</span>`;
+      addCrumb(item.label, null, true);
     } else {
-      html += `<span class="crumb"><a onclick="filterToFolder('${escAttr(item.path)}')">${esc(item.label)}</a></span>`;
+      const p = item.path;   // captured absolute path, backslashes intact
+      addCrumb(item.label, () => filterToFolder(p), false);
     }
   }
-  return html;
+  return frag;
 }
 
 function escAttr(s) {
