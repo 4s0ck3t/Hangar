@@ -236,6 +236,15 @@ def _try_pywebview(url):
             _log("maximize failed (non-fatal):\n" + traceback.format_exc())
 
     try:
+        # Chromium's native window occlusion tracker misjudges what's covered on
+        # some Windows driver/scaling combos and leaves random black rectangles
+        # in the window. Disable it for the WebView2 backend too (harmless: the
+        # window just keeps painting when Windows thinks it's occluded).
+        _occ = "--disable-features=CalculateNativeWinOcclusion"
+        _prev = os.environ.get("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "")
+        if "CalculateNativeWinOcclusion" not in _prev:
+            os.environ["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = \
+                (_prev + " " + _occ).strip()
         webview_ver = getattr(webview, "__version__", "?")
         _log(f"pywebview {webview_ver}: creating window")
         window = webview.create_window(
@@ -595,8 +604,12 @@ def _launch_app_window(url):
             # (unknown feature names are harmless — Chromium ignores them).
             "--disable-sync",
             "--disable-background-networking",
+            # CalculateNativeWinOcclusion: Chromium sometimes wrongly decides
+            # parts of the window are covered and stops painting them, which
+            # shows up as random black rectangles over the UI.
             "--disable-features=msImplicitSignin,msEdgeSyncPromotion,EdgeSync,"
-            "SyncPromoAfterSignin,ShowSyncPromo,msEdgeIdentityFRE"]
+            "SyncPromoAfterSignin,ShowSyncPromo,msEdgeIdentityFRE,"
+            "CalculateNativeWinOcclusion"]
     # Chromium refuses to start as root unless sandboxing is disabled.
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         args.append("--no-sandbox")
