@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.25"
+__version__ = "0.15.26"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -898,6 +898,7 @@ def _run_texfix(generation, source):
         if generation == TEXFIX_GEN:
             TEXFIX.update(phase="fixing", total=len(targets), done=0, current="")
     done = fixed = already = unresolved = blends_fixed = 0
+    placed_list, notfound_list = [], []
     for t in targets:
         if generation != TEXFIX_GEN:
             return
@@ -935,8 +936,12 @@ def _run_texfix(generation, source):
                 if ok:
                     fixed += 1
                     placed += 1
+                    if len(placed_list) < 200:
+                        placed_list.append({"blend": t["path"], "target": target})
                 else:
                     unresolved += 1
+                    if len(notfound_list) < 200:
+                        notfound_list.append({"blend": t["path"], "ref": target})
             still = sum(1 for r in refs
                         if not os.path.exists(thumbs._fs(r)))
             store.set_blend_missing_textures(t["id"], still)
@@ -955,9 +960,21 @@ def _run_texfix(generation, source):
                               unresolved=unresolved, blends_fixed=blends_fixed,
                               current=t["path"])
     with TEXFIX_LOCK:
-        if generation == TEXFIX_GEN:
-            TEXFIX.update(running=False, phase="", current="",
-                          finished_at=time.time())
+        if generation != TEXFIX_GEN:
+            return
+        TEXFIX.update(running=False, phase="", current="",
+                      finished_at=time.time())
+    # Persist the receipt: a toast flashes past, but which textures landed
+    # where (and which weren't found) deserves to stay readable in the view.
+    try:
+        store.set_setting("last_texfix_summary", json.dumps({
+            "finished_at": time.time(), "source": source, "total": len(targets),
+            "fixed": fixed, "already_ok": already, "unresolved": unresolved,
+            "blends_fixed": blends_fixed,
+            "placed": placed_list, "notfound": notfound_list,
+        }))
+    except Exception:
+        pass
 
 
 @app.post("/api/blend-health/texfix")
@@ -982,7 +999,13 @@ def blend_texfix():
 @app.get("/api/blend-health/texfix/status")
 def blend_texfix_status():
     with TEXFIX_LOCK:
-        return jsonify(dict(TEXFIX))
+        out = dict(TEXFIX)
+    try:
+        raw = store.get_setting("last_texfix_summary")
+        out["last"] = json.loads(raw) if raw else None
+    except Exception:
+        out["last"] = None
+    return jsonify(out)
 
 
 @app.post("/api/blend-health/texfix/cancel")

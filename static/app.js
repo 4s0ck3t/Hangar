@@ -1189,6 +1189,7 @@ async function refresh() {
   const texBar = $("#texfixBar");
   if (texBar) texBar.classList.toggle(
     "hidden", !f.missing_blend_textures || !data.assets.length);
+  updateTexfixBanner();   // async; shows the last-run receipt in this view
   // The renderers build _currentAssets in display order (grouped views reorder
   // by section); the drawer's prev/next must walk that same order, and the card
   // indices passed to openDrawer index into it.
@@ -2699,6 +2700,9 @@ function renderGrid(assets, total) {
       : f.noAuthor
       ? `<h2>No unattributed assets</h2>
          <p>Every indexed asset has author metadata — nothing needs attributing.</p>`
+      : f.missing_blend_textures
+      ? `<h2>No .blend files with missing textures</h2>
+         <p>Every referenced texture is present on disk.</p>`
       : `<h2>Nothing matches</h2><p>Try a different search or clear the active filter.</p>`;
     return;
   }
@@ -4037,6 +4041,54 @@ if (_restoreSourceBtn) _restoreSourceBtn.onclick = async () => {
   refresh();
 };
 
+// Persistent receipt for the last texture fix — the completion toast flashes
+// past, so the full result (what landed where, what wasn't found) stays
+// readable in the view until the next run.
+function _texfixSummaryHtml(last) {
+  const when = last.finished_at
+    ? new Date(last.finished_at * 1000).toLocaleString() : "";
+  const parts = [];
+  if (last.fixed) parts.push(`<b>${last.fixed}</b> texture file${last.fixed === 1 ? "" : "s"} restored`);
+  if (last.blends_fixed) parts.push(`<b>${last.blends_fixed}</b> .blend${last.blends_fixed === 1 ? "" : "s"} fully fixed`);
+  if (last.already_ok) parts.push(`${last.already_ok} already in place`);
+  if (!parts.length) parts.push("nothing needed fixing");
+  let html = `🧩 Last texture fix from <b title="${esc(last.source || "")}">` +
+    `${esc(baseName(last.source || "") || last.source || "folder")}</b>` +
+    `${when ? ` <span class="hs-dim">(${esc(when)})</span>` : ""}: ${parts.join(", ")}` +
+    `<span class="${last.unresolved ? "hs-fail" : ""}">${last.unresolved ? `, <b>${last.unresolved}</b> not found in that folder` : ""}</span>.`;
+  const cap = 30;
+  if ((last.placed || []).length) {
+    html += `<div class="hs-dim">Restored:</div><ul>`;
+    html += last.placed.slice(0, cap).map((p) =>
+      `<li><b title="${esc(p.target)}">${esc(baseName(p.target))}</b> ` +
+      `<span class="hs-dim" title="${esc(p.blend)}">→ ${esc(baseName(p.blend))}</span></li>`).join("");
+    if (last.placed.length > cap) html += `<li class="hs-dim">…and ${last.placed.length - cap} more</li>`;
+    html += `</ul>`;
+  }
+  if ((last.notfound || []).length) {
+    html += `<div class="hs-dim">Still missing — not in that folder (try another backup):</div><ul>`;
+    html += last.notfound.slice(0, cap).map((m) =>
+      `<li><b title="${esc(m.ref)}">${esc(baseName(m.ref))}</b> ` +
+      `<span class="hs-dim" title="${esc(m.blend)}">needed by ${esc(baseName(m.blend))}</span></li>`).join("");
+    if (last.notfound.length > cap) html += `<li class="hs-dim">…and ${last.notfound.length - cap} more</li>`;
+    html += `</ul>`;
+  }
+  return html;
+}
+
+async function updateTexfixBanner() {
+  const el = $("#texfixSummary");
+  if (!el) return;
+  if (!state.filter.missing_blend_textures) { el.classList.add("hidden"); return; }
+  let st = null;
+  try { st = await api("blend-health/texfix/status"); } catch (_) { /* keep null */ }
+  if (!state.filter.missing_blend_textures) { el.classList.add("hidden"); return; }
+  const last = st && st.last;
+  if (!last || st.running) { el.classList.add("hidden"); return; }
+  el.innerHTML = _texfixSummaryHtml(last);
+  el.classList.remove("hidden");
+}
+
 // Fix missing .blend textures from a folder: scan it for the absent image
 // files by name and copy matches to the exact paths the .blends reference.
 // Create-only on disk; the .blend files themselves are never modified.
@@ -4081,9 +4133,9 @@ if (_texfixBtn) _texfixBtn.onclick = async () => {
   if (st.fixed) parts.push(`${st.fixed} texture file${st.fixed === 1 ? "" : "s"} restored`);
   if (st.blends_fixed) parts.push(`${st.blends_fixed} .blend${st.blends_fixed === 1 ? "" : "s"} fully fixed`);
   if (st.unresolved) parts.push(`${st.unresolved} not found in that folder`);
-  toast(`🧩 Done — ${parts.join(", ") || "nothing needed fixing"}.`,
+  toast(`🧩 Done — ${parts.join(", ") || "nothing needed fixing"}. Full list shown in the view.`,
         st.unresolved ? undefined : "success");
-  refresh(); loadState();
+  refresh(); loadState();   // refresh() also repaints the banner receipt
 };
 
 $("#updateLaunchBtn").onclick = async () => {
