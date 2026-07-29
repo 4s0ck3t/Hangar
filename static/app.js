@@ -34,7 +34,7 @@ function loadCollapsed() {
 const state = {
   filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
             favorite: false, missing: false, missing_blend_textures: false, duplicates: false, corrupt: false,
-            noAuthor: false, linked: false },
+            noAuthor: false, linked: false, author: "", dupKind: "" },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
@@ -719,7 +719,7 @@ function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
                    favorite: false, subtype: "", resolution: "", missing: false,
                    missing_blend_textures: false, duplicates: false, noAuthor: false,
-                   linked: false, corrupt: false };
+                   linked: false, corrupt: false, author: "", dupKind: "" };
   _facetKindCache = {};
 }
 
@@ -729,7 +729,8 @@ function updateClearBtn() {
     || state.filter.collection || state.filter.category || state.filter.folder
     || state.filter.favorite || state.filter.missing || state.filter.missing_blend_textures || state.filter.subtype
     || state.filter.resolution || state.filter.duplicates || state.filter.noAuthor
-    || state.filter.linked || state.filter.corrupt || state.search;
+    || state.filter.linked || state.filter.corrupt || state.filter.author
+    || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
 }
 
@@ -813,6 +814,7 @@ function updateBatchBar() {
     <button class="batch-coll-btn" id="batchCollBtn">+ Collection</button>
     <button class="batch-cat-btn" id="batchCatBtn">Move to category</button>
     <button class="batch-cat-btn" id="batchCatRemoveBtn">- Category</button>
+    <button class="batch-cat-btn" id="batchAuthorBtn" title="Set the author on every selected asset">👤 Set author</button>
     <button class="batch-del-btn" id="batchDelBtn">Remove from Hangar</button>
     <button class="batch-clear" id="batchClearBtn">✕</button>`;
 
@@ -839,6 +841,22 @@ function updateBatchBar() {
     clearSelection(); refresh(); loadState();
   };
   $("#batchClearBtn").onclick = clearSelection;
+  $("#batchAuthorBtn").onclick = async () => {
+    const n = selection.size;
+    const name = prompt(
+      `Set author for ${n} asset${n > 1 ? "s" : ""} (empty clears it):`,
+      state.filter.author || "");
+    if (name === null) return;
+    try {
+      await post("assets/batch/author", { ids: [...selection], author: name.trim() });
+    } catch (_) {
+      toast("Couldn't update the author.", "error"); return;
+    }
+    toast(name.trim()
+      ? `Author set to "${name.trim()}" on ${n} asset${n > 1 ? "s" : ""}`
+      : `Author cleared on ${n} asset${n > 1 ? "s" : ""}`, "success");
+    clearSelection(); refresh(); loadState();
+  };
   const blend = $("#batchBlendBtn");
   if (blend) blend.onclick = async () => {
     blend.disabled = true; blend.textContent = "Sending…";
@@ -1146,6 +1164,7 @@ async function refresh() {
   if (f.subtype) p.set("subtype", f.subtype);
   if (f.resolution) p.set("resolution", f.resolution);
   if (state.search) p.set("search", state.search);
+  if (f.author) { p.set("author", f.author); p.set("limit", "2000"); }
   p.set("sort", state.sort);
   if (dupes) { p.set("duplicates", "1"); p.set("limit", "2000"); }
   if (noAuthor) { p.set("no_author", "1"); p.set("limit", "2000"); }
@@ -1408,8 +1427,27 @@ function renderGroupedByContent(assets) {
   grid.classList.add("grouped");
   bindGridDragScroll();
 
+  // Kind chips: narrow the duplicates view to just models / textures / etc.
+  const dupCounts = {};
+  for (const a of assets) dupCounts[a.kind] = (dupCounts[a.kind] || 0) + 1;
+  const dk = state.filter.dupKind || "";
+  const shown = dk ? assets.filter((a) => a.kind === dk) : assets;
+  const chipBar = document.createElement("div");
+  chipBar.className = "dup-kinds";
+  for (const [key, label] of [["", "All"], ["model", "Models"],
+                              ["texture", "Textures"], ["hdri", "HDRIs"],
+                              ["material", "Materials"]]) {
+    const n = key ? (dupCounts[key] || 0) : assets.length;
+    if (key && !n) continue;
+    const b = document.createElement("button");
+    b.className = "facet-chip" + (dk === key ? " is-on" : "");
+    b.textContent = `${label} (${n})`;
+    b.onclick = () => { state.filter.dupKind = key; refresh(); };
+    chipBar.appendChild(b);
+  }
+
   const groups = new Map();  // content hash → {names, key, items[], size}
-  for (const a of assets) {
+  for (const a of shown) {
     const key = a.content_hash || `id:${a.id}`;
     if (!groups.has(key)) {
       groups.set(key, { names: new Set(), key: `dup:${key}`, items: [], size: a.size || 0 });
@@ -1433,6 +1471,13 @@ function renderGroupedByContent(assets) {
   const secOf = [];
   let secKey = 0;
   const frag = document.createDocumentFragment();
+  frag.appendChild(chipBar);
+  if (!shown.length) {
+    const note = document.createElement("div");
+    note.className = "dup-kinds-none";
+    note.textContent = "No duplicates of this type.";
+    frag.appendChild(note);
+  }
   for (const s of sections) {
     const section = document.createElement("div");
     const collapsed = sectionIsCollapsed(s.key);
@@ -1469,6 +1514,7 @@ function updateActiveLabel(total) {
   let label = state.filter.corrupt ? "🩺 Damaged .blend files"
     : state.filter.linked ? "🔗 Linked textures"
     : state.filter.noAuthor ? "🏷 No author"
+    : state.filter.author ? `👤 ${state.filter.author}`
     : state.filter.duplicates ? "⧉ Duplicates"
     : state.filter.favorite ? "Favorites"
     : state.filter.missing ? "Missing files"
@@ -1483,6 +1529,17 @@ function updateActiveLabel(total) {
       })()
     : KIND_LABELS[state.filter.kind || "all"];
   $("#activeFilter").textContent = `${label} · ${total}`;
+}
+
+// Jump to "everything by this author" — used by the card author line and the
+// drawer's Author detail row.
+function filterByAuthor(name) {
+  if (!name) return;
+  if (isDrawerOpen()) closeDrawer();
+  resetFilter();
+  state.filter.author = name;
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  refresh();
 }
 
 function buildCard(a, i) {
@@ -1561,6 +1618,11 @@ function buildCard(a, i) {
         <span class="card-tags">${tagDots}</span>
       </div>
     </div>`;
+  const authorEl = card.querySelector(".card-author");
+  if (authorEl && a.author) {
+    authorEl.title = `Show everything by ${a.author}`;
+    authorEl.onclick = (e) => { e.stopPropagation(); filterByAuthor(a.author); };
+  }
   const tile = card.querySelector(".badge-tile");
   const img = new Image();
   img.onload = () => { tile.replaceWith(img); };
@@ -2623,7 +2685,7 @@ function renderGrid(assets, total) {
     const anyFilter = state.search || f.kind || f.ext || f.tag || f.collection ||
       f.category || f.folder || f.subtype || f.resolution || f.favorite ||
       f.missing || f.missing_blend_textures || f.duplicates || f.corrupt ||
-      f.noAuthor || f.linked;
+      f.noAuthor || f.linked || f.author;
     empty.innerHTML = total === 0 && !anyFilter
       ? `<h2>No assets indexed yet</h2>
          <p>Add a folder of models, textures and HDRIs and Hangar will index it.
@@ -3168,8 +3230,14 @@ function renderDrawerDetails(a) {
   ];
   box.innerHTML = rows.map(([k, v]) =>
     `<div class="d-detail"><span class="d-detail-k">${k}</span>` +
-    `<span class="d-detail-v${v ? "" : " unset"}">${v ? esc(v) : "—"}</span></div>`
+    `<span class="d-detail-v${v ? "" : " unset"}` +
+    `${k === "Author" && v ? " d-detail-link" : ""}">${v ? esc(v) : "—"}</span></div>`
   ).join("");
+  const link = box.querySelector(".d-detail-link");
+  if (link) {
+    link.title = `Show everything by ${a.author}`;
+    link.onclick = () => filterByAuthor(a.author);
+  }
   const edit = $("#dDetailsEdit");
   if (edit) edit.onclick = () => openDetailsEditor(a);
 }

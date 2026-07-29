@@ -593,6 +593,14 @@ button, input, select { font-family: inherit; color: inherit; }
   margin-top: 3px; font-size: 10px; color: var(--mute);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Duplicates view: kind chips + full paths so copies are tellable-apart. */
+.dup-kinds { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 2px 10px; }
+.dup-kinds-none { color: var(--mute); font-size: 12.5px; padding: 8px 2px; }
+.card-author { cursor: pointer; }
+.card-author:hover { text-decoration: underline; }
+.d-detail-link { cursor: pointer; }
+.d-detail-link:hover { text-decoration: underline; color: var(--select); }
+
 /* Duplicates view: the full directory path, wrapped to two lines so copies in
    different trees are distinguishable at a glance. */
 .card-folder-full {

@@ -556,6 +556,19 @@ def set_asset_details(asset_id, author, description, license, copyright):
         )
 
 
+def set_assets_author(ids, author):
+    """Set the author on many assets at once (bulk re-attribution)."""
+    if not ids:
+        return 0
+    with connect() as conn:
+        placeholders = ",".join("?" * len(ids))
+        cur = conn.execute(
+            f"UPDATE assets SET author=? WHERE id IN ({placeholders})",
+            [author or ""] + list(ids),
+        )
+        return cur.rowcount
+
+
 def set_blend_meta(asset_id, text, missing_textures=None,
                    packed_tex=None, external_tex=None):
     """Store aggregated .blend metadata and, when known, texture counts
@@ -767,7 +780,7 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  group="", set_key="", with_categories=False,
                  subtype="", resolution="", missing=False,
                  missing_blend_textures=False, duplicates=False, no_author=False,
-                 linked=False, corrupt=False):
+                 linked=False, corrupt=False, author=""):
     clauses = ["a.missing=1"] if missing else ["a.missing=0"]
     if corrupt:
         clauses.append("a.blend_corrupt>0")   # damaged .blend files (health check)
@@ -795,6 +808,9 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
     # flat list in code order silently mis-binds any join+clause combination.
     join_params = []
     where_params = []
+    if author:
+        clauses.append("a.author=? COLLATE NOCASE")
+        where_params.append(author)
     if set_key:
         # Listing the individual files of one texture set — overrides grouping.
         clauses.append("a.set_key=?")

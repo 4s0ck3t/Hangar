@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.23"
+__version__ = "0.15.24"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1174,6 +1174,7 @@ def list_assets():
         no_author=q.get("no_author") == "1",
         linked=q.get("linked") == "1",
         corrupt=q.get("corrupt") == "1",
+        author=q.get("author", "").strip(),
     )
     return jsonify({"assets": assets, "total": total})
 
@@ -1305,6 +1306,17 @@ def category_membership(asset_id):
 
 
 # ---- tags & collections ---------------------------------------------------
+
+@app.post("/api/assets/batch/author")
+def batch_author():
+    """Set (or clear, with author: '') the author on many assets at once."""
+    data = request.get_json(force=True)
+    ids = [int(i) for i in data.get("ids", []) if str(i).isdigit()]
+    if not ids or "author" not in data:
+        return jsonify({"error": "ids and author required"}), 400
+    n = store.set_assets_author(ids, (data.get("author") or "").strip())
+    return jsonify({"ok": True, "count": n})
+
 
 @app.post("/api/assets/batch/tag")
 def batch_tag():
