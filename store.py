@@ -1065,6 +1065,17 @@ def list_collections():
     return [dict(r) for r in rows]
 
 
+def list_authors():
+    """All non-empty authors represented by live assets, with asset counts."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT author name, COUNT(*) c FROM assets "
+            "WHERE missing=0 AND author!='' AND author IS NOT NULL "
+            "GROUP BY author COLLATE NOCASE ORDER BY author COLLATE NOCASE"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def create_collection(name):
     with connect() as conn:
         conn.execute("INSERT OR IGNORE INTO collections(name) VALUES (?)", (name.strip(),))

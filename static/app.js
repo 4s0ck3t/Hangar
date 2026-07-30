@@ -273,6 +273,7 @@ async function loadState() {
   renderKindFilters(s.counts, allCategories);
   renderModelFormatFilters(s.counts);
   renderCollectionFilters(s.collections);
+  renderAuthorFilters(s.authors || []);
   renderLibraries(s.libraries);
   renderOfflineBanner(s.libraries);
   renderStatusBar(s.counts, s.version);
@@ -801,6 +802,28 @@ function renderCollectionFilters(cols) {
       await loadState();
     });
 
+    ul.appendChild(li);
+  }
+}
+
+function renderAuthorFilters(authors) {
+  const ul = $("#authorFilters");
+  if (!ul) return;
+  ul.innerHTML = "";
+  if (!authors.length) {
+    ul.innerHTML = `<li style="color:var(--faint);cursor:default">No authors yet</li>`;
+    return;
+  }
+  for (const a of authors) {
+    const name = a.name || "";
+    const li = document.createElement("li");
+    li.className = "author-item";
+    if (state.filter.author === name) li.classList.add("active");
+    li.title = `Show everything by ${name}`;
+    li.innerHTML =
+      `<span class="dot" style="background:var(--signal)"></span>` +
+      `<span class="author-name">${esc(name)}</span><span class="count">${a.c}</span>`;
+    li.onclick = () => filterByAuthor(name);
     ul.appendChild(li);
   }
 }
