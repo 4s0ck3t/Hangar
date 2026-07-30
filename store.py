@@ -1149,15 +1149,18 @@ def set_category_parent(cat_id, parent_id):
 
 
 def category_folder_counts():
-    """Immediate parent folders represented inside each category.
+    """Useful grouping folders represented inside each category.
 
     The sidebar uses this to show e.g. Furniture > Beds, while keeping the
     existing category membership model unchanged. Counts are by indexed asset
-    row, not by physical directory size.
+    row, not by physical directory size. Many model packs place a single file in
+    a self-named leaf folder (Tree/American_beech/American_beech.blend); those
+    leaf asset folders are too noisy for the category tree, so model rows roll
+    up to their parent when the folder name matches the asset stem.
     """
     with connect() as conn:
         rows = conn.execute(
-            "SELECT cat.name category, cat.kind, a.path "
+            "SELECT cat.name category, cat.kind, a.path, a.ext "
             "FROM categories cat "
             "JOIN asset_categories ac ON ac.category_id=cat.id "
             "JOIN assets a ON a.id=ac.asset_id "
@@ -1166,7 +1169,7 @@ def category_folder_counts():
         ).fetchall()
     by_key = {}
     for r in rows:
-        folder = os.path.dirname(r["path"])
+        folder = _category_display_folder(r["path"], r["ext"])
         if not folder:
             continue
         key = (r["category"], r["kind"] or "", folder)
@@ -1181,6 +1184,39 @@ def category_folder_counts():
     out = list(by_key.values())
     out.sort(key=lambda x: (x["category"].lower(), x["name"].lower()))
     return out
+
+
+def _norm_folder_token(s):
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _category_display_folder(path, ext):
+    folder = os.path.dirname(path or "")
+    if not folder:
+        return ""
+    if (ext or "").lower() in {".blend", ".fbx", ".obj", ".gltf", ".glb", ".stl",
+                               ".ply", ".usd", ".usda", ".usdc", ".usdz", ".abc",
+                               ".dae", ".3ds"}:
+        stem = _norm_folder_token(os.path.splitext(os.path.basename(path or ""))[0])
+        while folder:
+            leaf = _norm_folder_token(os.path.basename(folder))
+            parent = os.path.dirname(folder)
+            if not (parent and _looks_self_named_asset_folder(leaf, stem)):
+                break
+            folder = parent
+    return folder
+
+
+def _looks_self_named_asset_folder(leaf, stem):
+    if not leaf or not stem:
+        return False
+    if leaf == stem:
+        return True
+    if leaf in stem or stem in leaf:
+        shorter = min(len(leaf), len(stem))
+        longer = max(len(leaf), len(stem))
+        return shorter >= 12 and (shorter / longer) >= 0.65
+    return False
 
 
 def create_category(name, icon="", keywords="", kind=""):
