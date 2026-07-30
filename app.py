@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.36"
+__version__ = "0.15.37"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1102,6 +1102,7 @@ def state():
         "authors": store.list_authors(),
         "categories": store.list_categories(),
         "category_folders": store.category_folder_counts(),
+        "category_authors": store.category_author_counts(),
         "counts": store.kind_counts(),
         "blender_queue": str(BLENDER_QUEUE),
         "blender_render": thumbs.blender_available(),

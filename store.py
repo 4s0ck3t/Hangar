@@ -275,6 +275,14 @@ def init_db():
                 pass
             conn.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES('facets_backfilled','1')")
+        if not conn.execute(
+                "SELECT 1 FROM settings WHERE key='author_source_repaired_v2'").fetchone():
+            try:
+                _repair_auto_source_authors(conn)
+            except Exception:
+                pass
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('author_source_repaired_v2','1')")
         # Sensible default tag palette so new users aren't staring at a blank wall.
         defaults = [
             ("hero", "#E8B04B"), ("wip", "#E87D3E"), ("approved", "#3DBE8B"),
@@ -509,18 +517,51 @@ def rename_asset(asset_id, new_path, new_name):
 
 
 def source_folder(path, root):
-    """The 'source pack' folder for an asset: the first folder under its library
-    root (e.g. .../assets/<Poly Haven>/... -> 'Poly Haven'). A file sitting
-    directly in the root falls back to the root folder's own name. String-based
-    (not os.path) so it works on stored Windows paths regardless of host OS."""
+    """The source/vendor folder for an asset.
+
+    Library roots can be broad (the user's D:\\ drive), so skip storage buckets
+    such as 3D_Assets/Models and prefer known vendor folders when present:
+    D:\\3D_Assets\\Models\\Bedroom\\iMeshh\\... -> iMeshh.
+    String-based (not os.path) so it works on stored Windows paths regardless of
+    host OS."""
     p = (path or "").replace("\\", "/")
     r = (root or "").replace("\\", "/").rstrip("/")
     if not r or not p.lower().startswith(r.lower() + "/"):
         return ""
     parts = [x for x in p[len(r) + 1:].split("/") if x]
-    if len(parts) >= 2:
-        return parts[0]                       # first folder beneath the root
+    folders = parts[:-1] if parts else []
+    for part in folders:
+        if _source_token(part) in _KNOWN_SOURCE_FOLDERS:
+            return part
+    for part in folders:
+        if _source_token(part) not in _SOURCE_BUCKET_FOLDERS:
+            return part
     return r.split("/")[-1] or ""             # file directly in root -> root name
+
+
+_SOURCE_BUCKET_FOLDERS = {
+    "3dassets", "assets", "assetlibrary", "library", "models", "model",
+    "textures", "texture", "materials", "material", "hdri", "hdris",
+}
+_KNOWN_SOURCE_FOLDERS = {
+    "imeshh", "chocofur", "polyhaven", "kitbash3d",
+}
+
+
+def _source_token(s):
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _repair_auto_source_authors(conn):
+    roots = [r["path"] for r in conn.execute("SELECT path FROM libraries")]
+    roots.sort(key=len, reverse=True)
+    auto_old = {"", "3D_Assets", "Models"}
+    rows = conn.execute("SELECT id, path, author FROM assets").fetchall()
+    for row in rows:
+        author = row["author"] or ""
+        inferred = next((s for s in (source_folder(row["path"], rt) for rt in roots) if s), "")
+        if inferred and author in auto_old and author != inferred:
+            conn.execute("UPDATE assets SET author=? WHERE id=?", (inferred, row["id"]))
 
 
 def backfill_source_authors(force=False):
@@ -1195,6 +1236,26 @@ def category_folder_counts():
     out = list(by_key.values())
     out.sort(key=lambda x: (x["category"].lower(), x["name"].lower()))
     return out
+
+
+def category_author_counts():
+    """Authors represented inside each category, for Category > Author browsing."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT cat.name category, cat.kind, a.author, COUNT(*) c "
+            "FROM categories cat "
+            "JOIN asset_categories ac ON ac.category_id=cat.id "
+            "JOIN assets a ON a.id=ac.asset_id "
+            "WHERE a.missing=0 AND a.author!='' AND a.author IS NOT NULL "
+            "GROUP BY cat.name, cat.kind, a.author COLLATE NOCASE "
+            "ORDER BY cat.sort, cat.name COLLATE NOCASE, a.author COLLATE NOCASE"
+        ).fetchall()
+    return [{
+        "category": r["category"],
+        "kind": r["kind"] or "",
+        "author": r["author"],
+        "count": r["c"],
+    } for r in rows]
 
 
 def _norm_folder_token(s):

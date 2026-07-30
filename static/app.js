@@ -267,6 +267,7 @@ async function loadState() {
   const s = await api("state");
   allCategories = s.categories || [];
   categoryFolders = s.category_folders || [];
+  categoryAuthors = s.category_authors || [];
   appCaps.blenderReady = !!s.blender_render;
   appCaps.renderExts = s.blender_render_exts || [];
   appCounts = s.counts || {};
@@ -572,21 +573,21 @@ function renderKindFilters(counts, cats) {
 // "material", or "" = shared.
 // Recursively render a category tree: each level's categories alphabetical
 // (list_categories already sorts by name), children indented under their parent
-// via `depth`. Every category's own folders (physical groupings) render right
-// below it, before its child categories.
+// via `depth`. Every category's represented authors render right below it, so
+// browsing becomes Category > Author without exposing duplicate physical roots.
 function renderCategoryTree(ul, allCats, parentId, depth) {
   const level = allCats.filter((c) => (c.parent_id || null) === parentId);
   for (const c of level) {
-    const folders = foldersForCategory(c);
-    ul.appendChild(buildCategoryItem(c, depth, folders));
+    const authors = authorsForCategory(c);
+    ul.appendChild(buildCategoryItem(c, depth, authors));
     if (catFoldersExpanded(c)) {
-      for (const f of folders) ul.appendChild(buildCategoryFolderItem(c, f, depth));
+      for (const a of authors) ul.appendChild(buildCategoryAuthorItem(c, a, depth));
     }
     renderCategoryTree(ul, allCats, c.id, depth + 1);
   }
 }
 
-function buildCategoryItem(c, depth, folders) {
+function buildCategoryItem(c, depth, authors) {
     const li = document.createElement("li");
     depth = depth || 1;
     // Every category sits UNDER a kind header, so it's always indented (cat-sub);
@@ -596,11 +597,11 @@ function buildCategoryItem(c, depth, folders) {
     li.className = "cat-item cat-sub";
     if (depth > 1) li.style.paddingLeft = `${24 + (depth - 1) * 14}px`;   // .cat-sub base is 24px
     if (state.filter.category === c.name) li.classList.add("active");
-    folders = folders || foldersForCategory(c);
-    const hasFolders = folders.length > 0;
+    authors = authors || authorsForCategory(c);
+    const hasAuthors = authors.length > 0;
     const folderCollapsed = !catFoldersExpanded(c);
-    const folderToggle = hasFolders
-      ? `<button class="cat-folder-toggle" title="${folderCollapsed ? "Show" : "Hide"} folders">${folderCollapsed ? "▸" : "▾"}</button>`
+    const folderToggle = hasAuthors
+      ? `<button class="cat-folder-toggle" title="${folderCollapsed ? "Show" : "Hide"} authors">${folderCollapsed ? "▸" : "▾"}</button>`
       : `<span class="cat-folder-spacer"></span>`;
     const icon = c.icon ? `<span class="cat-ico">${esc(c.icon)}</span>` : `<span class="dot" style="background:var(--k-model)"></span>`;
     const kwTitle = c.keywords
@@ -619,7 +620,7 @@ function buildCategoryItem(c, depth, folders) {
       resetFilter();
       state.filter.kind = (c.kind && c.kind === k) ? k : (c.kind || "");
       state.filter.category = c.name;
-      if (hasFolders) expandCatFolders(c);
+      if (hasAuthors) expandCatFolders(c);
       refresh();
     };
 
@@ -712,6 +713,12 @@ function foldersForCategory(c) {
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
 
+function authorsForCategory(c) {
+  return (categoryAuthors || [])
+    .filter((a) => a.category === c.name && (a.kind || "") === (c.kind || ""))
+    .sort((a, b) => a.author.localeCompare(b.author, undefined, { sensitivity: "base" }));
+}
+
 function destinationFolderForCategory(a, c) {
   const folders = foldersForCategory(c);
   if (folders.length) {
@@ -750,23 +757,21 @@ function showPathTip(el, text) {
 }
 function hidePathTip() { if (_pathTip) _pathTip.style.display = "none"; }
 
-function buildCategoryFolderItem(c, f, depth) {
+function buildCategoryAuthorItem(c, a, depth) {
   const li = document.createElement("li");
-  li.className = "cat-folder-item";
+  li.className = "cat-folder-item cat-author-item";
   if (depth > 1) li.style.paddingLeft = `${42 + (depth - 1) * 14}px`;   // base (depth 1) is 42px
-  if (state.filter.category === c.name && state.filter.folder === f.path) li.classList.add("active");
-  li.addEventListener("mouseenter", () => showPathTip(li, f.path));
-  li.addEventListener("mouseleave", hidePathTip);
+  if (state.filter.category === c.name && state.filter.author === a.author) li.classList.add("active");
+  li.title = `Show ${a.author} in ${c.name}`;
   li.innerHTML =
     `<span class="folder-dot"></span>` +
-    `<span class="cat-folder-name">${esc(f.name)}</span><span class="count">${f.count}</span>`;
+    `<span class="cat-folder-name">${esc(a.author)}</span><span class="count">${a.count}</span>`;
   li.onclick = (e) => {
     e.stopPropagation();
-    hidePathTip();
     resetFilter();
     state.filter.kind = c.kind || "";
     state.filter.category = c.name;
-    state.filter.folder = f.path;
+    state.filter.author = a.author;
     refresh();
   };
   return li;
@@ -1718,6 +1723,7 @@ function updateActiveLabel(total) {
   let label = state.filter.corrupt ? "🩺 Damaged .blend files"
     : state.filter.linked ? "🔗 Linked textures"
     : state.filter.noAuthor ? "🏷 No author"
+    : state.filter.author && state.filter.category ? `${state.filter.category} · 👤 ${state.filter.author}`
     : state.filter.author ? `👤 ${state.filter.author}`
     : state.filter.duplicates ? "⧉ Duplicates"
     : state.filter.favorite ? "Favorites"
@@ -3504,6 +3510,7 @@ function renderTagEditor(a) {
 
 let allCategories = [];
 let categoryFolders = [];
+let categoryAuthors = [];
 
 // File-level metadata (author/description/license/copyright) — stored in Hangar
 // for any asset, no marking needed. Shows the fields (—  when unset) with an
