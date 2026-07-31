@@ -114,7 +114,10 @@ DEFAULT_CATEGORIES = [
     ("Buildings",    "🏢", "model", ["building", "buildings", "house", "home", "tower",
                             "skyscraper", "apartment", "office"]),
     ("Architecture", "🏛", "model", ["architecture", "interior", "exterior", "facade",
-                            "room", "kitchen", "bathroom", "stairs", "wall"]),
+                            "room", "kitchen", "stairs", "wall"]),
+    ("Bathrooms",    "🚿", "model", ["bathroom", "bathrooms", "basin", "basins",
+                            "toilet", "toilets", "bath", "bathtub", "baths",
+                            "shower", "showers", "vanity", "vanities", "bidet"]),
     ("Vehicles",     "🚗", "model", ["vehicle", "car", "cars", "truck", "tank", "plane",
                             "aircraft", "jet", "ship", "boat", "motorcycle",
                             "bike", "bicycle", "train", "bus"]),
@@ -319,6 +322,8 @@ def init_db():
         # populated without the user having to hit ⚡. Bumped flag = re-run once.
         need_reclassify = not conn.execute(
             "SELECT 1 FROM settings WHERE key='autoclassify_v2'").fetchone()
+        need_bathrooms = not conn.execute(
+            "SELECT 1 FROM settings WHERE key='bathroom_category_v2'").fetchone()
     _invalidate_matchers()
     if need_reclassify:
         try:
@@ -326,6 +331,12 @@ def init_db():
         except Exception:
             pass
         set_setting("autoclassify_v2", "1")
+    if need_bathrooms:
+        try:
+            promote_bathroom_category()
+        except Exception:
+            pass
+        set_setting("bathroom_category_v2", "1")
 
 
 # ---- settings -------------------------------------------------------------
@@ -1748,3 +1759,70 @@ def auto_categorize_all():
                     added += cur.rowcount
                     touched.add(a["id"])
     return {"links_added": added, "assets_matched": len(touched)}
+
+
+_BATHROOM_KEYWORDS = {
+    "bathroom", "bathrooms", "basin", "basins",
+    "toilet", "toilets", "bath", "bathtub", "baths",
+    "shower", "showers", "vanity", "vanities", "bidet",
+}
+
+
+def _path_has_keyword(path, keywords):
+    tokens = set(re.split(r"[^a-z0-9]+", (path or "").lower()))
+    tokens.discard("")
+    for kw in keywords:
+        if kw in tokens or (kw + "s") in tokens or (kw.endswith("s") and kw[:-1] in tokens):
+            return True
+    return False
+
+
+def promote_bathroom_category():
+    """Upgrade existing libraries so bathroom assets get their own category.
+
+    Earlier starter taxonomy treated "bathroom" as an Architecture keyword.
+    That made bathroom packs visible only as scattered folder groups instead of
+    a single left-column category. This keeps the broad Architecture category,
+    but moves obvious bathroom model assets into Bathrooms.
+    """
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO categories(name, icon, sort, keywords, kind) "
+            "VALUES (?, ?, (SELECT COALESCE(MAX(sort), -1) + 1 FROM categories), ?, ?)",
+            ("Bathrooms", "🚿", ",".join(sorted(_BATHROOM_KEYWORDS)), "model"),
+        )
+        conn.execute(
+            "UPDATE categories SET keywords=?, kind='model' "
+            "WHERE name='Bathrooms' AND (keywords='' OR kind='')",
+            (",".join(sorted(_BATHROOM_KEYWORDS)),),
+        )
+        arch = conn.execute("SELECT id, keywords FROM categories WHERE name='Architecture'").fetchone()
+        baths = conn.execute("SELECT id FROM categories WHERE name='Bathrooms'").fetchone()
+        if not baths:
+            return {"matched": 0}
+        if arch and arch["keywords"]:
+            kws = [k for k in (arch["keywords"] or "").split(",") if k and k not in {"bathroom", "bathrooms"}]
+            conn.execute("UPDATE categories SET keywords=? WHERE id=?", (",".join(kws), arch["id"]))
+
+        matched = 0
+        for a in conn.execute(
+            "SELECT id, path FROM assets WHERE missing=0 AND kind='model'"
+        ).fetchall():
+            if not _path_has_keyword(a["path"], _BATHROOM_KEYWORDS):
+                conn.execute(
+                    "DELETE FROM asset_categories WHERE category_id=? AND asset_id=?",
+                    (baths["id"], a["id"]),
+                )
+                continue
+            matched += 1
+            conn.execute(
+                "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) VALUES (?, ?)",
+                (baths["id"], a["id"]),
+            )
+            if arch:
+                conn.execute(
+                    "DELETE FROM asset_categories WHERE category_id=? AND asset_id=?",
+                    (arch["id"], a["id"]),
+                )
+    _invalidate_matchers()
+    return {"matched": matched}
