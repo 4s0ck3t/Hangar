@@ -236,6 +236,13 @@ button, input, select { font-family: inherit; color: inherit; }
   padding: 4px 8px 4px 42px;
   font-size: 11.5px;
 }
+.filter-list li.cat-author-item {
+  padding-left: 56px;
+  color: var(--faint);
+}
+.filter-list li.cat-author-item .cat-folder-name {
+  font-size: 11px;
+}
 .path-tip {
   position: fixed; z-index: 2000; display: none;
   background: var(--raised-hi); border: 1px solid var(--line); border-radius: 6px;

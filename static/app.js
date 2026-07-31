@@ -631,7 +631,7 @@ function buildCategoryItem(c, depth, authors) {
     // stays on the HDRI tab when you pick an HDRI category).
     li.onclick = () => {
       const k = state.filter.kind;
-      resetFilter();
+      resetFilterForCategory(c.kind || "");
       state.filter.kind = (c.kind && c.kind === k) ? k : (c.kind || "");
       state.filter.category = c.name;
       if (hasAuthors) expandCatFolders(c);
@@ -774,7 +774,7 @@ function hidePathTip() { if (_pathTip) _pathTip.style.display = "none"; }
 function buildCategoryAuthorItem(c, a, depth) {
   const li = document.createElement("li");
   li.className = "cat-folder-item cat-author-item";
-  if (depth > 1) li.style.paddingLeft = `${42 + (depth - 1) * 14}px`;   // base (depth 1) is 42px
+  if (depth > 1) li.style.paddingLeft = `${56 + (depth - 1) * 14}px`;   // base (depth 1) is 56px
   if (state.filter.category === c.name && state.filter.author === a.author) li.classList.add("active");
   li.title = `Show ${a.author} in ${c.name}`;
   li.innerHTML =
@@ -782,7 +782,7 @@ function buildCategoryAuthorItem(c, a, depth) {
     `<span class="cat-folder-name">${esc(a.author)}</span><span class="count">${a.count}</span>`;
   li.onclick = (e) => {
     e.stopPropagation();
-    resetFilter();
+    resetFilterForCategory(c.kind || "");
     state.filter.kind = c.kind || "";
     state.filter.category = c.name;
     state.filter.author = a.author;
@@ -906,6 +906,15 @@ function resetFilter() {
                    missing_blend_textures: false, duplicates: false, duplicatePacks: false, organiseDisk: false, noAuthor: false,
                    linked: false, corrupt: false, author: "", dupKind: "" };
   _facetKindCache = {};
+}
+
+function resetFilterForCategory(kind) {
+  const keepExt = state.filter.ext || "";
+  resetFilter();
+  if ((kind || "") === "model" && keepExt) {
+    state.filter.ext = keepExt;
+    state.filter.kind = "model";
+  }
 }
 
 // ---- clear-filter button visibility ---------------------------------------
