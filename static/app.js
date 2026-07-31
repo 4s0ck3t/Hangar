@@ -69,7 +69,7 @@ function loadCollapsed() {
 }
 const state = {
   filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
-            favorite: false, missing: false, missing_blend_textures: false, duplicates: false, duplicatePacks: false, corrupt: false,
+            favorite: false, missing: false, missing_blend_textures: false, duplicates: false, duplicatePacks: false, organiseDisk: false, corrupt: false,
             noAuthor: false, linked: false, author: "", dupKind: "" },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
@@ -903,7 +903,7 @@ let _facetKindCache = {};  // kind → { subtypes, resolutions }, invalidated on
 function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
                    favorite: false, subtype: "", resolution: "", missing: false,
-                   missing_blend_textures: false, duplicates: false, duplicatePacks: false, noAuthor: false,
+                   missing_blend_textures: false, duplicates: false, duplicatePacks: false, organiseDisk: false, noAuthor: false,
                    linked: false, corrupt: false, author: "", dupKind: "" };
   _facetKindCache = {};
 }
@@ -913,7 +913,7 @@ function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
     || state.filter.collection || state.filter.category || state.filter.folder
     || state.filter.favorite || state.filter.missing || state.filter.missing_blend_textures || state.filter.subtype
-    || state.filter.resolution || state.filter.duplicates || state.filter.duplicatePacks || state.filter.noAuthor
+    || state.filter.resolution || state.filter.duplicates || state.filter.duplicatePacks || state.filter.organiseDisk || state.filter.noAuthor
     || state.filter.linked || state.filter.corrupt || state.filter.author
     || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
@@ -1321,10 +1321,11 @@ async function refresh() {
   // auto-groupings below.
   const dupes = f.duplicates;
   const dupPacks = f.duplicatePacks;
+  const organise = f.organiseDisk;
   const noAuthor = f.noAuthor;   // standalone view: files with no Author set
   const linked = f.linked;       // standalone view: .blend files with linked textures
   const corrupt = f.corrupt;     // standalone view: damaged .blend files (health check)
-  const _std = dupes || dupPacks || noAuthor || linked || corrupt;   // any standalone view suppresses auto-grouping
+  const _std = dupes || dupPacks || organise || noAuthor || linked || corrupt;   // any standalone view suppresses auto-grouping
   // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
   // with no other filter splits the grid into category sections.
   const grouped = !_std && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
@@ -1381,6 +1382,23 @@ async function refresh() {
     return;
   }
 
+  if (organise) {
+    const data = await api("organise/plan?limit=500");
+    renderOrganisePlan(data);
+    await loadState();
+    updateActiveLabel(data.total || 0);
+    updateClearBtn();
+    updateDupBtn();
+    updateDupPackBtn();
+    updateOrganiseBtn();
+    updateNoAuthorBtn();
+    updateLinkedBtn();
+    updateHealthBtn();
+    updateFacetStrip();
+    recordViewAfterRefresh();
+    return;
+  }
+
   const data = await api("assets?" + p.toString());
   recordThumbMtimes(data.assets);
   if (dupes) renderGroupedByContent(data.assets);
@@ -1410,6 +1428,7 @@ async function refresh() {
   updateClearBtn();
   updateDupBtn();
   updateDupPackBtn();
+  updateOrganiseBtn();
   updateNoAuthorBtn();
   updateLinkedBtn();
   updateHealthBtn();
@@ -1881,12 +1900,94 @@ function renderDuplicatePacks(groups, hiddenCount) {
   grid.scrollTop = 0;
 }
 
+function renderOrganisePlan(data) {
+  const grid = $("#grid"); const empty = $("#emptyState");
+  _vAssets = []; _vRange = { start: -1, end: -1 };
+  _currentAssets = [];
+  currentAssets = [];
+  grid.classList.remove("grouped");
+  grid.classList.add("grouped");
+  empty.classList.add("hidden");
+  const crumbBar = $("#folderBreadcrumb");
+  if (crumbBar) crumbBar.classList.add("hidden");
+  const texBar = $("#texfixBar");
+  if (texBar) texBar.classList.add("hidden");
+
+  const items = data.items || [];
+  if (!items.length) {
+    grid.replaceChildren();
+    empty.classList.remove("hidden");
+    empty.innerHTML = `<h2>No organise plan yet</h2><p>Hangar did not find model packs that need a clean disk target.</p>`;
+    return;
+  }
+
+  const s = data.summary || {};
+  const frag = document.createDocumentFragment();
+  const tools = document.createElement("div");
+  tools.className = "organise-tools";
+  tools.innerHTML =
+    `<span>Target root: <b>${esc(data.target_root || "D:\\Hangar")}</b></span>` +
+    `<span>${s.move || 0} to move</span>` +
+    `<span>${s.already_clean || 0} already clean</span>` +
+    `<span>${(s.collision || 0) + (s.target_exists || 0)} need review</span>`;
+  frag.appendChild(tools);
+
+  const byCat = new Map();
+  for (const item of items) {
+    const key = item.category || "Uncategorised";
+    if (!byCat.has(key)) byCat.set(key, []);
+    byCat.get(key).push(item);
+  }
+  const sections = [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0], undefined, { sensitivity: "base" }));
+  for (const [cat, rows] of sections) {
+    const section = document.createElement("div");
+    const key = `organise:${cat}`;
+    const collapsed = sectionIsCollapsed(key);
+    section.className = "grid-section organise-section" + (collapsed ? " collapsed" : "");
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.innerHTML =
+      `<span class="section-ico">📁</span>` +
+      `<span class="section-name">${esc(cat)}</span>` +
+      `<span class="section-count">${rows.length}</span>`;
+    head.prepend(sectionCollapseButton(key, cat));
+    section.appendChild(head);
+    const body = document.createElement("div");
+    body.className = "organise-rows";
+    if (!collapsed) {
+      for (const item of rows) {
+        const row = document.createElement("div");
+        row.className = `organise-row status-${esc(item.status || "move")}`;
+        const meta = [
+          item.author || "Unknown",
+          item.subcategory || "",
+          `${item.count || 0} file${(item.count || 0) === 1 ? "" : "s"}`,
+          fmtSize(item.size || 0),
+          (item.formats || []).join(", "),
+          item.status === "already_clean" ? "already clean" : item.status === "collision" ? "collision" : item.status === "target_exists" ? "target exists" : "planned",
+        ].filter(Boolean).join(" · ");
+        row.innerHTML =
+          `<div class="organise-pack">${esc(item.pack || baseName(item.source))}</div>` +
+          `<div class="organise-meta">${esc(meta)}</div>` +
+          `<div class="organise-path"><span>From</span><code>${esc(item.source)}</code></div>` +
+          `<div class="organise-path"><span>To</span><code>${esc(item.target)}</code></div>`;
+        body.appendChild(row);
+      }
+    }
+    section.appendChild(body);
+    frag.appendChild(section);
+  }
+  grid.replaceChildren(frag);
+  grid.scrollTop = 0;
+}
+
 function updateActiveLabel(total) {
   let label = state.filter.corrupt ? "🩺 Damaged .blend files"
     : state.filter.linked ? "🔗 Linked textures"
     : state.filter.noAuthor ? "🏷 No author"
     : state.filter.author && state.filter.category ? `${state.filter.category} · 👤 ${state.filter.author}`
     : state.filter.author ? `👤 ${state.filter.author}`
+    : state.filter.organiseDisk ? "Organise disk plan"
     : state.filter.duplicatePacks ? "Duplicate packs"
     : state.filter.duplicates ? "⧉ Duplicates"
     : state.filter.favorite ? "Favorites"
@@ -3139,7 +3240,7 @@ function renderGrid(assets, total) {
     const f = state.filter;
     const anyFilter = state.search || f.kind || f.ext || f.tag || f.collection ||
       f.category || f.folder || f.subtype || f.resolution || f.favorite ||
-      f.missing || f.missing_blend_textures || f.duplicates || f.duplicatePacks || f.corrupt ||
+      f.missing || f.missing_blend_textures || f.duplicates || f.duplicatePacks || f.organiseDisk || f.corrupt ||
       f.noAuthor || f.linked || f.author;
     empty.innerHTML = total === 0 && !anyFilter
       ? `<h2>No assets indexed yet</h2>
@@ -4209,6 +4310,10 @@ function updateDupPackBtn() {
   const b = $("#dupPackBtn");
   if (b) b.classList.toggle("active", state.filter.duplicatePacks);
 }
+function updateOrganiseBtn() {
+  const b = $("#organiseBtn");
+  if (b) b.classList.toggle("active", state.filter.organiseDisk);
+}
 $("#dupBtn").onclick = async () => {
   const on = !state.filter.duplicates;
   resetFilter();                 // duplicates is a standalone view
@@ -4225,6 +4330,15 @@ if (_dupPackBtn) _dupPackBtn.onclick = () => {
   state.filter.duplicatePacks = on;
   state.search = ""; const s = $("#search"); if (s) s.value = "";
   updateDupPackBtn();
+  refresh();
+};
+const _organiseBtn = $("#organiseBtn");
+if (_organiseBtn) _organiseBtn.onclick = () => {
+  const on = !state.filter.organiseDisk;
+  resetFilter();
+  state.filter.organiseDisk = on;
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  updateOrganiseBtn();
   refresh();
 };
 

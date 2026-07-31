@@ -118,6 +118,16 @@ DEFAULT_CATEGORIES = [
     ("Bathrooms",    "🚿", "model", ["bathroom", "bathrooms", "basin", "basins",
                             "toilet", "toilets", "bath", "bathtub", "baths",
                             "shower", "showers", "vanity", "vanities", "bidet"]),
+    ("Kitchens",     "🍳", "model", ["kitchen", "kitchens", "countertop", "worktop",
+                            "oven", "hob", "stove", "fridge", "refrigerator",
+                            "dishwasher", "kitchenette"]),
+    ("Bedrooms",     "🛏", "model", ["bedroom", "bedrooms", "bed", "beds", "wardrobe",
+                            "nightstand", "bedside", "dresser"]),
+    ("Living Rooms", "🛋", "model", ["living", "lounge", "sofa", "couch", "tv",
+                            "television", "coffee", "console"]),
+    ("Dining Rooms", "🍽", "model", ["dining", "dinner", "diningroom"]),
+    ("Offices",      "💼", "model", ["office", "offices", "desk", "workstation",
+                            "conference", "meeting"]),
     ("Vehicles",     "🚗", "model", ["vehicle", "car", "cars", "truck", "tank", "plane",
                             "aircraft", "jet", "ship", "boat", "motorcycle",
                             "bike", "bicycle", "train", "bus"]),
@@ -324,6 +334,8 @@ def init_db():
             "SELECT 1 FROM settings WHERE key='autoclassify_v2'").fetchone()
         need_bathrooms = not conn.execute(
             "SELECT 1 FROM settings WHERE key='bathroom_category_v2'").fetchone()
+        need_rooms = not conn.execute(
+            "SELECT 1 FROM settings WHERE key='room_categories_v1'").fetchone()
     _invalidate_matchers()
     if need_reclassify:
         try:
@@ -337,6 +349,12 @@ def init_db():
         except Exception:
             pass
         set_setting("bathroom_category_v2", "1")
+    if need_rooms:
+        try:
+            promote_room_categories()
+        except Exception:
+            pass
+        set_setting("room_categories_v1", "1")
 
 
 # ---- settings -------------------------------------------------------------
@@ -1826,3 +1844,162 @@ def promote_bathroom_category():
                 )
     _invalidate_matchers()
     return {"matched": matched}
+
+
+_ROOM_CATEGORY_RULES = [
+    ("Bathrooms", {"bathroom", "bathrooms", "basin", "basins", "toilet", "toilets",
+                   "bath", "bathtub", "baths", "shower", "showers", "vanity",
+                   "vanities", "bidet"}),
+    ("Kitchens", {"kitchen", "kitchens", "countertop", "worktop", "oven", "hob",
+                  "stove", "fridge", "refrigerator", "dishwasher", "kitchenette"}),
+    ("Bedrooms", {"bedroom", "bedrooms", "bed", "beds", "wardrobe", "nightstand",
+                  "bedside", "dresser"}),
+    ("Living Rooms", {"living", "lounge", "sofa", "couch", "tv", "television",
+                      "coffee", "console"}),
+    ("Dining Rooms", {"dining", "dinner", "diningroom"}),
+    ("Offices", {"office", "offices", "desk", "workstation", "conference", "meeting"}),
+]
+
+
+def promote_room_categories():
+    """Back-fill newer room categories while leaving user categories intact."""
+    total = 0
+    with connect() as conn:
+        existing = {
+            r["name"]: r["id"]
+            for r in conn.execute("SELECT id, name FROM categories").fetchall()
+        }
+        for name, kws in _ROOM_CATEGORY_RULES:
+            conn.execute(
+                "INSERT OR IGNORE INTO categories(name, icon, sort, keywords, kind) "
+                "VALUES (?, ?, (SELECT COALESCE(MAX(sort), -1) + 1 FROM categories), ?, ?)",
+                (name, "", ",".join(sorted(kws)), "model"),
+            )
+        cats = {
+            r["name"]: r["id"]
+            for r in conn.execute("SELECT id, name FROM categories").fetchall()
+        }
+        for a in conn.execute(
+            "SELECT id, path FROM assets WHERE missing=0 AND kind='model'"
+        ).fetchall():
+            for name, kws in _ROOM_CATEGORY_RULES:
+                if not _path_has_keyword(a["path"], kws):
+                    continue
+                cid = cats.get(name)
+                if not cid:
+                    continue
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) VALUES (?, ?)",
+                    (cid, a["id"]),
+                )
+                total += cur.rowcount
+                break
+    _invalidate_matchers()
+    return {"links_added": total}
+
+
+def _clean_path_part(value, fallback="Unknown"):
+    text = re.sub(r"[<>:\"/\\|?*\x00-\x1f]+", " ", str(value or "")).strip(" .")
+    text = re.sub(r"\s+", " ", text)
+    return text or fallback
+
+
+_PHYSICAL_CATEGORY_NAMES = {
+    "Architecture": "Architectural",
+}
+
+
+def _preferred_category_for_path(path, categories):
+    for name, kws in _ROOM_CATEGORY_RULES:
+        if _path_has_keyword(path, kws):
+            return name
+    preferred = [c for c in categories if c not in {"Architecture", "Props"}]
+    return preferred[0] if preferred else (categories[0] if categories else "Uncategorised")
+
+
+def _pack_parts_for_asset(path):
+    parent = os.path.dirname(path or "")
+    stem = os.path.splitext(os.path.basename(path or ""))[0]
+    leaf = os.path.basename(parent)
+    if parent and _looks_self_named_asset_folder(_norm_folder_token(leaf), _norm_folder_token(stem)):
+        return parent, os.path.basename(os.path.dirname(parent)), leaf
+    return parent, os.path.basename(parent), stem
+
+
+def organise_disk_plan(target_root="D:\\Hangar", limit=500):
+    """Read-only plan for a clean physical disk layout.
+
+    Proposes Models/Category/Author/Subfolder/PackName targets from the current
+    index. No files or folders are created here.
+    """
+    target_root = os.path.normpath(target_root or "D:\\Hangar")
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT a.id, a.path, a.name, a.ext, a.author, a.size, "
+            "GROUP_CONCAT(cat.name, '|') categories "
+            "FROM assets a "
+            "LEFT JOIN asset_categories ac ON ac.asset_id=a.id "
+            "LEFT JOIN categories cat ON cat.id=ac.category_id "
+            "WHERE a.missing=0 AND a.hidden=0 AND a.kind='model' "
+            "GROUP BY a.id ORDER BY a.path COLLATE NOCASE"
+        ).fetchall()
+
+    packs = {}
+    for r in rows:
+        pack_folder, subfolder, pack_name = _pack_parts_for_asset(r["path"])
+        if not pack_folder:
+            continue
+        cats = [c for c in (r["categories"] or "").split("|") if c]
+        cat = _preferred_category_for_path(r["path"], cats)
+        author = r["author"] or source_folder(r["path"], os.path.splitdrive(r["path"])[0] + os.sep) or "Unknown"
+        key = pack_folder.lower()
+        item = packs.setdefault(key, {
+            "source": pack_folder,
+            "category": cat,
+            "author": author,
+            "subcategory": subfolder,
+            "pack": pack_name,
+            "formats": set(),
+            "count": 0,
+            "size": 0,
+        })
+        item["count"] += 1
+        item["size"] += int(r["size"] or 0)
+        if r["ext"]:
+            item["formats"].add(r["ext"])
+
+    items = []
+    summary = {"packs": 0, "already_clean": 0, "collisions": 0, "move": 0}
+    seen_targets = {}
+    for p in packs.values():
+        target = os.path.join(
+            target_root, "Models", _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(p["category"], p["category"])),
+            _clean_path_part(p["author"]), _clean_path_part(p["subcategory"]),
+            _clean_path_part(p["pack"]),
+        )
+        status = "move"
+        src_norm = os.path.normcase(os.path.normpath(p["source"]))
+        dst_norm = os.path.normcase(os.path.normpath(target))
+        if src_norm == dst_norm or src_norm.startswith(os.path.normcase(os.path.normpath(target_root)) + os.sep):
+            status = "already_clean"
+        elif dst_norm in seen_targets and seen_targets[dst_norm] != src_norm:
+            status = "collision"
+        elif os.path.exists(target):
+            status = "target_exists"
+        seen_targets[dst_norm] = src_norm
+        summary["packs"] += 1
+        summary[status if status in summary else "collisions"] = summary.get(status if status in summary else "collisions", 0) + 1
+        items.append({
+            "source": p["source"],
+            "target": target,
+            "category": p["category"],
+            "author": p["author"],
+            "subcategory": p["subcategory"],
+            "pack": p["pack"],
+            "formats": sorted(p["formats"]),
+            "count": p["count"],
+            "size": p["size"],
+            "status": status,
+        })
+    items.sort(key=lambda x: (x["status"] != "move", x["category"].lower(), x["author"].lower(), x["subcategory"].lower(), x["pack"].lower()))
+    return {"target_root": target_root, "summary": summary, "items": items[:max(1, int(limit or 500))], "total": len(items)}

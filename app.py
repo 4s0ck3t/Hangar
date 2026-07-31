@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.41"
+__version__ = "0.15.42"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1421,6 +1421,13 @@ def duplicate_pack_restore():
     data = request.get_json(silent=True) or {}
     changed = store.restore_hidden_duplicates((data.get("key") or "").strip())
     return jsonify({"ok": True, "changed": changed, "groups": store.duplicate_pack_groups()})
+
+
+@app.get("/api/organise/plan")
+def organise_plan():
+    target = request.args.get("target", "D:\\Hangar").strip() or "D:\\Hangar"
+    limit = int(request.args.get("limit", 500))
+    return jsonify(store.organise_disk_plan(target, limit))
 
 
 @app.delete("/api/assets/missing")
