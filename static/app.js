@@ -241,6 +241,20 @@ function fmtSize(bytes) {
 }
 function fmtNum(n) { return n == null ? "—" : n.toLocaleString(); }
 function baseName(p) { return (p || "").split(/[\\/]/).pop(); }
+function stemName(p) { return baseName(p).replace(/\.[^.\\/]+$/, ""); }
+function normFolderToken(s) { return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+function looksSelfNamedAssetFolder(folderLeaf, assetStem) {
+  const leaf = normFolderToken(folderLeaf);
+  const stem = normFolderToken(assetStem);
+  if (!leaf || !stem) return false;
+  if (leaf === stem) return true;
+  if (leaf.includes(stem) || stem.includes(leaf)) {
+    const shorter = Math.min(leaf.length, stem.length);
+    const longer = Math.max(leaf.length, stem.length);
+    return shorter >= 12 && (shorter / longer) >= 0.65;
+  }
+  return false;
+}
 function api(path, opts) { return fetch("/api/" + path, opts).then((r) => r.json()); }
 function post(path, body) {
   return api(path, {
@@ -1561,19 +1575,24 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
   const groups = new Map();  // fullParentPath → {label, items[], fullPath}
   for (const a of assets) {
     const parentDir = (a.path || "").replace(/[\\/][^\\/]+$/, "");
-    let label = parentDir;
+    let groupDir = parentDir;
+    const parentOfParent = parentDir.replace(/[\\/][^\\/]+$/, "");
+    if (parentOfParent && looksSelfNamedAssetFolder(baseName(parentDir), stemName(a.path || a.name || ""))) {
+      groupDir = parentOfParent;
+    }
+    let label = groupDir;
     let subtitle = "";
     if (opts.parentOnly) {
-      label = baseName(parentDir) || parentDir || "(root)";
-      subtitle = parentDir;
+      label = baseName(groupDir) || groupDir || "(root)";
+      subtitle = groupDir;
     }
-    if (libRoot && parentDir.toLowerCase().startsWith(libRoot.toLowerCase())) {
-      label = parentDir.slice(libRoot.length).replace(/^[\\/]+/, "") || "(root)";
+    if (libRoot && groupDir.toLowerCase().startsWith(libRoot.toLowerCase())) {
+      label = groupDir.slice(libRoot.length).replace(/^[\\/]+/, "") || baseName(libRoot) || "(root)";
     }
-    if (!groups.has(parentDir)) groups.set(parentDir, {
-      label, subtitle, key: `folder:${parentDir}`, items: [], fullPath: parentDir
+    if (!groups.has(groupDir)) groups.set(groupDir, {
+      label, subtitle, key: `folder:${groupDir}`, items: [], fullPath: groupDir
     });
-    groups.get(parentDir).items.push(a);
+    groups.get(groupDir).items.push(a);
   }
 
   const sections = [...groups.values()]
