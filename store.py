@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS assets (
     content_hash     TEXT NOT NULL DEFAULT '',
     content_hash_sig TEXT NOT NULL DEFAULT '',
     blend_corrupt    INTEGER NOT NULL DEFAULT 0,
+    hidden      INTEGER NOT NULL DEFAULT 0,
     added_at    REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tags (
@@ -226,6 +227,9 @@ def init_db():
             # Set by the .blend health check: file failed structural verification
             # (truncated / missing DNA block).
             ("blend_corrupt",    "ALTER TABLE assets ADD COLUMN blend_corrupt INTEGER NOT NULL DEFAULT 0"),
+            # Soft-hide duplicate pack copies from normal browsing; files stay on disk
+            # and can be restored from Hangar's duplicate-pack cleanup view.
+            ("hidden",           "ALTER TABLE assets ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in asset_cols:
                 conn.execute(ddl)
@@ -601,7 +605,7 @@ def list_blend_missing_tex():
     """Present .blend assets currently flagged as referencing absent textures."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, path FROM assets WHERE missing=0 AND ext='.blend' "
+            "SELECT id, path FROM assets WHERE missing=0 AND hidden=0 AND ext='.blend' "
             "AND blend_missing_textures>0").fetchall()
     return [dict(r) for r in rows]
 
@@ -652,7 +656,7 @@ def blend_meta_targets():
     """(id, path, mtime) for every indexed .blend — for the metadata-index pass."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, path, mtime FROM assets WHERE missing=0 AND ext='.blend'"
+            "SELECT id, path, mtime FROM assets WHERE missing=0 AND hidden=0 AND ext='.blend'"
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -664,7 +668,7 @@ def existing_blend_names():
         return {
             r["name"].lower()
             for r in conn.execute(
-                "SELECT name FROM assets WHERE ext='.blend' AND missing=0"
+                "SELECT name FROM assets WHERE ext='.blend' AND missing=0 AND hidden=0"
             ).fetchall()
         }
 
@@ -708,7 +712,7 @@ def model_ext_counts():
     """Count of model assets per file extension, for sidebar subcategories."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT ext, COUNT(*) c FROM assets WHERE missing=0 AND kind='model' "
+            "SELECT ext, COUNT(*) c FROM assets WHERE missing=0 AND hidden=0 AND kind='model' "
             "GROUP BY ext ORDER BY c DESC"
         ).fetchall()
     return {r["ext"]: r["c"] for r in rows}
@@ -721,7 +725,7 @@ def iter_thumb_targets():
     the slow path."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, path, ext, kind, mtime FROM assets WHERE missing=0 "
+            "SELECT id, path, ext, kind, mtime FROM assets WHERE missing=0 AND hidden=0 "
             "ORDER BY CASE kind "
             "WHEN 'hdri' THEN 0 WHEN 'texture' THEN 1 "
             "WHEN 'material' THEN 2 WHEN 'model' THEN 3 ELSE 4 END, "
@@ -738,8 +742,8 @@ def iter_dup_hash_targets():
     with connect() as conn:
         rows = conn.execute(
             "SELECT id, path, size, mtime, content_hash, content_hash_sig "
-            "FROM assets WHERE missing=0 AND size IN ("
-            "SELECT size FROM assets WHERE missing=0 "
+            "FROM assets WHERE missing=0 AND hidden=0 AND size IN ("
+            "SELECT size FROM assets WHERE missing=0 AND hidden=0 "
             "GROUP BY size HAVING COUNT(*) > 1)"
         ).fetchall()
     out = []
@@ -754,7 +758,7 @@ def list_blend_assets():
     """id + path of every live .blend, for the health check pass."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, path FROM assets WHERE missing=0 AND ext='.blend' "
+            "SELECT id, path FROM assets WHERE missing=0 AND hidden=0 AND ext='.blend' "
             "ORDER BY path").fetchall()
     return [dict(r) for r in rows]
 
@@ -768,7 +772,7 @@ def donor_blend_candidates(path, limit=2000):
     folder = os.path.dirname(path)
     with connect() as conn:
         rows = conn.execute(
-            "SELECT path FROM assets WHERE ext='.blend' AND missing=0 "
+            "SELECT path FROM assets WHERE ext='.blend' AND missing=0 AND hidden=0 "
             "AND blend_corrupt=0 AND path!=? "
             "ORDER BY CASE WHEN path LIKE ? THEN 0 ELSE 1 END, size ASC LIMIT ?",
             (path, folder + os.sep + "%", limit)).fetchall()
@@ -779,7 +783,7 @@ def list_corrupt_blends():
     """id + path of every .blend flagged damaged by the health check."""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, path FROM assets WHERE missing=0 AND ext='.blend' "
+            "SELECT id, path FROM assets WHERE missing=0 AND hidden=0 AND ext='.blend' "
             "AND blend_corrupt>0 ORDER BY path").fetchall()
     return [dict(r) for r in rows]
 
@@ -791,7 +795,7 @@ def list_restore_targets():
     with connect() as conn:
         rows = conn.execute(
             "SELECT id, path, blend_corrupt, missing FROM assets "
-            "WHERE ext='.blend' AND (blend_corrupt>0 OR missing=1) "
+            "WHERE ext='.blend' AND (hidden=0 OR missing=1) AND (blend_corrupt>0 OR missing=1) "
             "ORDER BY path").fetchall()
     return [dict(r) for r in rows]
 
@@ -836,8 +840,10 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
                  group="", set_key="", with_categories=False,
                  subtype="", resolution="", missing=False,
                  missing_blend_textures=False, duplicates=False, no_author=False,
-                 linked=False, corrupt=False, author=""):
+                 linked=False, corrupt=False, author="", include_hidden=False):
     clauses = ["a.missing=1"] if missing else ["a.missing=0"]
+    if not missing and not include_hidden:
+        clauses.append("a.hidden=0")
     if corrupt:
         clauses.append("a.blend_corrupt>0")   # damaged .blend files (health check)
     if no_author:
@@ -851,7 +857,7 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
         # sufficient (same-named different files don't).
         clauses.append(
             "a.content_hash != '' AND a.content_hash IN ("
-            "SELECT content_hash FROM assets WHERE missing=0 AND content_hash != '' "
+            "SELECT content_hash FROM assets WHERE missing=0 AND hidden=0 AND content_hash != '' "
             "GROUP BY content_hash HAVING COUNT(*) > 1)"
         )
     if missing_blend_textures:
@@ -987,7 +993,7 @@ def facet_counts(kind=""):
     """Available subtype + resolution facets (with counts) across live assets,
     optionally scoped to one kind. Drives the faceted-filter strip so it only
     ever offers values that actually match something."""
-    clauses = ["missing=0"]
+    clauses = ["missing=0", "hidden=0"]
     params = []
     if kind:
         clauses.append("kind=?")
@@ -1014,7 +1020,7 @@ def set_members(asset_id):
         if not row:
             return []
         rows = conn.execute(
-            "SELECT * FROM assets WHERE set_key=? AND missing=0 "
+            "SELECT * FROM assets WHERE set_key=? AND missing=0 AND hidden=0 "
             "ORDER BY map_order, name COLLATE NOCASE",
             (row["set_key"],),
         ).fetchall()
@@ -1030,14 +1036,14 @@ def set_favorite(asset_id, value):
 def kind_counts():
     with connect() as conn:
         rows = conn.execute(
-            "SELECT kind, COUNT(*) c FROM assets WHERE missing=0 GROUP BY kind"
+            "SELECT kind, COUNT(*) c FROM assets WHERE missing=0 AND hidden=0 GROUP BY kind"
         ).fetchall()
-        total = conn.execute("SELECT COUNT(*) c FROM assets WHERE missing=0").fetchone()["c"]
+        total = conn.execute("SELECT COUNT(*) c FROM assets WHERE missing=0 AND hidden=0").fetchone()["c"]
         favs = conn.execute(
-            "SELECT COUNT(*) c FROM assets WHERE missing=0 AND favorite=1"
+            "SELECT COUNT(*) c FROM assets WHERE missing=0 AND hidden=0 AND favorite=1"
         ).fetchone()["c"]
         ext_rows = conn.execute(
-            "SELECT ext, COUNT(*) c FROM assets WHERE missing=0 AND kind='model' "
+            "SELECT ext, COUNT(*) c FROM assets WHERE missing=0 AND hidden=0 AND kind='model' "
             "GROUP BY ext ORDER BY c DESC"
         ).fetchall()
     with connect() as conn2:
@@ -1046,11 +1052,11 @@ def kind_counts():
         ).fetchone()["c"]
         blend_missing_textures = conn2.execute(
             "SELECT COUNT(*) c FROM assets "
-            "WHERE missing=0 AND ext='.blend' AND blend_missing_textures>0"
+            "WHERE missing=0 AND hidden=0 AND ext='.blend' AND blend_missing_textures>0"
         ).fetchone()["c"]
         blend_missing_texture_refs = conn2.execute(
             "SELECT COALESCE(SUM(blend_missing_textures), 0) c FROM assets "
-            "WHERE missing=0 AND ext='.blend'"
+            "WHERE missing=0 AND hidden=0 AND ext='.blend'"
         ).fetchone()["c"]
     return {
         "by_kind": {r["kind"]: r["c"] for r in rows},
@@ -1111,7 +1117,7 @@ def list_authors():
     with connect() as conn:
         rows = conn.execute(
             "SELECT author name, COUNT(*) c FROM assets "
-            "WHERE missing=0 AND author!='' AND author IS NOT NULL "
+            "WHERE missing=0 AND hidden=0 AND author!='' AND author IS NOT NULL "
             "GROUP BY author COLLATE NOCASE ORDER BY author COLLATE NOCASE"
         ).fetchall()
     return [dict(r) for r in rows]
@@ -1216,7 +1222,7 @@ def category_folder_counts():
             "FROM categories cat "
             "JOIN asset_categories ac ON ac.category_id=cat.id "
             "JOIN assets a ON a.id=ac.asset_id "
-            "WHERE a.missing=0 "
+            "WHERE a.missing=0 AND a.hidden=0 "
             "ORDER BY cat.sort, cat.name COLLATE NOCASE, a.path"
         ).fetchall()
     by_key = {}
@@ -1246,7 +1252,7 @@ def category_author_counts():
             "FROM categories cat "
             "JOIN asset_categories ac ON ac.category_id=cat.id "
             "JOIN assets a ON a.id=ac.asset_id "
-            "WHERE a.missing=0 AND a.author!='' AND a.author IS NOT NULL "
+            "WHERE a.missing=0 AND a.hidden=0 AND a.author!='' AND a.author IS NOT NULL "
             "GROUP BY cat.name, cat.kind, a.author COLLATE NOCASE "
             "ORDER BY cat.sort, cat.name COLLATE NOCASE, a.author COLLATE NOCASE"
         ).fetchall()
@@ -1289,6 +1295,155 @@ def _looks_self_named_asset_folder(leaf, stem):
         longer = max(len(leaf), len(stem))
         return shorter >= 12 and (shorter / longer) >= 0.65
     return False
+
+
+def _split_storage_path(path):
+    raw = (path or "").replace("\\", "/").strip()
+    m = re.match(r"^([A-Za-z]:)/(.*)$", raw)
+    if not m:
+        return "", [], ""
+    drive = m.group(1).upper()
+    parts = [p for p in m.group(2).split("/") if p]
+    if not parts:
+        return drive + "\\", [], drive
+    return drive + "\\" + parts[0], parts, drive
+
+
+def _duplicate_pack_logical_parts(path):
+    root, parts, _drive = _split_storage_path(path)
+    if not root or len(parts) < 2:
+        return root, [], []
+    rel = parts[1:-1]  # under storage root, without filename
+    while rel and _source_token(rel[0]) in {"3dassets", "models", "model"}:
+        rel = rel[1:]
+    return root, rel, parts[:-1]
+
+
+def _duplicate_pack_key(path):
+    _root, rel, _folders = _duplicate_pack_logical_parts(path)
+    if not rel:
+        return ""
+    return "/".join(_source_token(p) for p in rel if p)
+
+
+def _preferred_duplicate_root(roots):
+    def score(root):
+        token = _source_token(os.path.basename(root or ""))
+        return (0 if token == "3dassets" else 1, (root or "").lower())
+    return sorted(roots, key=score)[0] if roots else ""
+
+
+def duplicate_pack_groups():
+    """Same model-pack folder indexed from multiple storage roots."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path, ext, size, hidden FROM assets "
+            "WHERE missing=0 AND kind='model' "
+            "ORDER BY path COLLATE NOCASE"
+        ).fetchall()
+    packs = {}
+    for r in rows:
+        key = _duplicate_pack_key(r["path"])
+        if not key:
+            continue
+        root, rel, folders = _duplicate_pack_logical_parts(r["path"])
+        if not root or not rel:
+            continue
+        pack = packs.setdefault(key, {
+            "key": key,
+            "label": rel[-1],
+            "logical_path": "\\".join(rel),
+            "roots": {},
+        })
+        _root, _parts, drive = _split_storage_path(r["path"])
+        folder = (drive + "\\" + "\\".join(folders)) if folders and drive else os.path.dirname(r["path"])
+        item = pack["roots"].setdefault(root, {
+            "root": root,
+            "folder": folder,
+            "count": 0,
+            "hidden": 0,
+            "size": 0,
+            "formats": set(),
+        })
+        item["count"] += 1
+        item["hidden"] += 1 if r["hidden"] else 0
+        item["size"] += int(r["size"] or 0)
+        if r["ext"]:
+            item["formats"].add(r["ext"])
+
+    out = []
+    for pack in packs.values():
+        if len(pack["roots"]) < 2:
+            continue
+        preferred = _preferred_duplicate_root(pack["roots"].keys())
+        roots = []
+        for root, item in pack["roots"].items():
+            d = dict(item)
+            d["formats"] = sorted(d["formats"])
+            d["preferred"] = root == preferred
+            roots.append(d)
+        roots.sort(key=lambda d: (not d["preferred"], d["root"].lower()))
+        out.append({
+            "key": pack["key"],
+            "label": pack["label"],
+            "logical_path": pack["logical_path"],
+            "preferred_root": preferred,
+            "roots": roots,
+            "duplicate_count": sum(r["count"] for r in roots if r["root"] != preferred),
+            "hidden_count": sum(r["hidden"] for r in roots),
+            "total_count": sum(r["count"] for r in roots),
+        })
+    out.sort(key=lambda g: (-g["duplicate_count"], g["logical_path"].lower()))
+    return out
+
+
+def hide_duplicate_pack(group_key, keep_root):
+    group_key = group_key or ""
+    keep_root = (keep_root or "").rstrip("\\/")
+    if not group_key or not keep_root:
+        return 0
+    groups = {g["key"]: g for g in duplicate_pack_groups()}
+    if group_key not in groups:
+        return 0
+    ids_hide, ids_show = [], []
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path FROM assets WHERE missing=0 AND kind='model'"
+        ).fetchall()
+        for r in rows:
+            if _duplicate_pack_key(r["path"]) != group_key:
+                continue
+            root, _rel, _folders = _duplicate_pack_logical_parts(r["path"])
+            if root.rstrip("\\/").lower() == keep_root.lower():
+                ids_show.append(r["id"])
+            else:
+                ids_hide.append(r["id"])
+        changed = 0
+        if ids_hide:
+            ph = ",".join("?" * len(ids_hide))
+            changed += conn.execute(
+                f"UPDATE assets SET hidden=1 WHERE id IN ({ph})", ids_hide).rowcount
+        if ids_show:
+            ph = ",".join("?" * len(ids_show))
+            changed += conn.execute(
+                f"UPDATE assets SET hidden=0 WHERE id IN ({ph})", ids_show).rowcount
+    return changed
+
+
+def restore_hidden_duplicates(group_key=""):
+    with connect() as conn:
+        if not group_key:
+            return conn.execute("UPDATE assets SET hidden=0 WHERE hidden=1").rowcount
+        ids = [
+            r["id"] for r in conn.execute(
+                "SELECT id, path FROM assets WHERE hidden=1 AND missing=0 AND kind='model'"
+            ).fetchall()
+            if _duplicate_pack_key(r["path"]) == group_key
+        ]
+        if not ids:
+            return 0
+        ph = ",".join("?" * len(ids))
+        return conn.execute(f"UPDATE assets SET hidden=0 WHERE id IN ({ph})", ids).rowcount
 
 
 def create_category(name, icon="", keywords="", kind=""):
@@ -1472,7 +1627,7 @@ def auto_categorize_all():
         if not matchers:
             return {"links_added": 0, "assets_matched": 0}
         for a in conn.execute(
-            "SELECT id, path, kind FROM assets WHERE missing=0"
+            "SELECT id, path, kind FROM assets WHERE missing=0 AND hidden=0"
         ).fetchall():
             for cid in _match_category_ids(a["path"], a["kind"], matchers):
                 cur = conn.execute(

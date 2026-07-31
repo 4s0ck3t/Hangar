@@ -69,7 +69,7 @@ function loadCollapsed() {
 }
 const state = {
   filter: { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
-            favorite: false, missing: false, missing_blend_textures: false, duplicates: false, corrupt: false,
+            favorite: false, missing: false, missing_blend_textures: false, duplicates: false, duplicatePacks: false, corrupt: false,
             noAuthor: false, linked: false, author: "", dupKind: "" },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
@@ -889,7 +889,7 @@ let _facetKindCache = {};  // kind → { subtypes, resolutions }, invalidated on
 function resetFilter() {
   state.filter = { kind: "", ext: "", tag: "", collection: "", category: "", folder: "",
                    favorite: false, subtype: "", resolution: "", missing: false,
-                   missing_blend_textures: false, duplicates: false, noAuthor: false,
+                   missing_blend_textures: false, duplicates: false, duplicatePacks: false, noAuthor: false,
                    linked: false, corrupt: false, author: "", dupKind: "" };
   _facetKindCache = {};
 }
@@ -899,7 +899,7 @@ function updateClearBtn() {
   const active = state.filter.kind || state.filter.ext || state.filter.tag
     || state.filter.collection || state.filter.category || state.filter.folder
     || state.filter.favorite || state.filter.missing || state.filter.missing_blend_textures || state.filter.subtype
-    || state.filter.resolution || state.filter.duplicates || state.filter.noAuthor
+    || state.filter.resolution || state.filter.duplicates || state.filter.duplicatePacks || state.filter.noAuthor
     || state.filter.linked || state.filter.corrupt || state.filter.author
     || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
@@ -1306,10 +1306,11 @@ async function refresh() {
   // file, grouped by content. It's its own mode, so it overrides the
   // auto-groupings below.
   const dupes = f.duplicates;
+  const dupPacks = f.duplicatePacks;
   const noAuthor = f.noAuthor;   // standalone view: files with no Author set
   const linked = f.linked;       // standalone view: .blend files with linked textures
   const corrupt = f.corrupt;     // standalone view: damaged .blend files (health check)
-  const _std = dupes || noAuthor || linked || corrupt;   // any standalone view suppresses auto-grouping
+  const _std = dupes || dupPacks || noAuthor || linked || corrupt;   // any standalone view suppresses auto-grouping
   // Grouped view: "All assets" or a plain type selection (Models/Textures/…)
   // with no other filter splits the grid into category sections.
   const grouped = !_std && (!f.kind || TYPE_KINDS.includes(f.kind)) && !f.ext && !f.tag
@@ -1349,6 +1350,23 @@ async function refresh() {
   if (folderGrouped) { p.set("limit", "2000"); }
   if (categoryFolderGrouped) { p.set("limit", "2000"); }
 
+  if (dupPacks) {
+    const data = await api("duplicate-packs");
+    renderDuplicatePacks(data.groups || [], data.hidden || 0);
+    const total = (data.groups || []).length;
+    await loadState();
+    updateActiveLabel(total);
+    updateClearBtn();
+    updateDupBtn();
+    updateDupPackBtn();
+    updateNoAuthorBtn();
+    updateLinkedBtn();
+    updateHealthBtn();
+    updateFacetStrip();
+    recordViewAfterRefresh();
+    return;
+  }
+
   const data = await api("assets?" + p.toString());
   recordThumbMtimes(data.assets);
   if (dupes) renderGroupedByContent(data.assets);
@@ -1377,6 +1395,7 @@ async function refresh() {
   updateActiveLabel(data.total);
   updateClearBtn();
   updateDupBtn();
+  updateDupPackBtn();
   updateNoAuthorBtn();
   updateLinkedBtn();
   updateHealthBtn();
@@ -1719,12 +1738,121 @@ function renderGroupedByContent(assets) {
   grid.scrollTop = 0;
 }
 
+function renderDuplicatePacks(groups, hiddenCount) {
+  const grid = $("#grid"); const empty = $("#emptyState");
+  _vAssets = []; _vRange = { start: -1, end: -1 };
+  _currentAssets = [];
+  currentAssets = [];
+  grid.classList.remove("grouped");
+  grid.classList.add("grouped");
+  empty.classList.add("hidden");
+  const crumbBar = $("#folderBreadcrumb");
+  if (crumbBar) crumbBar.classList.add("hidden");
+  const texBar = $("#texfixBar");
+  if (texBar) texBar.classList.add("hidden");
+
+  if (!groups.length) {
+    grid.replaceChildren();
+    empty.classList.remove("hidden");
+    empty.innerHTML = hiddenCount
+      ? `<h2>Duplicate packs hidden</h2><p>The extra indexed copies are hidden from browsing. Use Restore hidden packs if you want them back.</p>`
+      : `<h2>No duplicate packs found</h2><p>Hangar did not find the same model pack indexed from more than one top-level folder.</p>`;
+    return;
+  }
+
+  const frag = document.createDocumentFragment();
+  const tools = document.createElement("div");
+  tools.className = "dup-pack-tools";
+  const summary = document.createElement("span");
+  summary.textContent = hiddenCount
+    ? `${hiddenCount} indexed file${hiddenCount === 1 ? "" : "s"} currently hidden`
+    : "Choose the root to keep visible. Files are not moved or deleted.";
+  tools.appendChild(summary);
+  if (hiddenCount) {
+    const restore = document.createElement("button");
+    restore.className = "facet-chip";
+    restore.textContent = "Restore hidden packs";
+    restore.onclick = async () => {
+      const r = await post("duplicate-packs/restore", {});
+      toast(`Restored ${r.changed || 0} indexed file${(r.changed || 0) === 1 ? "" : "s"}.`, "success");
+      refresh(); loadState();
+    };
+    tools.appendChild(restore);
+  }
+  frag.appendChild(tools);
+
+  for (const g of groups) {
+    const section = document.createElement("div");
+    const collapsed = sectionIsCollapsed(`dup-pack:${g.key}`);
+    section.className = "grid-section dup-pack-section" + (collapsed ? " collapsed" : "");
+    const head = document.createElement("div");
+    head.className = "section-head";
+    head.innerHTML =
+      `<span class="section-ico">⧉</span>` +
+      `<span class="section-name">${esc(g.logical_path || g.label)}</span>` +
+      `<span class="section-count">${g.duplicate_count} extra</span>`;
+    head.prepend(sectionCollapseButton(`dup-pack:${g.key}`, g.label || "duplicate pack"));
+    section.appendChild(head);
+
+    const body = document.createElement("div");
+    body.className = "dup-pack-roots";
+    if (!collapsed) {
+      for (const root of g.roots || []) {
+        const row = document.createElement("div");
+        row.className = "dup-pack-root" + (root.preferred ? " preferred" : "") + (root.hidden ? " is-hidden" : "");
+        const meta = [
+          `${root.count} file${root.count === 1 ? "" : "s"}`,
+          fmtSize(root.size || 0),
+          (root.formats || []).join(", "),
+          root.hidden ? `${root.hidden} hidden` : "",
+        ].filter(Boolean).join(" · ");
+        row.innerHTML =
+          `<div class="dup-pack-main">` +
+          `<div class="dup-pack-root-name">${esc(root.root)}${root.preferred ? " · preferred" : ""}</div>` +
+          `<div class="dup-pack-folder">${esc(root.folder)}</div>` +
+          `<div class="dup-pack-meta">${esc(meta)}</div>` +
+          `</div>`;
+        const actions = document.createElement("div");
+        actions.className = "dup-pack-actions";
+        const keep = document.createElement("button");
+        keep.className = "rescan";
+        keep.textContent = root.hidden ? "Show this root" : "Keep this root";
+        keep.onclick = async () => {
+          const r = await post("duplicate-packs/hide", { key: g.key, keep_root: root.root });
+          toast(`Updated ${r.changed || 0} indexed file${(r.changed || 0) === 1 ? "" : "s"}.`, "success");
+          refresh(); loadState();
+        };
+        actions.appendChild(keep);
+        if (root.hidden) {
+          const restore = document.createElement("button");
+          restore.className = "rescan";
+          restore.textContent = "Restore pack";
+          restore.onclick = async () => {
+            const r = await post("duplicate-packs/restore", { key: g.key });
+            toast(`Restored ${r.changed || 0} indexed file${(r.changed || 0) === 1 ? "" : "s"}.`, "success");
+            refresh(); loadState();
+          };
+          actions.appendChild(restore);
+        }
+        row.appendChild(actions);
+        body.appendChild(row);
+      }
+    }
+    section.appendChild(body);
+    frag.appendChild(section);
+  }
+
+  grid.replaceChildren(frag);
+  grid.scrollTop = 0;
+}
+
 function updateActiveLabel(total) {
   let label = state.filter.corrupt ? "🩺 Damaged .blend files"
     : state.filter.linked ? "🔗 Linked textures"
     : state.filter.noAuthor ? "🏷 No author"
     : state.filter.author && state.filter.category ? `${state.filter.category} · 👤 ${state.filter.author}`
     : state.filter.author ? `👤 ${state.filter.author}`
+    : state.filter.duplicatePacks ? "Duplicate packs"
     : state.filter.duplicates ? "⧉ Duplicates"
     : state.filter.favorite ? "Favorites"
     : state.filter.missing ? "Missing files"
@@ -2976,7 +3104,7 @@ function renderGrid(assets, total) {
     const f = state.filter;
     const anyFilter = state.search || f.kind || f.ext || f.tag || f.collection ||
       f.category || f.folder || f.subtype || f.resolution || f.favorite ||
-      f.missing || f.missing_blend_textures || f.duplicates || f.corrupt ||
+      f.missing || f.missing_blend_textures || f.duplicates || f.duplicatePacks || f.corrupt ||
       f.noAuthor || f.linked || f.author;
     empty.innerHTML = total === 0 && !anyFilter
       ? `<h2>No assets indexed yet</h2>
@@ -4042,6 +4170,10 @@ function updateDupBtn() {
   const b = $("#dupBtn");
   if (b) b.classList.toggle("active", state.filter.duplicates);
 }
+function updateDupPackBtn() {
+  const b = $("#dupPackBtn");
+  if (b) b.classList.toggle("active", state.filter.duplicatePacks);
+}
 $("#dupBtn").onclick = async () => {
   const on = !state.filter.duplicates;
   resetFilter();                 // duplicates is a standalone view
@@ -4049,6 +4181,15 @@ $("#dupBtn").onclick = async () => {
   state.search = ""; const s = $("#search"); if (s) s.value = "";
   updateDupBtn();
   if (on) await ensureDupIndex();   // hash new/changed files before querying
+  refresh();
+};
+const _dupPackBtn = $("#dupPackBtn");
+if (_dupPackBtn) _dupPackBtn.onclick = () => {
+  const on = !state.filter.duplicatePacks;
+  resetFilter();                 // duplicate packs is a standalone cleanup view
+  state.filter.duplicatePacks = on;
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  updateDupPackBtn();
   refresh();
 };
 

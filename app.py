@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.37"
+__version__ = "0.15.38"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1386,8 +1386,35 @@ def list_assets():
         linked=q.get("linked") == "1",
         corrupt=q.get("corrupt") == "1",
         author=q.get("author", "").strip(),
+        include_hidden=q.get("include_hidden") == "1",
     )
     return jsonify({"assets": assets, "total": total})
+
+
+@app.get("/api/duplicate-packs")
+def duplicate_packs():
+    groups = store.duplicate_pack_groups()
+    return jsonify({
+        "groups": groups,
+        "hidden": sum(g.get("hidden_count", 0) for g in groups),
+    })
+
+
+@app.post("/api/duplicate-packs/hide")
+def duplicate_pack_hide():
+    data = request.get_json(force=True)
+    changed = store.hide_duplicate_pack(
+        (data.get("key") or "").strip(),
+        (data.get("keep_root") or "").strip(),
+    )
+    return jsonify({"ok": True, "changed": changed, "groups": store.duplicate_pack_groups()})
+
+
+@app.post("/api/duplicate-packs/restore")
+def duplicate_pack_restore():
+    data = request.get_json(silent=True) or {}
+    changed = store.restore_hidden_duplicates((data.get("key") or "").strip())
+    return jsonify({"ok": True, "changed": changed, "groups": store.duplicate_pack_groups()})
 
 
 @app.delete("/api/assets/missing")

@@ -675,6 +675,30 @@ button, input, select { font-family: inherit; color: inherit; }
 /* Duplicates view: kind chips + full paths so copies are tellable-apart. */
 .dup-kinds { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 2px 10px; }
 .dup-kinds-none { color: var(--mute); font-size: 12.5px; padding: 8px 2px; }
+.dup-pack-tools {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 22px; border-bottom: 1px solid var(--line);
+  color: var(--mute); font-size: 12.5px;
+}
+.dup-pack-roots {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 22px 14px;
+}
+.dup-pack-root {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--raised);
+}
+.dup-pack-root.preferred { border-color: rgba(61,190,139,.45); }
+.dup-pack-root.is-hidden { opacity: .72; }
+.dup-pack-main { min-width: 0; }
+.dup-pack-root-name { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.dup-pack-folder {
+  margin-top: 3px; font-family: var(--mono); font-size: 11px; color: var(--faint);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dup-pack-meta { margin-top: 4px; font-size: 11px; color: var(--mute); }
+.dup-pack-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 .card-author { cursor: pointer; }
 .card-author:hover { text-decoration: underline; }
 .d-detail-link { cursor: pointer; }
