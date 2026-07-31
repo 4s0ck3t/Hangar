@@ -1768,6 +1768,20 @@ function renderDuplicatePacks(groups, hiddenCount) {
     ? `${hiddenCount} indexed file${hiddenCount === 1 ? "" : "s"} currently hidden`
     : "Choose the root to keep visible. Files are not moved or deleted.";
   tools.appendChild(summary);
+  const hideAll = document.createElement("button");
+  hideAll.className = "facet-chip";
+  hideAll.textContent = "Hide all safe extras";
+  hideAll.title = "Hide non-preferred packs only when every file in that pack folder also exists in the preferred folder with the same path and size.";
+  hideAll.onclick = async () => {
+    const extra = groups.reduce((sum, g) => sum + Math.max(0, (g.duplicate_count || 0) - (g.hidden_count || 0)), 0);
+    if (!confirm(`Hide all safe duplicate-pack extras?\n\nHangar will keep the preferred root visible and only hide a pack when every file in the extra folder is also in the kept folder with the same path and size. Files stay on disk.\n\nPossible indexed rows to hide: ${extra}`)) return;
+    const r = await post("duplicate-packs/hide-all", {});
+    const msg = `Hidden ${r.changed || 0} indexed file${(r.changed || 0) === 1 ? "" : "s"} across ${r.groups || 0} pack${(r.groups || 0) === 1 ? "" : "s"}.`
+      + ((r.skipped || 0) ? ` ${r.skipped} indexed row${(r.skipped || 0) === 1 ? "" : "s"} skipped because the kept folder was not a complete match.` : "");
+    toast(msg, "success");
+    refresh(); loadState();
+  };
+  tools.appendChild(hideAll);
   if (hiddenCount) {
     const restore = document.createElement("button");
     restore.className = "facet-chip";
@@ -1819,7 +1833,9 @@ function renderDuplicatePacks(groups, hiddenCount) {
         keep.textContent = root.hidden ? "Show this root" : "Keep this root";
         keep.onclick = async () => {
           const r = await post("duplicate-packs/hide", { key: g.key, keep_root: root.root });
-          toast(`Updated ${r.changed || 0} indexed file${(r.changed || 0) === 1 ? "" : "s"}.`, "success");
+          const msg = `Updated ${r.changed || 0} indexed file${(r.changed || 0) === 1 ? "" : "s"}.`
+            + ((r.skipped || 0) ? ` ${r.skipped} skipped because the kept folder was not a complete match.` : "");
+          toast(msg, "success");
           refresh(); loadState();
         };
         actions.appendChild(keep);

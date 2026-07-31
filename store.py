@@ -1333,6 +1333,39 @@ def _preferred_duplicate_root(roots):
     return sorted(roots, key=score)[0] if roots else ""
 
 
+def _folder_manifest(folder):
+    folder = os.path.normpath(folder or "")
+    if not folder or not os.path.isdir(folder):
+        return None
+    out = {}
+    try:
+        for dirpath, dirnames, filenames in os.walk(folder):
+            dirnames.sort()
+            for name in sorted(filenames):
+                full = os.path.join(dirpath, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    return None
+                rel = os.path.relpath(full, folder).replace("\\", "/").lower()
+                out[rel] = int(st.st_size)
+    except OSError:
+        return None
+    return out
+
+
+def _folder_contains_all_files(keep_folder, extra_folder):
+    keep = _folder_manifest(keep_folder)
+    extra = _folder_manifest(extra_folder)
+    if keep is None or extra is None:
+        return False, 0
+    missing = 0
+    for rel, size in extra.items():
+        if keep.get(rel) != size:
+            missing += 1
+    return missing == 0, missing
+
+
 def duplicate_pack_groups():
     """Same model-pack folder indexed from multiple storage roots."""
     with connect() as conn:
@@ -1404,7 +1437,23 @@ def hide_duplicate_pack(group_key, keep_root):
         return 0
     groups = {g["key"]: g for g in duplicate_pack_groups()}
     if group_key not in groups:
-        return 0
+        return {"changed": 0, "skipped": 0}
+    keep_folder = next(
+        (r["folder"] for r in groups[group_key]["roots"]
+         if r["root"].rstrip("\\/").lower() == keep_root.lower()),
+        "",
+    )
+    complete_roots = set()
+    skipped = 0
+    for root in groups[group_key]["roots"]:
+        root_name = root["root"].rstrip("\\/").lower()
+        if root_name == keep_root.lower():
+            continue
+        ok, missing = _folder_contains_all_files(keep_folder, root["folder"])
+        if ok:
+            complete_roots.add(root_name)
+        else:
+            skipped += root["count"]
     ids_hide, ids_show = [], []
     with connect() as conn:
         rows = conn.execute(
@@ -1416,7 +1465,7 @@ def hide_duplicate_pack(group_key, keep_root):
             root, _rel, _folders = _duplicate_pack_logical_parts(r["path"])
             if root.rstrip("\\/").lower() == keep_root.lower():
                 ids_show.append(r["id"])
-            else:
+            elif root.rstrip("\\/").lower() in complete_roots:
                 ids_hide.append(r["id"])
         changed = 0
         if ids_hide:
@@ -1427,7 +1476,68 @@ def hide_duplicate_pack(group_key, keep_root):
             ph = ",".join("?" * len(ids_show))
             changed += conn.execute(
                 f"UPDATE assets SET hidden=0 WHERE id IN ({ph})", ids_show).rowcount
-    return changed
+    return {"changed": changed, "skipped": skipped}
+
+
+def hide_all_duplicate_pack_matches():
+    """Hide non-preferred duplicate-pack rows only when the kept folder contains
+    every file from the folder being hidden with the same relative path + size.
+
+    This is intentionally stricter than the per-pack button: bulk cleanup should
+    skip anything that looks like an incomplete or richer copy.
+    """
+    groups = duplicate_pack_groups()
+    if not groups:
+        return {"changed": 0, "groups": 0, "skipped": 0}
+    group_keys = {g["key"]: g for g in groups}
+    by_group = {}
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path, name, ext, size, hidden FROM assets "
+            "WHERE missing=0 AND kind='model'"
+        ).fetchall()
+        for r in rows:
+            key = _duplicate_pack_key(r["path"])
+            if key in group_keys:
+                root, _rel, _folders = _duplicate_pack_logical_parts(r["path"])
+                by_group.setdefault(key, []).append({**dict(r), "root": root})
+
+        ids_hide = []
+        skipped = 0
+        touched_groups = set()
+        for key, items in by_group.items():
+            preferred = group_keys[key]["preferred_root"].rstrip("\\/").lower()
+            keep_folder = next(
+                (r["folder"] for r in group_keys[key]["roots"]
+                 if r["root"].rstrip("\\/").lower() == preferred),
+                "",
+            )
+            if not keep_folder:
+                skipped += len(items)
+                continue
+            complete_roots = set()
+            for root in group_keys[key]["roots"]:
+                root_name = root["root"].rstrip("\\/").lower()
+                if root_name == preferred:
+                    continue
+                ok, missing = _folder_contains_all_files(keep_folder, root["folder"])
+                if ok:
+                    complete_roots.add(root_name)
+                else:
+                    skipped += root["count"]
+            for i in items:
+                if (i["root"] or "").rstrip("\\/").lower() == preferred:
+                    continue
+                if (i["root"] or "").rstrip("\\/").lower() in complete_roots:
+                    if not i["hidden"]:
+                        ids_hide.append(i["id"])
+                        touched_groups.add(key)
+        changed = 0
+        if ids_hide:
+            ph = ",".join("?" * len(ids_hide))
+            changed = conn.execute(
+                f"UPDATE assets SET hidden=1 WHERE id IN ({ph}) AND hidden=0", ids_hide).rowcount
+    return {"changed": changed, "groups": len(touched_groups), "skipped": skipped}
 
 
 def restore_hidden_duplicates(group_key=""):

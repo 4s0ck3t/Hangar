@@ -676,10 +676,12 @@ button, input, select { font-family: inherit; color: inherit; }
 .dup-kinds { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 2px 10px; }
 .dup-kinds-none { color: var(--mute); font-size: 12.5px; padding: 8px 2px; }
 .dup-pack-tools {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  display: flex; align-items: center; justify-content: flex-start; gap: 10px;
+  flex-wrap: wrap;
   padding: 10px 22px; border-bottom: 1px solid var(--line);
   color: var(--mute); font-size: 12.5px;
 }
+.dup-pack-tools span { margin-right: auto; }
 .dup-pack-roots {
   display: flex; flex-direction: column; gap: 8px;
   padding: 10px 22px 14px;

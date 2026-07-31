@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.38"
+__version__ = "0.15.39"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1403,11 +1403,17 @@ def duplicate_packs():
 @app.post("/api/duplicate-packs/hide")
 def duplicate_pack_hide():
     data = request.get_json(force=True)
-    changed = store.hide_duplicate_pack(
+    result = store.hide_duplicate_pack(
         (data.get("key") or "").strip(),
         (data.get("keep_root") or "").strip(),
     )
-    return jsonify({"ok": True, "changed": changed, "groups": store.duplicate_pack_groups()})
+    return jsonify({"ok": True, **result, "groups": store.duplicate_pack_groups()})
+
+
+@app.post("/api/duplicate-packs/hide-all")
+def duplicate_pack_hide_all():
+    result = store.hide_all_duplicate_pack_matches()
+    return jsonify({"ok": True, **result, "groups": store.duplicate_pack_groups()})
 
 
 @app.post("/api/duplicate-packs/restore")
