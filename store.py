@@ -1974,7 +1974,7 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
     for p in packs.values():
         target = os.path.join(
             target_root, "Models", _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(p["category"], p["category"])),
-            _clean_path_part(p["author"]), _clean_path_part(p["subcategory"]),
+            _clean_path_part(p["subcategory"]), _clean_path_part(p["author"]),
             _clean_path_part(p["pack"]),
         )
         status = "move"
@@ -2001,5 +2001,5 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
             "size": p["size"],
             "status": status,
         })
-    items.sort(key=lambda x: (x["status"] != "move", x["category"].lower(), x["author"].lower(), x["subcategory"].lower(), x["pack"].lower()))
+    items.sort(key=lambda x: (x["status"] != "move", x["category"].lower(), x["subcategory"].lower(), x["author"].lower(), x["pack"].lower()))
     return {"target_root": target_root, "summary": summary, "items": items[:max(1, int(limit or 500))], "total": len(items)}

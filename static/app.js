@@ -1959,8 +1959,8 @@ function renderOrganisePlan(data) {
         const row = document.createElement("div");
         row.className = `organise-row status-${esc(item.status || "move")}`;
         const meta = [
-          item.author || "Unknown",
           item.subcategory || "",
+          item.author || "Unknown",
           `${item.count || 0} file${(item.count || 0) === 1 ? "" : "s"}`,
           fmtSize(item.size || 0),
           (item.formats || []).join(", "),
