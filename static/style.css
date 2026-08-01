@@ -407,6 +407,22 @@ button, input, select { font-family: inherit; color: inherit; }
   color: var(--ink); background: var(--raised-hi); border: 1px solid var(--line);
   border-radius: 20px; padding: 3px 11px;
 }
+.clear-filter {
+  width: 28px; height: 28px; flex: 0 0 auto; position: relative;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--raised); cursor: pointer;
+}
+.clear-filter::before,
+.clear-filter::after {
+  content: ""; position: absolute; left: 8px; right: 8px; top: 13px;
+  height: 2px; border-radius: 2px; background: var(--mute);
+}
+.clear-filter::before { transform: rotate(45deg); }
+.clear-filter::after { transform: rotate(-45deg); }
+.clear-filter:hover { background: var(--raised-hi); border-color: var(--select); }
+.clear-filter:hover::before,
+.clear-filter:hover::after { background: var(--ink); }
+.clear-filter.hidden { display: none; }
 .sort select {
   background: var(--raised); border: 1px solid var(--line); border-radius: 7px;
   padding: 8px 10px; font-size: 12px; cursor: pointer; outline: none;
@@ -716,6 +732,19 @@ button, input, select { font-family: inherit; color: inherit; }
 .organise-tools span {
   background: var(--raised); border: 1px solid var(--line);
   border-radius: 999px; padding: 3px 9px;
+}
+.organise-target {
+  display: inline-flex; align-items: center; gap: 8px;
+  color: var(--mute); font-size: 12.5px;
+}
+.organise-root-input {
+  width: min(360px, 42vw); height: 28px; padding: 5px 9px;
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--ink); font-family: var(--mono);
+  font-size: 11px; outline: none;
+}
+.organise-root-input:focus {
+  border-color: var(--select); box-shadow: 0 0 0 3px rgba(91,141,239,.15);
 }
 .organise-rows { display: flex; flex-direction: column; gap: 8px; padding: 10px 22px 14px; }
 .organise-row {

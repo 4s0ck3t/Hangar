@@ -328,6 +328,14 @@ def init_db():
                     "UPDATE categories SET kind=? WHERE name=? AND kind=''",
                     (kind, name),
                 )
+        if not conn.execute(
+                "SELECT 1 FROM settings WHERE key='hdri_kind_repair_v1'").fetchone():
+            try:
+                _repair_hdri_texture_maps(conn)
+            except Exception:
+                pass
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('hdri_kind_repair_v1','1')")
         # One-time: after new default categories ship (e.g. the texture set),
         # back-fill auto-classification across the existing library so they're
         # populated without the user having to hit ⚡. Bumped flag = re-run once.
@@ -373,6 +381,36 @@ def set_setting(key, value):
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (key, str(value)),
         )
+
+
+def _repair_hdri_texture_maps(conn):
+    """Move obvious HDR/EXR texture maps out of the HDRI kind bucket."""
+    import scanner  # lazy: avoids an import cycle at module load
+    hdri_cat_ids = [
+        r["id"] for r in conn.execute(
+            "SELECT id FROM categories WHERE kind='hdri'").fetchall()
+    ]
+    for r in conn.execute(
+            "SELECT id, path, ext FROM assets "
+            "WHERE missing=0 AND hidden=0 AND kind='hdri' "
+            "AND ext IN ('.hdr', '.exr')").fetchall():
+        folder = os.path.dirname(r["path"])
+        name_noext = os.path.splitext(os.path.basename(r["path"]))[0]
+        if scanner.classify_kind(r["ext"], folder, name_noext) != "texture":
+            continue
+        set_key, role, order = scanner.texture_set_info(folder, name_noext)
+        subtype, resolution = scanner.texture_facets(folder, name_noext)
+        conn.execute(
+            "UPDATE assets SET kind='texture', set_key=?, map_role=?, "
+            "map_order=?, subtype=?, resolution=? WHERE id=?",
+            (set_key, role, order, subtype, resolution, r["id"]),
+        )
+        for cid in hdri_cat_ids:
+            conn.execute(
+                "DELETE FROM asset_categories WHERE asset_id=? AND category_id=?",
+                (r["id"], cid),
+            )
+        _auto_categorize(conn, r["id"], r["path"], "texture")
 
 
 # ---- libraries ------------------------------------------------------------

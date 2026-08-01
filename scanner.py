@@ -140,9 +140,14 @@ def classify_kind(ext, folder, name_noext):
     maps. Treat obvious map-role EXRs as textures so they leave the HDRI bucket
     and can join their material set.
     """
-    if ext == ".exr":
+    if ext in (".hdr", ".exr"):
         _, role, _ = texture_set_info(folder, name_noext)
         if role:
+            return "texture"
+        tokens = set(re.split(r"[^a-z0-9]+", (folder + " " + name_noext).lower()))
+        texture_context = {"texture", "textures", "material", "materials", "maps", "map"}
+        hdri_context = {"hdri", "hdris", "environment", "environments", "sky", "skies", "studio"}
+        if tokens & texture_context and not tokens & hdri_context:
             return "texture"
     return EXT_KIND[ext]
 

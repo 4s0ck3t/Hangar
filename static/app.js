@@ -72,6 +72,7 @@ const state = {
             favorite: false, missing: false, missing_blend_textures: false, duplicates: false, duplicatePacks: false, organiseDisk: false, corrupt: false,
             noAuthor: false, linked: false, author: "", dupKind: "" },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
+  organiseTargetRoot: localStorage.getItem("hangar_organise_target_root") || "D:\\Hangar",
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
 let appCounts = null;
@@ -1247,7 +1248,9 @@ function _closeHoverPreview() {
 
 function _openHoverPreview(a, card) {
   // Don't fight the drawer or a drag/selection gesture.
-  if (isDrawerOpen() || selection.size > 0 || _dragScrollDir) return;
+  if (isDrawerOpen() || selection.size > 0 || _dragScrollDir
+      || state.filter.organiseDisk || state.filter.duplicatePacks
+      || state.filter.duplicates || state.filter.corrupt) return;
   _hoverForId = a.id;
   const pop = document.createElement("div");
   pop.className = "hover-preview";
@@ -1273,8 +1276,10 @@ function _openHoverPreview(a, card) {
 
 function bindHoverPreview(card, a) {
   if (!VIEWER_EXTS.has(a.ext)) return;  // only GLB/GLTF/FBX have a browser loader
+  if (!card.classList.contains("card")) return;
   card.addEventListener("mouseenter", () => {
     if (_hoverTimer) clearTimeout(_hoverTimer);
+    if (!document.body.contains(card)) return;
     _hoverTimer = setTimeout(() => _openHoverPreview(a, card), HOVER_DELAY);
   });
   card.addEventListener("mouseleave", _closeHoverPreview);
@@ -1392,7 +1397,9 @@ async function refresh() {
   }
 
   if (organise) {
-    const data = await api("organise/plan?limit=500");
+    const target = encodeURIComponent(state.organiseTargetRoot || "D:\\Hangar");
+    const data = await api(`organise/plan?limit=500&target=${target}`);
+    state.organiseTargetRoot = data.target_root || state.organiseTargetRoot || "D:\\Hangar";
     renderOrganisePlan(data);
     await loadState();
     updateActiveLabel(data.total || 0);
@@ -1935,14 +1942,35 @@ function renderOrganisePlan(data) {
   const tools = document.createElement("div");
   tools.className = "organise-tools";
   tools.innerHTML =
-    `<span>Target root: <b>${esc(data.target_root || "D:\\Hangar")}</b></span>` +
+    `<label class="organise-target">Target root ` +
+    `<input id="organiseTargetRoot" class="organise-root-input" value="${esc(data.target_root || state.organiseTargetRoot || "D:\\Hangar")}"></label>` +
+    `<button id="organiseTargetBrowse" class="rescan" title="Choose the folder where Hangar should plan the clean library">Browse</button>` +
+    `<button id="organiseTargetApply" class="rescan" title="Recalculate the plan for this target root">Apply</button>` +
     `<span>${fmtSize(s.target_free || 0)} free</span>` +
     `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` +
-    `<span>${fmtSize(s.potential_duplicate_savings || 0)} possible savings</span>` +
+    `<span title="Estimated space in duplicate pack folders that look safe to remove later after review. Nothing is deleted by this plan.">${fmtSize(s.potential_duplicate_savings || 0)} duplicate estimate</span>` +
     `<span>${s.move || 0} to move</span>` +
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${(s.collision || 0) + (s.target_exists || 0)} need review</span>`;
   frag.appendChild(tools);
+  const applyTarget = () => {
+    const input = tools.querySelector("#organiseTargetRoot");
+    const next = (input && input.value.trim()) || "D:\\Hangar";
+    state.organiseTargetRoot = next;
+    localStorage.setItem("hangar_organise_target_root", next);
+    refresh();
+  };
+  tools.querySelector("#organiseTargetApply").onclick = applyTarget;
+  tools.querySelector("#organiseTargetRoot").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") applyTarget();
+  });
+  tools.querySelector("#organiseTargetBrowse").onclick = async () => {
+    const p = await chooseFolder();
+    if (!p) return;
+    const input = tools.querySelector("#organiseTargetRoot");
+    if (input) input.value = p;
+    applyTarget();
+  };
 
   const byCat = new Map();
   for (const item of items) {
