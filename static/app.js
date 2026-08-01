@@ -1936,6 +1936,9 @@ function renderOrganisePlan(data) {
   tools.className = "organise-tools";
   tools.innerHTML =
     `<span>Target root: <b>${esc(data.target_root || "D:\\Hangar")}</b></span>` +
+    `<span>${fmtSize(s.target_free || 0)} free</span>` +
+    `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` +
+    `<span>${fmtSize(s.potential_duplicate_savings || 0)} possible savings</span>` +
     `<span>${s.move || 0} to move</span>` +
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${(s.collision || 0) + (s.target_exists || 0)} need review</span>`;
@@ -1971,7 +1974,7 @@ function renderOrganisePlan(data) {
           item.subcategory || "",
           item.author || "Unknown",
           `${item.count || 0} file${(item.count || 0) === 1 ? "" : "s"}`,
-          fmtSize(item.size || 0),
+          fmtSize(item.disk_size || item.size || 0),
           (item.formats || []).join(", "),
           item.status === "already_clean" ? "already clean" : item.status === "collision" ? "collision" : item.status === "target_exists" ? "target exists" : "planned",
         ].filter(Boolean).join(" · ");

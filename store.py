@@ -6,6 +6,7 @@ Everything lives under ~/.hangar so the tool is fully local and portable.
 
 import os
 import re
+import shutil
 import sqlite3
 import time
 from pathlib import Path
@@ -1395,6 +1396,34 @@ def _folder_contains_all_files(keep_folder, extra_folder):
     return missing == 0, missing
 
 
+def _folder_size(folder, cache=None):
+    cache = cache if cache is not None else {}
+    key = os.path.normcase(os.path.normpath(folder or ""))
+    if key in cache:
+        return cache[key]
+    manifest = _folder_manifest(folder)
+    size = sum(manifest.values()) if manifest is not None else 0
+    cache[key] = size
+    return size
+
+
+def _disk_usage_for_path(path):
+    probe = os.path.abspath(os.path.normpath(path or os.getcwd()))
+    drive, _tail = os.path.splitdrive(probe)
+    if drive and not os.path.exists(probe):
+        probe = drive + os.sep
+    while probe and not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    try:
+        usage = shutil.disk_usage(probe)
+        return {"path": probe, "total": usage.total, "used": usage.used, "free": usage.free}
+    except OSError:
+        return {"path": probe, "total": 0, "used": 0, "free": 0}
+
+
 def duplicate_pack_groups():
     """Same model-pack folder indexed from multiple storage roots."""
     with connect() as conn:
@@ -1969,9 +1998,15 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
             item["formats"].add(r["ext"])
 
     items = []
-    summary = {"packs": 0, "already_clean": 0, "collisions": 0, "move": 0}
+    size_cache = {}
+    summary = {
+        "packs": 0, "already_clean": 0, "collisions": 0, "move": 0,
+        "bytes_to_organise": 0, "copy_stage_bytes": 0,
+        "potential_duplicate_savings": 0,
+    }
     seen_targets = {}
     for p in packs.values():
+        disk_size = _folder_size(p["source"], size_cache) or p["size"]
         target = os.path.join(
             target_root, "Models", _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(p["category"], p["category"])),
             _clean_path_part(p["subcategory"]), _clean_path_part(p["author"]),
@@ -1989,6 +2024,9 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
         seen_targets[dst_norm] = src_norm
         summary["packs"] += 1
         summary[status if status in summary else "collisions"] = summary.get(status if status in summary else "collisions", 0) + 1
+        if status == "move":
+            summary["bytes_to_organise"] += disk_size
+            summary["copy_stage_bytes"] += disk_size
         items.append({
             "source": p["source"],
             "target": target,
@@ -1999,7 +2037,28 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
             "formats": sorted(p["formats"]),
             "count": p["count"],
             "size": p["size"],
+            "disk_size": disk_size,
             "status": status,
         })
+
+    saving_folders = set()
+    for group in duplicate_pack_groups():
+        keep = next((r for r in group["roots"] if r.get("preferred")), None)
+        if not keep:
+            continue
+        for root in group["roots"]:
+            if root.get("preferred"):
+                continue
+            ok, _missing = _folder_contains_all_files(keep["folder"], root["folder"])
+            folder_key = os.path.normcase(os.path.normpath(root["folder"]))
+            if ok and folder_key not in saving_folders:
+                saving_folders.add(folder_key)
+                summary["potential_duplicate_savings"] += _folder_size(root["folder"], size_cache)
+
+    disk = _disk_usage_for_path(target_root)
+    summary["target_total"] = disk["total"]
+    summary["target_used"] = disk["used"]
+    summary["target_free"] = disk["free"]
+    summary["target_probe"] = disk["path"]
     items.sort(key=lambda x: (x["status"] != "move", x["category"].lower(), x["subcategory"].lower(), x["author"].lower(), x["pack"].lower()))
     return {"target_root": target_root, "summary": summary, "items": items[:max(1, int(limit or 500))], "total": len(items)}
