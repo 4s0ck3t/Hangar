@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.45"
+__version__ = "0.15.46"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -2928,15 +2928,28 @@ def _platform_asset(assets):
     ext = {"Windows": ".zip", "Linux": ".tar.gz", "Darwin": ".zip"}.get(sysname, ".zip")
     kw = {"Windows": "windows", "Linux": "linux", "Darwin": "mac"}.get(sysname, "")
     names = [(a, (a.get("name") or "").lower()) for a in assets if "-app" not in (a.get("name") or "").lower()]
-    by_ext = [a for a, n in names if n.endswith(ext)]
-    preferred = [a for a in by_ext if kw in (a.get("name") or "").lower()]
+    by_ext = [(a, n) for a, n in names if n.endswith(ext)]
+    preferred = [a for a, n in by_ext if kw and kw in n]
     if preferred:
         return preferred[0]
-    if by_ext:
-        return by_ext[0]
-    # last resort: any archive at all
-    arch = [a for a, n in names if n.endswith((".zip", ".tar.gz", ".tgz"))]
-    return arch[0] if arch else None
+    if kw:
+        return None
+    return by_ext[0][0] if by_ext else None
+
+
+def _is_platform_update_asset(name, url, mode):
+    n = (name or "").lower()
+    u = (url or "").lower()
+    sysname = platform.system()
+    if mode == "delta":
+        return n == "hangar-app-update.zip" and u.endswith("/hangar-app-update.zip")
+    if sysname == "Windows":
+        return n.endswith(".zip") and "windows" in n and "linux" not in n and u.endswith(".zip")
+    if sysname == "Linux":
+        return n.endswith((".tar.gz", ".tgz")) and "linux" in n
+    if sysname == "Darwin":
+        return n.endswith(".zip") and ("mac" in n or "darwin" in n)
+    return n.endswith((".zip", ".tar.gz", ".tgz"))
 
 
 @app.get("/api/update/check")
@@ -3161,6 +3174,13 @@ def update_download():
     mode = data.get("mode") if data.get("mode") in ("delta", "full") else "full"
     if not url:
         return jsonify({"ok": False, "error": "No download URL provided."}), 200
+    if not _is_platform_update_asset(name, url, mode):
+        msg = ("That update link was for a different operating system. "
+               "Please click Check for updates again in a moment.")
+        with UPDATE_LOCK:
+            UPDATE.update(running=False, pct=0, done=False, path=None,
+                          folder=None, exe=None, error=msg, stage=None)
+        return jsonify({"ok": False, "error": msg}), 200
     with UPDATE_LOCK:
         if UPDATE["running"]:
             return jsonify({"ok": True, "running": True})

@@ -53,8 +53,7 @@ jobs:
           name: Hangar-linux
           path: dist/Hangar-linux.tar.gz
 
-      - name: Attach to release (tag builds only)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/Hangar-linux.tar.gz
+      # Do not attach the Linux package to the public release from this workflow.
+      # The Windows in-app updater watches the latest release, and if Linux wins
+      # the race it can briefly see only Hangar-linux.tar.gz. Windows owns release
+      # creation so Hangar-windows.zip is present before update checks see the tag.

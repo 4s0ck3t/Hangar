@@ -4253,10 +4253,15 @@ async function beginBackgroundUpdate() {
     window.open(_updateInfo.html_url || "https://github.com/4s0ck3t/Hangar/releases", "_blank");
     return;
   }
-  post("update/download", {
+  const started = await post("update/download", {
     url: _updateInfo.asset_url, name: _updateInfo.asset_name, version: _updateInfo.latest,
     mode: _updateInfo.mode,
   });
+  if (!started || started.ok === false) {
+    toast((started && started.error) || "Update download failed.", "error");
+    _setPill(`⟳ Retry update to v${_updateInfo.latest}`, beginBackgroundUpdate);
+    return;
+  }
   startUpdatePolling();
   _setPill(`⬇ Downloading v${_updateInfo.latest}… 0%`, openUpdateModal);
   const sizeNote = _updateInfo.mode === "delta" ? ` (small update, ${_fmtSize(_updateInfo.asset_size)})` : "";
@@ -4269,10 +4274,16 @@ async function startUpdateDownload() {
   const btn = $("#updateDownloadBtn");
   btn.disabled = true; btn.textContent = "Downloading…";
   $("#updateProgress").classList.remove("hidden");
-  await post("update/download", {
+  const started = await post("update/download", {
     url: _updateInfo.asset_url, name: _updateInfo.asset_name, version: _updateInfo.latest,
     mode: _updateInfo.mode,
   });
+  if (!started || started.ok === false) {
+    btn.disabled = false; btn.textContent = "Retry download";
+    $("#updateProgress").classList.add("hidden");
+    toast((started && started.error) || "Update download failed.", "error");
+    return;
+  }
   startUpdatePolling();
 }
 $("#updateDownloadBtn").onclick = startUpdateDownload;
