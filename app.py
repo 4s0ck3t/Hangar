@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.48"
+__version__ = "0.15.49"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -889,11 +889,68 @@ def _resolve_tex_path(blend_path, ref):
     return os.path.normpath(ref.replace("\\", os.sep))
 
 
+_TEXFIX_HDRI_RES_SUFFIX = re.compile(r"_(?:\d+k|\d{3,5})$", re.I)
+
+
+def _texfix_is_hdri(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".hdr":
+        return True
+    if ext != ".exr":
+        return False
+    folder = os.path.dirname(path)
+    name = os.path.splitext(os.path.basename(path))[0]
+    return scanner.classify_kind(ext, folder, name) == "hdri"
+
+
+def _texfix_hdri_key(path):
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    return _TEXFIX_HDRI_RES_SUFFIX.sub("", stem)
+
+
+def _texfix_resolution(path):
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    m = re.search(r"_(\d+)k$", stem)
+    if m:
+        return int(m.group(1)) * 1024
+    m = re.search(r"_(\d{3,5})$", stem)
+    if m:
+        return int(m.group(1))
+    return 0
+
+
+def _texfix_candidate_score(cand, target, blend_path):
+    blend_dir = os.path.normcase(os.path.normpath(os.path.dirname(blend_path)))
+    cand_dir = os.path.normcase(os.path.normpath(os.path.dirname(cand)))
+    proximity = 0
+    if cand_dir == blend_dir:
+        proximity = 10000
+    elif cand_dir.startswith(blend_dir + os.sep):
+        proximity = 9000
+    same_ext = 200 if os.path.splitext(cand)[1].lower() == os.path.splitext(target)[1].lower() else 0
+    suffix = _suffix_overlap(cand, target) * 100
+    want_res = _texfix_resolution(target)
+    have_res = _texfix_resolution(cand)
+    res_fit = 0
+    if want_res and have_res:
+        res_fit = max(0, 100 - abs(want_res - have_res))
+    return proximity + same_ext + suffix + res_fit
+
+
+def _texfix_candidates(by_name, by_hdri_key, target, blend_path):
+    exact = by_name.get(os.path.basename(target).lower(), [])
+    if exact:
+        return sorted(exact, key=lambda c: -_texfix_candidate_score(c, target, blend_path))
+    if _texfix_is_hdri(target):
+        return sorted(by_hdri_key.get(_texfix_hdri_key(target), []),
+                      key=lambda c: -_texfix_candidate_score(c, target, blend_path))
+    return []
+
+
 def _texfix_local_target(blend_path, found_path):
     blend_dir = os.path.dirname(blend_path)
     name = os.path.basename(found_path)
-    ext = os.path.splitext(name)[1].lower()
-    if ext in (".hdr", ".exr"):
+    if _texfix_is_hdri(found_path):
         return os.path.join(blend_dir, name)
     tex_dir = os.path.join(blend_dir, "textures")
     if not os.path.isdir(thumbs._fs(tex_dir)):
@@ -905,13 +962,17 @@ def _texfix_local_target(blend_path, found_path):
 
 def _run_texfix(generation, source):
     by_name = {}
+    by_hdri_key = {}
     n = 0
     for dirpath, dirnames, filenames in os.walk(source):
         if generation != TEXFIX_GEN:
             return
         dirnames[:] = [d for d in dirnames if d.lower() not in RESTORE_SKIP_DIRS]
         for fn in filenames:
-            by_name.setdefault(fn.lower(), []).append(os.path.join(dirpath, fn))
+            fp = os.path.join(dirpath, fn)
+            by_name.setdefault(fn.lower(), []).append(fp)
+            if _texfix_is_hdri(fp):
+                by_hdri_key.setdefault(_texfix_hdri_key(fp), []).append(fp)
             n += 1
         with TEXFIX_LOCK:
             if generation == TEXFIX_GEN:
@@ -936,10 +997,8 @@ def _run_texfix(generation, source):
                 if os.path.exists(thumbs._fs(target)):
                     already += 1
                     continue
-                # Best structural match first — same tie-break rule as
-                # restore-from-folder (shared trailing path components win).
-                cands = sorted(by_name.get(os.path.basename(target).lower(), []),
-                               key=lambda c: -_suffix_overlap(c, target))
+                # Exact names win; HDRIs can fall back across resolution variants.
+                cands = _texfix_candidates(by_name, by_hdri_key, target, t["path"])
                 ok = False
                 for cand in cands:
                     local_target = _texfix_local_target(t["path"], cand)

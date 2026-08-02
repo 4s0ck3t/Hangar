@@ -52,6 +52,7 @@ _PIXELS_TO_RES = {
     "256": "256", "512": "512", "1024": "1k", "2048": "2k",
     "4096": "4k", "8192": "8k", "16384": "16k",
 }
+_HDRI_RES_SUFFIX = re.compile(r"_(?:\d+k|\d{3,5})$")
 
 
 def texture_facets(folder, name_noext):
@@ -152,6 +153,21 @@ def classify_kind(ext, folder, name_noext):
     return EXT_KIND[ext]
 
 
+def is_redundant_hdri_blend(fname, sibling_files):
+    """True for Poly Haven-style HDRI Blender wrappers beside a real .hdr file."""
+    if os.path.splitext(fname)[1].lower() != ".blend":
+        return False
+    stem = os.path.splitext(fname)[0].lower()
+    for other in sibling_files:
+        ext = os.path.splitext(other)[1].lower()
+        if ext != ".hdr":
+            continue
+        other_stem = os.path.splitext(other)[0].lower()
+        if _HDRI_RES_SUFFIX.sub("", other_stem) == stem:
+            return True
+    return False
+
+
 def count_files(library_path):
     """Fast pre-pass: how many indexable files live under this root.
 
@@ -163,6 +179,8 @@ def count_files(library_path):
     for root, dirs, files in os.walk(library_path):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
         for fname in files:
+            if is_redundant_hdri_blend(fname, files):
+                continue
             if os.path.splitext(fname)[1].lower() in ALL_EXTS:
                 n += 1
     return n
@@ -195,6 +213,8 @@ def scan_library(library_path, on_file=None):
     for root, dirs, files in os.walk(library_path):
         dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
         for fname in files:
+            if is_redundant_hdri_blend(fname, files):
+                continue
             ext = os.path.splitext(fname)[1].lower()
             if ext not in ALL_EXTS:
                 continue
