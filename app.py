@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.47"
+__version__ = "0.15.48"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -133,6 +133,16 @@ def _start_scan(libs):
             return False
     threading.Thread(target=_run_scan, args=(libs,), daemon=True).start()
     return True
+
+
+def _start_startup_scan():
+    """Refresh the index on launch so files added while Hangar was closed appear."""
+    if os.environ.get("HANGAR_STARTUP_SCAN", "").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    libs = [(l["path"], l["name"]) for l in store.list_libraries()]
+    if not libs:
+        return False
+    return _start_scan(libs)
 
 
 # ---- background thumbnail warming -----------------------------------------
@@ -3278,11 +3288,13 @@ def _open_browser():
 def run_server(open_browser=False):
     if open_browser:
         threading.Thread(target=_open_browser, daemon=True).start()
-    # Warm any thumbnails missing from a previous run (e.g. a library indexed
-    # before pre-baking existed, or new files added while Hangar was closed).
-    # has_cached_thumb makes this a cheap no-op once everything is baked.
-    _start_warm()
-    _start_meta_index()   # index .blend asset metadata for search
+    # Keep the index fresh for files added while Hangar was closed. This runs in
+    # the same background scan path as Rescan all, so the UI shows progress and
+    # startup itself is not blocked. If disabled/no libraries, just run the cheap
+    # thumbnail and metadata warmers.
+    if not _start_startup_scan():
+        _start_warm()
+        _start_meta_index()   # index .blend asset metadata for search
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
 
 

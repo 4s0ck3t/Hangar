@@ -2326,17 +2326,68 @@ function _mountCtxMenu(menu, x, y) {
   }, 0);
 }
 
-function showCategoryMenu(x, y, a) {
+function categoryScoreForAsset(c, a) {
+  let score = 0;
+  const current = new Set(a.categories || []);
+  if (current.has(c.name)) score += 100;
+  if (state.filter.category === c.name) score += 80;
+  const hay = `${a.path || ""} ${a.name || ""}`.toLowerCase();
+  const tokens = new Set(hay.split(/[^a-z0-9]+/).filter(Boolean));
+  for (const kw of String(c.keywords || "").split(",")) {
+    const k = kw.trim().toLowerCase();
+    if (!k) continue;
+    if (tokens.has(k) || tokens.has(k + "s") || (k.endsWith("s") && tokens.has(k.slice(0, -1)))) score += 12;
+    else if (hay.includes(k)) score += 4;
+  }
+  if (score === 0 && (c.c || 0) > 0) score += 1;
+  return score;
+}
+
+function categoryDepthMap(cats) {
+  const byId = new Map(cats.map((c) => [c.id, c]));
+  const memo = new Map();
+  function depth(c) {
+    if (!c || !c.parent_id) return 0;
+    if (memo.has(c.id)) return memo.get(c.id);
+    const d = 1 + depth(byId.get(c.parent_id));
+    memo.set(c.id, d);
+    return d;
+  }
+  for (const c of cats) depth(c);
+  return memo;
+}
+
+function compactCategoryChoices(cats, a, max = 10) {
+  const current = new Set(a.categories || []);
+  const useful = cats
+    .map((c) => ({ c, score: categoryScoreForAsset(c, a) }))
+    .filter((x) => x.score > 1 || current.has(x.c.name))
+    .sort((a2, b2) => b2.score - a2.score
+      || a2.c.name.localeCompare(b2.c.name, undefined, { sensitivity: "base" }))
+    .slice(0, max)
+    .map((x) => x.c);
+  if (useful.length) return useful;
+  const depth = categoryDepthMap(cats);
+  return cats
+    .filter((c) => (depth.get(c.id) || 0) <= 1)
+    .sort((a2, b2) => (b2.c || 0) - (a2.c || 0)
+      || a2.name.localeCompare(b2.name, undefined, { sensitivity: "base" }))
+    .slice(0, max);
+}
+
+function showCategoryMenu(x, y, a, opts = {}) {
   closeCtxMenu();
   // Categories that apply to this asset: its own type, plus shared ones (kind "").
-  const cats = allCategories.filter((c) => !c.kind || c.kind === a.kind);
+  const allCatsForAsset = allCategories.filter((c) => !c.kind || c.kind === a.kind);
+  const full = !!opts.full;
+  const cats = full ? allCatsForAsset : compactCategoryChoices(allCatsForAsset, a);
   const current = new Set(a.categories || []);
   const menu = document.createElement("div");
   menu.className = "ctx-menu";
 
   const title = document.createElement("div");
   title.className = "ctx-title";
-  title.textContent = "Move to category";
+  title.textContent = full ? "All categories" : "Move to category";
   menu.appendChild(title);
 
   if (!cats.length) {
@@ -2373,7 +2424,7 @@ function showCategoryMenu(x, y, a) {
         // This category's folders (the Furniture › Beds level shown in the
         // sidebar) as deeper drop targets — picking one files the asset under the
         // category AND moves its file into that folder on disk.
-        for (const f of foldersForCategory(c)) {
+        if (full) for (const f of foldersForCategory(c)) {
           const fitem = document.createElement("button");
           fitem.className = "ctx-item ctx-subitem";
           fitem.style.paddingLeft = `${9 + (depth + 1) * 16}px`;
@@ -2393,6 +2444,13 @@ function showCategoryMenu(x, y, a) {
 
   const sep = document.createElement("div"); sep.className = "ctx-sep";
   menu.appendChild(sep);
+  if (!full && allCatsForAsset.length > cats.length) {
+    const more = document.createElement("button");
+    more.className = "ctx-item";
+    more.innerHTML = `<span class="ctx-ico">...</span><span class="ctx-name">All categories...</span>`;
+    more.onclick = (e) => { e.stopPropagation(); showCategoryMenu(x, y, a, { full: true }); };
+    menu.appendChild(more);
+  }
   if (current.size) {
     const rm = document.createElement("button");
     rm.className = "ctx-item ctx-danger";
