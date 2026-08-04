@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.50"
+__version__ = "0.15.51"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -2907,7 +2907,40 @@ UPDATE = {"running": False, "pct": 0, "done": False, "path": None,
 UPDATE_LOCK = threading.Lock()
 
 _RELEASE_CACHE: dict = {}          # {"data": ..., "ts": float}
-_RELEASE_CACHE_TTL = 3600          # re-fetch at most once per hour
+_RELEASE_CACHE_TTL = 6 * 3600      # automatic checks re-fetch at most every 6h
+_RELEASE_MANUAL_COOLDOWN = 10 * 60 # button clicks can refresh at most every 10m
+
+
+def _cached_release(max_age=None):
+    now = time.time()
+    cached = _RELEASE_CACHE.get("data")
+    ts = float(_RELEASE_CACHE.get("ts") or 0)
+    if cached and (max_age is None or now - ts < max_age):
+        return cached, ts
+    raw = store.get_setting("update_latest_release_json", "")
+    raw_ts = float(store.get_setting("update_latest_release_ts", "0") or 0)
+    if not raw:
+        return None, 0
+    if max_age is not None and now - raw_ts >= max_age:
+        return None, raw_ts
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None, raw_ts
+    _RELEASE_CACHE["data"] = data
+    _RELEASE_CACHE["ts"] = raw_ts
+    return data, raw_ts
+
+
+def _remember_release(data):
+    now = time.time()
+    _RELEASE_CACHE["data"] = data
+    _RELEASE_CACHE["ts"] = now
+    try:
+        store.set_setting("update_latest_release_json", json.dumps(data))
+        store.set_setting("update_latest_release_ts", str(now))
+    except Exception:
+        pass
 
 
 def _version_tuple(s):
@@ -2916,25 +2949,34 @@ def _version_tuple(s):
     return tuple(int(n) for n in nums) if nums else (0,)
 
 
-def _fetch_latest_release(force=False):
+def _fetch_latest_release(force=False, min_interval=0):
     import urllib.request
     now = time.time()
-    cached = _RELEASE_CACHE.get("data")
-    # The hour-long cache exists to throttle the *automatic* boot check. An
-    # explicit "Check for updates" click must hit GitHub fresh, otherwise it
-    # keeps reporting a stale "you're on the latest" for up to an hour after a
-    # release ships.
-    if not force and cached and now - _RELEASE_CACHE.get("ts", 0) < _RELEASE_CACHE_TTL:
+    cached, ts = _cached_release(None if force else _RELEASE_CACHE_TTL)
+    if cached and not force:
+        return cached
+    if cached and min_interval and now - ts < min_interval:
+        cached = dict(cached)
+        cached["_hangar_cached"] = True
+        cached["_hangar_retry_after"] = int(max(1, min_interval - (now - ts)))
         return cached
     url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     req = urllib.request.Request(url, headers={
         "User-Agent": "Hangar-updater",
         "Accept": "application/vnd.github+json",
     })
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    _RELEASE_CACHE["data"] = data
-    _RELEASE_CACHE["ts"] = now
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        fallback, _ts = _cached_release(None)
+        if fallback:
+            fallback = dict(fallback)
+            fallback["_hangar_cached"] = True
+            fallback["_hangar_stale"] = True
+            return fallback
+        raise
+    _remember_release(data)
     return data
 
 
@@ -3041,8 +3083,12 @@ def _is_platform_update_asset(name, url, mode):
 @app.get("/api/update/check")
 def update_check():
     force = request.args.get("force") in ("1", "true", "yes")
+    manual = request.args.get("manual") in ("1", "true", "yes")
     try:
-        rel = _fetch_latest_release(force=force)
+        rel = _fetch_latest_release(
+            force=force,
+            min_interval=_RELEASE_MANUAL_COOLDOWN if manual else 0,
+        )
     except Exception as e:
         import urllib.error
         if isinstance(e, urllib.error.HTTPError) and e.code == 403:
@@ -3066,7 +3112,7 @@ def update_check():
     # a newer release is known but no downloadable package was present.
     if not force and _version_tuple(latest) > _version_tuple(__version__) and not asset:
         try:
-            rel = _fetch_latest_release(force=True)
+            rel = _fetch_latest_release(force=True, min_interval=60)
             latest = (rel.get("tag_name") or "").lstrip("v")
             asset = _platform_asset(rel.get("assets", []))
         except Exception:
@@ -3099,6 +3145,9 @@ def update_check():
         "asset_url": asset.get("browser_download_url") if asset else None,
         "asset_name": asset.get("name") if asset else None,
         "asset_size": asset.get("size") if asset else None,
+        "cached": bool(rel.get("_hangar_cached")),
+        "stale": bool(rel.get("_hangar_stale")),
+        "retry_after": rel.get("_hangar_retry_after", 0),
     })
 
 

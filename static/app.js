@@ -4410,7 +4410,7 @@ function startUpdatePolling() {
 async function _ensureUpdateAssetUrl() {
   if (!_updateInfo || _updateInfo.asset_url) return !!(_updateInfo && _updateInfo.asset_url);
   try {
-    const fresh = await api("update/check?force=1");
+    const fresh = await api("update/check");
     if (fresh && fresh.ok && fresh.update_available) _updateInfo = fresh;
   } catch (_) {}
   return !!(_updateInfo && _updateInfo.asset_url);
@@ -4473,9 +4473,9 @@ async function manualCheckUpdate() {
   const prev = btn.textContent;
   btn.disabled = true; btn.textContent = "Checking…";
   let u;
-  // force=1 bypasses the hour-long release cache — an explicit click should
-  // always query GitHub fresh, never report a stale "latest".
-  try { u = await api("update/check?force=1"); }
+  // Manual checks may refresh GitHub, but the server enforces a short cooldown
+  // so repeated clicks do not burn through GitHub's unauthenticated API limit.
+  try { u = await api("update/check?force=1&manual=1"); }
   catch (e) { u = null; }
   btn.disabled = false; btn.textContent = prev;
   if (!u || !u.ok) {
@@ -4488,7 +4488,10 @@ async function manualCheckUpdate() {
     // becomes a "Restart to finish" button when it's ready.
     beginBackgroundUpdate();
   } else {
-    toast(`You're on the latest version (v${u.current}).`, "success");
+    const note = u.cached && u.retry_after
+      ? ` Cached to avoid GitHub rate limits; fresh check available in ${Math.ceil(u.retry_after / 60)} min.`
+      : "";
+    toast(`You're on the latest version (v${u.current}).${note}`, "success");
   }
 }
 $("#checkUpdateBtn").onclick = manualCheckUpdate;
