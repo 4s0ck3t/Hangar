@@ -330,10 +330,20 @@ button, input, select { font-family: inherit; color: inherit; }
 .search-wrap { flex: 1; max-width: 460px; position: relative; }
 #search {
   width: 100%; background: var(--raised); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 9px 13px; font-size: 13px;
+  border-radius: var(--radius); padding: 9px 34px 9px 13px; font-size: 13px;
   outline: none; transition: border-color .15s, box-shadow .15s;
 }
 #search:focus { border-color: var(--select); box-shadow: 0 0 0 3px rgba(91,141,239,.15); }
+.search-clear {
+  position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; border-radius: 5px;
+  background: transparent; color: var(--faint);
+  font-size: 17px; line-height: 1; cursor: pointer;
+}
+.search-clear:hover { color: var(--ink); background: var(--raised-hi); border-color: var(--line); }
+.search-clear.hidden { display: none; }
 
 /* ---- search autocomplete dropdown ---- */
 .search-suggest {
@@ -516,6 +526,21 @@ button, input, select { font-family: inherit; color: inherit; }
 
 /* ---- grouped-by-category grid ---- */
 .grid.grouped { display: block; grid-auto-rows: initial; padding: 0; }
+.section-bulk-tools {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 22px; background: var(--void);
+  border-bottom: 1px solid var(--line);
+}
+.section-bulk-btn {
+  height: 24px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--raised); color: var(--mute);
+  font-size: 11.5px; cursor: pointer;
+}
+.section-bulk-btn:hover:not(:disabled) {
+  border-color: var(--select); color: var(--ink); background: var(--raised-hi);
+}
+.section-bulk-btn:disabled { opacity: .45; cursor: default; }
 .grid-section { margin-bottom: 4px; }
 .section-head {
   position: sticky; top: 0; z-index: 3;
@@ -745,6 +770,14 @@ button, input, select { font-family: inherit; color: inherit; }
 }
 .organise-root-input:focus {
   border-color: var(--select); box-shadow: 0 0 0 3px rgba(91,141,239,.15);
+}
+.organise-primary {
+  border-color: rgba(74, 183, 123, .45);
+  color: #c8f7dc;
+}
+.organise-primary:disabled {
+  opacity: .62;
+  cursor: wait;
 }
 .organise-rows { display: flex; flex-direction: column; gap: 8px; padding: 10px 22px 14px; }
 .organise-row {

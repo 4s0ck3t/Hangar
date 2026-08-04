@@ -927,6 +927,7 @@ function updateClearBtn() {
     || state.filter.linked || state.filter.corrupt || state.filter.author
     || state.search;
   $("#clearFilterBtn").classList.toggle("hidden", !active);
+  updateSearchClearBtn();
 }
 
 // ---- faceted filter strip -------------------------------------------------
@@ -1324,6 +1325,41 @@ function sectionCollapseButton(key, label) {
   return btn;
 }
 
+function sectionBulkToolbar(sections) {
+  const keys = sections.map((s) => s.key).filter(Boolean);
+  if (!keys.length) return null;
+  const bar = document.createElement("div");
+  bar.className = "section-bulk-tools";
+  const expanded = keys.some((key) => !sectionCollapsed.has(key));
+  const collapsed = keys.some((key) => sectionCollapsed.has(key));
+
+  const collapse = document.createElement("button");
+  collapse.type = "button";
+  collapse.className = "section-bulk-btn";
+  collapse.textContent = "Collapse all";
+  collapse.disabled = !expanded;
+  collapse.onclick = () => {
+    for (const key of keys) sectionCollapsed.add(key);
+    persistSectionCollapsed();
+    refresh();
+  };
+
+  const expand = document.createElement("button");
+  expand.type = "button";
+  expand.className = "section-bulk-btn";
+  expand.textContent = "Expand all";
+  expand.disabled = !collapsed;
+  expand.onclick = () => {
+    for (const key of keys) sectionCollapsed.delete(key);
+    persistSectionCollapsed();
+    refresh();
+  };
+
+  bar.appendChild(collapse);
+  bar.appendChild(expand);
+  return bar;
+}
+
 async function refresh() {
   // Nothing on screen yet (first load / coming from an empty view) → show
   // shimmering placeholder tiles instead of a blank pane while we fetch.
@@ -1494,13 +1530,19 @@ function renderGroupedGrid(assets, kind, total) {
   let secKey = 0;
   const frag = document.createDocumentFragment();
   for (const s of sections) {
+    s.key = s.typeKind
+      ? `type:${s.typeKind}`
+      : `cat:${kind || "all"}:${s.uncat ? "__uncat__" : s.cat.name}`;
+    s.label = s.cat.name;
+  }
+  const tools = sectionBulkToolbar(sections);
+  if (tools) frag.appendChild(tools);
+  for (const s of sections) {
     // Empty named categories still render — as a labelled drop zone — so a tile
     // can be dragged into a category that has no assets yet. (Uncategorized is
     // only ever added when it has items, so it's never shown empty.)
     const section = document.createElement("div");
-    const sectionKey = s.typeKind
-      ? `type:${s.typeKind}`
-      : `cat:${kind || "all"}:${s.uncat ? "__uncat__" : s.cat.name}`;
+    const sectionKey = s.key;
     const collapsed = sectionIsCollapsed(sectionKey);
     section.className = "grid-section" + (s.items.length ? "" : " is-empty")
       + (s.typeKind ? " type-section" : "") + (collapsed ? " collapsed" : "");
@@ -1650,6 +1692,8 @@ function renderGroupedByFolder(assets, libraryPath, opts = {}) {
   const secOf = [];
   let secKey = 0;
   const frag = document.createDocumentFragment();
+  const tools = sectionBulkToolbar(sections);
+  if (tools) frag.appendChild(tools);
   for (const s of sections) {
     const section = document.createElement("div");
     const collapsed = sectionIsCollapsed(s.key);
@@ -1946,10 +1990,11 @@ function renderOrganisePlan(data) {
     `<input id="organiseTargetRoot" class="organise-root-input" value="${esc(data.target_root || state.organiseTargetRoot || "D:\\Hangar")}"></label>` +
     `<button id="organiseTargetBrowse" class="rescan" title="Choose the folder where Hangar should plan the clean library">Browse</button>` +
     `<button id="organiseTargetApply" class="rescan" title="Recalculate the plan for this target root">Apply</button>` +
+    `<button id="organiseCopyVerified" class="rescan organise-primary" title="Copy the next verified model-pack folders into the clean library. Old folders are kept.">Copy verified packs</button>` +
     `<span>${fmtSize(s.target_free || 0)} free</span>` +
     `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` +
     `<span title="Estimated space in duplicate pack folders that look safe to remove later after review. Nothing is deleted by this plan.">${fmtSize(s.potential_duplicate_savings || 0)} duplicate estimate</span>` +
-    `<span>${s.move || 0} to move</span>` +
+    `<span>${s.move || 0} to copy</span>` +
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${(s.collision || 0) + (s.target_exists || 0)} need review</span>`;
   frag.appendChild(tools);
@@ -1970,6 +2015,39 @@ function renderOrganisePlan(data) {
     const input = tools.querySelector("#organiseTargetRoot");
     if (input) input.value = p;
     applyTarget();
+  };
+  tools.querySelector("#organiseCopyVerified").onclick = async (e) => {
+    const btn = e.currentTarget;
+    const input = tools.querySelector("#organiseTargetRoot");
+    const target = (input && input.value.trim()) || state.organiseTargetRoot || "D:\\Hangar";
+    const n = s.move || 0;
+    if (!n) {
+      toast("There are no planned packs ready to copy.", "success");
+      return;
+    }
+    if (!confirm(`Copy the next ${Math.min(25, n)} verified pack folder${Math.min(25, n) === 1 ? "" : "s"} into:\n${target}\n\nHangar will verify the copy and update its index. Old folders stay on disk.`)) return;
+    btn.disabled = true;
+    btn.textContent = "Copying...";
+    let r;
+    try {
+      r = await post("organise/apply", { target, limit: 25 });
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = "Copy verified packs";
+      toast("Organise failed before it could start.", "error");
+      return;
+    }
+    if (!r || r.error) {
+      btn.disabled = false;
+      btn.textContent = "Copy verified packs";
+      toast((r && r.error) || "Organise failed.", "error");
+      return;
+    }
+    state.organiseTargetRoot = r.target_root || target;
+    localStorage.setItem("hangar_organise_target_root", state.organiseTargetRoot);
+    renderOrganisePlan(r.plan || data);
+    loadState();
+    toast(`Copied ${r.copied || 0} pack${(r.copied || 0) === 1 ? "" : "s"}; ${r.updated_assets || 0} indexed file${(r.updated_assets || 0) === 1 ? "" : "s"} moved to the new path.`, r.failed ? "error" : "success");
   };
 
   const byCat = new Map();
@@ -2060,6 +2138,12 @@ function filterToFolder(path) {
   refresh();
 }
 
+function showHomeView() {
+  resetFilter();
+  state.search = ""; const s = $("#search"); if (s) s.value = "";
+  refresh();
+}
+
 // Turn a relative path label ("iMeshh\\Ceiling Fans\\Subfolder") into
 // clickable breadcrumb-style <span> elements where each segment narrows the
 // filter to that folder level.
@@ -2103,33 +2187,25 @@ function renderBreadcrumbs(folderPath) {
   const addCrumb = (label, onClick, active) => {
     const span = document.createElement("span");
     span.className = active ? "crumb crumb-active" : "crumb";
-    if (onClick) {
-      const a = document.createElement("a");
-      a.textContent = label;
-      a.onclick = onClick;
-      span.appendChild(a);
-    } else {
-      span.textContent = label;
-    }
+    const a = document.createElement("a");
+    a.textContent = label;
+    a.onclick = onClick;
+    span.appendChild(a);
     frag.appendChild(span);
   };
   const addSep = () => {
     const s = document.createElement("span");
     s.className = "crumb-sep";
-    s.textContent = "›";
+    s.textContent = ">";
     frag.appendChild(s);
   };
 
-  addCrumb("🏠 Home", () => filterToFolder(""), false);
+  addCrumb("Home", (e) => { e.preventDefault(); showHomeView(); }, false);
   for (let i = 0; i < levels.length; i++) {
     const item = levels[i];
+    const p = item.path;   // captured absolute path, backslashes intact
     addSep();
-    if (i === levels.length - 1) {
-      addCrumb(item.label, null, true);
-    } else {
-      const p = item.path;   // captured absolute path, backslashes intact
-      addCrumb(item.label, () => filterToFolder(p), false);
-    }
+    addCrumb(item.label, (e) => { e.preventDefault(); filterToFolder(p); }, i === levels.length - 1);
   }
   return frag;
 }
@@ -2182,15 +2258,19 @@ function buildCard(a, i) {
   const texWarn = nMissTex > 0
     ? `<span class="tex-warn" title="${nMissTex} missing texture reference${nMissTex > 1 ? "s" : ""} — this .blend points at external images not found on disk">⚠ ${nMissTex}</span>`
     : "";
-  // Packed (textures embedded, self-contained) vs Linked (references external
-  // image files). Only meaningful for .blend files that have textures.
+  // Packed (embedded, self-contained) vs linked (external image files).
+  // Tooltips split ordinary texture maps from HDRI lighting images.
   let texKind = "";
   if (a.ext === ".blend") {
     const ext = a.blend_external_tex || 0, pk = a.blend_packed_tex || 0;
+    const linkedMaps = a.blend_external_texture_maps || 0;
+    const linkedHdris = a.blend_external_hdris || 0;
+    const packedMaps = a.blend_packed_texture_maps || 0;
+    const packedHdris = a.blend_packed_hdris || 0;
     if (ext > 0) {
-      texKind = `<span class="tex-kind tex-linked" title="References ${ext} external texture file${ext > 1 ? "s" : ""} — linked, so those files must travel with the .blend">🔗 Linked</span>`;
+      texKind = `<span class="tex-kind tex-linked" title="References ${ext} external image file${ext > 1 ? "s" : ""}: ${linkedMaps} texture map${linkedMaps === 1 ? "" : "s"}, ${linkedHdris} HDRI${linkedHdris === 1 ? "" : "s"}">Linked</span>`;
     } else if (pk > 0) {
-      texKind = `<span class="tex-kind tex-packed" title="${pk} texture${pk > 1 ? "s" : ""} packed into the .blend — self-contained">📦 Packed</span>`;
+      texKind = `<span class="tex-kind tex-packed" title="${pk} image file${pk > 1 ? "s" : ""} packed into the .blend: ${packedMaps} texture map${packedMaps === 1 ? "" : "s"}, ${packedHdris} HDRI${packedHdris === 1 ? "" : "s"}">Packed</span>`;
     }
   }
   card.innerHTML = `
@@ -2673,24 +2753,29 @@ async function renderBlendInfo(a) {
     html += `</div>`;
   }
 
-  // ── Texture status ─────────────────────────────────────────────────────────
-  // Exact counts behind the tile's Packed/Linked/⚠ badges, so it's clear what
-  // the file actually contains.
+  // Texture status: exact counts behind the tile's Packed/Linked badges.
   {
     const pk = info.packed_textures || 0;
     const ext = info.external_textures || 0;
+    const packedMaps = info.packed_texture_maps || 0;
+    const packedHdris = info.packed_hdris || 0;
+    const linkedMaps = info.external_texture_maps || 0;
+    const linkedHdris = info.external_hdris || 0;
     const miss = (info.missing_textures || []).length;
     if (pk || ext || miss) {
       const parts = [];
-      if (pk) parts.push(`📦 ${pk} packed`);
-      if (ext) parts.push(`🔗 ${ext} linked (external)`);
-      if (miss) parts.push(`⚠ ${miss} missing`);
-      html += `<div class="d-preview-source" title="Texture references in this .blend">` +
-        `<span class="d-preview-source-ico">🖼</span>` +
-        `<span class="d-preview-source-label">Textures: ${esc(parts.join(" · "))}</span></div>`;
+      if (packedMaps) parts.push(`${packedMaps} packed texture map${packedMaps === 1 ? "" : "s"}`);
+      if (packedHdris) parts.push(`${packedHdris} packed HDRI${packedHdris === 1 ? "" : "s"}`);
+      if (linkedMaps) parts.push(`${linkedMaps} linked texture map${linkedMaps === 1 ? "" : "s"}`);
+      if (linkedHdris) parts.push(`${linkedHdris} linked HDRI${linkedHdris === 1 ? "" : "s"}`);
+      if (miss) parts.push(`${miss} missing`);
+      if (!parts.length && pk) parts.push(`${pk} packed image${pk === 1 ? "" : "s"}`);
+      if (!parts.length && ext) parts.push(`${ext} linked image${ext === 1 ? "" : "s"}`);
+      html += `<div class="d-preview-source" title="Texture and HDRI references in this .blend">` +
+        `<span class="d-preview-source-ico">IMG</span>` +
+        `<span class="d-preview-source-label">Images: ${esc(parts.join(" / "))}</span></div>`;
     }
   }
-
   // ── Marked assets gallery ──────────────────────────────────────────────────
   if (info.assets && info.assets.length) {
     html += `<div class="d-section-label">Marked assets (${info.assets.length})</div>`;
@@ -4494,7 +4579,17 @@ if (_linkedBtn) _linkedBtn.onclick = () => {
 };
 function updateHealthBtn() {
   const b = $("#healthBtn");
-  if (b) b.classList.toggle("active", state.filter.corrupt);
+  if (b) {
+    b.classList.toggle("active", state.filter.corrupt);
+    const c = appCounts || {};
+    const parts = [
+      `${c.blend_packed_texture_maps || 0} packed texture maps`,
+      `${c.blend_packed_hdris || 0} packed HDRIs`,
+      `${c.blend_external_texture_maps || 0} linked texture maps`,
+      `${c.blend_external_hdris || 0} linked HDRIs`,
+    ];
+    b.title = `Check every .blend file's structure and refresh image health counts. ${parts.join(", ")}.`;
+  }
   // "Repair all" / "Restore from folder" only make sense inside the
   // damaged-files view.
   const r = $("#repairAllBtn");
@@ -5032,7 +5127,12 @@ $("#autoClassifyBtn").onclick = async () => {
 let searchTimer;
 $("#search").oninput = (e) => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { state.search = e.target.value.trim(); refresh(); }, 220);
+  updateSearchClearBtn();
+  searchTimer = setTimeout(() => {
+    state.search = e.target.value.trim();
+    updateSearchClearBtn();
+    refresh();
+  }, 220);
   updateSuggest(e.target.value.trim());
 };
 
@@ -5050,12 +5150,18 @@ function closeSuggest() {
   $("#search").removeAttribute("aria-activedescendant");
 }
 
+function updateSearchClearBtn() {
+  const btn = $("#searchClearBtn");
+  if (btn) btn.classList.toggle("hidden", !($("#search").value || state.search));
+}
+
 function pickSuggest(name) {
   const s = $("#search");
   s.value = name;
   closeSuggest();
   clearTimeout(searchTimer);
   state.search = name;
+  updateSearchClearBtn();
   refresh();
 }
 
@@ -5142,6 +5248,18 @@ $("#search").addEventListener("keydown", (e) => {
   }
 });
 $("#search").addEventListener("blur", closeSuggest);
+$("#searchClearBtn").onclick = () => {
+  clearTimeout(searchTimer);
+  closeSuggest();
+  state.search = "";
+  const s = $("#search");
+  if (s) {
+    s.value = "";
+    s.focus();
+  }
+  updateSearchClearBtn();
+  refresh();
+};
 
 // ---- keyboard navigation on grid tiles --------------------------------------
 // Arrows move focus between cards; works in the flat (virtualized) grid and the

@@ -1464,7 +1464,7 @@ _ID_CODE_KIND = {
 # Bump when _inspect_blend_uncached's result schema changes, so on-disk caches
 # from older builds (e.g. ones predating missing_textures) are recomputed even
 # when the .blend file itself is unchanged.
-_INSPECT_CACHE_VERSION = 6
+_INSPECT_CACHE_VERSION = 7
 
 
 def clear_inspect_cache(path):
@@ -1576,6 +1576,10 @@ def _inspect_blend_uncached(path):
         missing = []
         packed_tex = 0        # Image datablocks with pixels embedded in the .blend
         external_tex = 0      # Image datablocks referencing an external file
+        packed_hdris = 0
+        external_hdris = 0
+        packed_texture_maps = 0
+        external_texture_maps = 0
         seen_paths = set()
         for sdna_index, body, length in blocks:
             if sdna_index <= 0 or sdna_index >= len(structs):
@@ -1629,15 +1633,26 @@ def _inspect_blend_uncached(path):
                         if struct.unpack(ptr_fmt, data[body + img_packs_off:
                                                        body + img_packs_off + ptr_size])[0]:
                             is_packed = True
+                    fp = _read_cstr(data, body + img_path_off, 1024).strip()
+                    nm = _read_cstr(data, body + name_off, 66)[2:]
+                    raw_ext = os.path.splitext(fp or nm)[1].lower()
+                    is_hdri = raw_ext in {".hdr", ".exr"}
                     if is_packed:
                         packed_tex += 1
+                        if is_hdri:
+                            packed_hdris += 1
+                        else:
+                            packed_texture_maps += 1
                         continue
-                    fp = _read_cstr(data, body + img_path_off, 1024).strip()
                     # Skip empty (generated/viewer images) and UDIM/sequence tokens
                     # whose on-disk name we can't resolve to one concrete file.
                     if not fp or "<" in fp:
                         continue
                     external_tex += 1        # a linked (external-file) texture
+                    if is_hdri:
+                        external_hdris += 1
+                    else:
+                        external_texture_maps += 1
                     resolved = fp
                     if resolved.startswith("//"):    # Blender = relative to .blend
                         resolved = os.path.join(base, resolved[2:].lstrip("/\\"))
@@ -1646,7 +1661,6 @@ def _inspect_blend_uncached(path):
                         continue
                     seen_paths.add(resolved)
                     if not os.path.exists(resolved):
-                        nm = _read_cstr(data, body + name_off, 66)[2:]
                         missing.append({"name": nm or os.path.basename(fp), "path": fp})
                 except Exception:
                     log.exception("missing-texture check failed in %s", path)
@@ -1654,7 +1668,11 @@ def _inspect_blend_uncached(path):
         if asset_off is None:
             count = 0                                # file predates asset system
         return {"count": count, "assets": assets, "missing_textures": missing,
-                "packed_textures": packed_tex, "external_textures": external_tex}
+                "packed_textures": packed_tex, "external_textures": external_tex,
+                "packed_texture_maps": packed_texture_maps,
+                "packed_hdris": packed_hdris,
+                "external_texture_maps": external_texture_maps,
+                "external_hdris": external_hdris}
     except Exception:
         log.exception("inspect_blend failed for %s", path)
         return None

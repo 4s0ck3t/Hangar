@@ -6,6 +6,7 @@ Everything lives under ~/.hangar so the tool is fully local and portable.
 
 import os
 import re
+import json
 import shutil
 import sqlite3
 import time
@@ -15,6 +16,8 @@ DATA_DIR = Path(os.environ.get("HANGAR_HOME", Path.home() / ".hangar"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 THUMB_DIR = DATA_DIR / "thumbs"
 THUMB_DIR.mkdir(parents=True, exist_ok=True)
+ORGANISE_RECEIPT_DIR = DATA_DIR / "organise_receipts"
+ORGANISE_RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "hangar.db"
 
 SCHEMA = """
@@ -44,6 +47,10 @@ CREATE TABLE IF NOT EXISTS assets (
     blend_missing_textures INTEGER NOT NULL DEFAULT 0,
     blend_packed_tex INTEGER NOT NULL DEFAULT 0,
     blend_external_tex INTEGER NOT NULL DEFAULT 0,
+    blend_packed_texture_maps INTEGER NOT NULL DEFAULT 0,
+    blend_packed_hdris INTEGER NOT NULL DEFAULT 0,
+    blend_external_texture_maps INTEGER NOT NULL DEFAULT 0,
+    blend_external_hdris INTEGER NOT NULL DEFAULT 0,
     subtype     TEXT NOT NULL DEFAULT '',
     resolution  TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL DEFAULT '',
@@ -223,6 +230,10 @@ def init_db():
             ("blend_missing_textures", "ALTER TABLE assets ADD COLUMN blend_missing_textures INTEGER NOT NULL DEFAULT 0"),
             ("blend_packed_tex", "ALTER TABLE assets ADD COLUMN blend_packed_tex INTEGER NOT NULL DEFAULT 0"),
             ("blend_external_tex", "ALTER TABLE assets ADD COLUMN blend_external_tex INTEGER NOT NULL DEFAULT 0"),
+            ("blend_packed_texture_maps", "ALTER TABLE assets ADD COLUMN blend_packed_texture_maps INTEGER NOT NULL DEFAULT 0"),
+            ("blend_packed_hdris", "ALTER TABLE assets ADD COLUMN blend_packed_hdris INTEGER NOT NULL DEFAULT 0"),
+            ("blend_external_texture_maps", "ALTER TABLE assets ADD COLUMN blend_external_texture_maps INTEGER NOT NULL DEFAULT 0"),
+            ("blend_external_hdris", "ALTER TABLE assets ADD COLUMN blend_external_hdris INTEGER NOT NULL DEFAULT 0"),
             ("subtype",    "ALTER TABLE assets ADD COLUMN subtype TEXT NOT NULL DEFAULT ''"),
             ("resolution", "ALTER TABLE assets ADD COLUMN resolution TEXT NOT NULL DEFAULT ''"),
             # Aggregated searchable text from a .blend's marked-asset metadata
@@ -294,13 +305,13 @@ def init_db():
             conn.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES('facets_backfilled','1')")
         if not conn.execute(
-                "SELECT 1 FROM settings WHERE key='author_source_repaired_v2'").fetchone():
+                "SELECT 1 FROM settings WHERE key='author_source_repaired_v3'").fetchone():
             try:
                 _repair_auto_source_authors(conn)
             except Exception:
                 pass
             conn.execute(
-                "INSERT OR REPLACE INTO settings(key, value) VALUES('author_source_repaired_v2','1')")
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('author_source_repaired_v3','1')")
         # Sensible default tag palette so new users aren't staring at a blank wall.
         defaults = [
             ("hero", "#E8B04B"), ("wip", "#E87D3E"), ("approved", "#3DBE8B"),
@@ -618,7 +629,7 @@ def source_folder(path, root):
 
 _SOURCE_BUCKET_FOLDERS = {
     "3dassets", "assets", "assetlibrary", "library", "models", "model",
-    "textures", "texture", "materials", "material", "hdri", "hdris",
+    "allmodels", "textures", "texture", "materials", "material", "hdri", "hdris",
 }
 _KNOWN_SOURCE_FOLDERS = {
     "imeshh", "chocofur", "polyhaven", "kitbash3d",
@@ -632,7 +643,7 @@ def _source_token(s):
 def _repair_auto_source_authors(conn):
     roots = [r["path"] for r in conn.execute("SELECT path FROM libraries")]
     roots.sort(key=len, reverse=True)
-    auto_old = {"", "3D_Assets", "Models"}
+    auto_old = {"", "3D_Assets", "Models", "All_Models"}
     rows = conn.execute("SELECT id, path, author FROM assets").fetchall()
     for row in rows:
         author = row["author"] or ""
@@ -703,7 +714,9 @@ def set_assets_author(ids, author):
 
 
 def set_blend_meta(asset_id, text, missing_textures=None,
-                   packed_tex=None, external_tex=None):
+                   packed_tex=None, external_tex=None,
+                   packed_texture_maps=None, packed_hdris=None,
+                   external_texture_maps=None, external_hdris=None):
     """Store aggregated .blend metadata and, when known, texture counts
     (missing, packed/embedded, external/linked)."""
     updates = ["blend_meta=?"]
@@ -717,6 +730,18 @@ def set_blend_meta(asset_id, text, missing_textures=None,
     if external_tex is not None:
         updates.append("blend_external_tex=?")
         params.append(max(0, int(external_tex or 0)))
+    if packed_texture_maps is not None:
+        updates.append("blend_packed_texture_maps=?")
+        params.append(max(0, int(packed_texture_maps or 0)))
+    if packed_hdris is not None:
+        updates.append("blend_packed_hdris=?")
+        params.append(max(0, int(packed_hdris or 0)))
+    if external_texture_maps is not None:
+        updates.append("blend_external_texture_maps=?")
+        params.append(max(0, int(external_texture_maps or 0)))
+    if external_hdris is not None:
+        updates.append("blend_external_hdris=?")
+        params.append(max(0, int(external_hdris or 0)))
     params.append(asset_id)
     with connect() as conn:
         conn.execute(
@@ -955,9 +980,25 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
         # Match the file name, the user's file-level metadata (author/
         # description), OR the aggregated .blend metadata (marked-asset names,
         # tags, author, catalog) — so search reaches all of it.
-        clauses.append(
-            "(a.name LIKE ? OR a.blend_meta LIKE ? OR a.author LIKE ? OR a.description LIKE ?)")
-        where_params += [f"%{search}%"] * 4
+        terms = [t for t in re.split(r"\s+", search.strip()) if t]
+        for term in terms:
+            like = f"%{term}%"
+            clauses.append(
+                "("
+                "a.name LIKE ? OR a.path LIKE ? OR a.ext LIKE ? OR a.kind LIKE ? "
+                "OR a.blend_meta LIKE ? OR a.author LIKE ? OR a.description LIKE ? "
+                "OR a.license LIKE ? OR a.copyright LIKE ? "
+                "OR EXISTS (SELECT 1 FROM asset_tags sat "
+                "           JOIN tags st ON st.id=sat.tag_id "
+                "           WHERE sat.asset_id=a.id AND st.name LIKE ?) "
+                "OR EXISTS (SELECT 1 FROM asset_categories sac "
+                "           JOIN categories scat ON scat.id=sac.category_id "
+                "           WHERE sac.asset_id=a.id AND scat.name LIKE ?) "
+                "OR EXISTS (SELECT 1 FROM collection_assets sca "
+                "           JOIN collections sc ON sc.id=sca.collection_id "
+                "           WHERE sca.asset_id=a.id AND sc.name LIKE ?)"
+                ")")
+            where_params += [like] * 12
     if kind:
         clauses.append("a.kind=?")
         where_params.append(kind)
@@ -1131,6 +1172,14 @@ def kind_counts():
             "SELECT COALESCE(SUM(blend_missing_textures), 0) c FROM assets "
             "WHERE missing=0 AND hidden=0 AND ext='.blend'"
         ).fetchone()["c"]
+        blend_texture_health = conn2.execute(
+            "SELECT "
+            "COALESCE(SUM(blend_packed_texture_maps), 0) packed_texture_maps, "
+            "COALESCE(SUM(blend_packed_hdris), 0) packed_hdris, "
+            "COALESCE(SUM(blend_external_texture_maps), 0) external_texture_maps, "
+            "COALESCE(SUM(blend_external_hdris), 0) external_hdris "
+            "FROM assets WHERE missing=0 AND hidden=0 AND ext='.blend'"
+        ).fetchone()
     return {
         "by_kind": {r["kind"]: r["c"] for r in rows},
         "total": total,
@@ -1139,6 +1188,10 @@ def kind_counts():
         "missing": missing_count,
         "blend_missing_textures": blend_missing_textures,
         "blend_missing_texture_refs": blend_missing_texture_refs,
+        "blend_packed_texture_maps": blend_texture_health["packed_texture_maps"],
+        "blend_packed_hdris": blend_texture_health["packed_hdris"],
+        "blend_external_texture_maps": blend_texture_health["external_texture_maps"],
+        "blend_external_hdris": blend_texture_health["external_hdris"],
     }
 
 
@@ -1437,6 +1490,24 @@ def _folder_contains_all_files(keep_folder, extra_folder):
         if keep.get(rel) != size:
             missing += 1
     return missing == 0, missing
+
+
+def _folder_manifests_match(source_folder, target_folder):
+    source = _folder_manifest(source_folder)
+    target = _folder_manifest(target_folder)
+    if source is None or target is None:
+        return False, {"source_files": 0, "target_files": 0, "missing": 0, "extra": 0, "changed": 0}
+    missing = [rel for rel in source if rel not in target]
+    extra = [rel for rel in target if rel not in source]
+    changed = [rel for rel, size in source.items() if rel in target and target[rel] != size]
+    return not missing and not extra and not changed, {
+        "source_files": len(source),
+        "target_files": len(target),
+        "missing": len(missing),
+        "extra": len(extra),
+        "changed": len(changed),
+        "bytes": sum(source.values()),
+    }
 
 
 def _folder_size(folder, cache=None):
@@ -1995,6 +2066,30 @@ def _pack_parts_for_asset(path):
     leaf = os.path.basename(parent)
     if parent and _looks_self_named_asset_folder(_norm_folder_token(leaf), _norm_folder_token(stem)):
         return parent, os.path.basename(os.path.dirname(parent)), leaf
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        names = []
+    model_exts = {
+        ".blend", ".fbx", ".obj", ".gltf", ".glb", ".stl", ".ply",
+        ".usd", ".usda", ".usdc", ".usdz", ".abc", ".dae", ".3ds",
+    }
+    model_files = [
+        n for n in names
+        if os.path.isfile(os.path.join(parent, n))
+        and os.path.splitext(n)[1].lower() in model_exts
+    ]
+    sidecar_dirs = {
+        "texture", "textures", "map", "maps", "material", "materials",
+        "preview", "previews", "render", "renders",
+    }
+    has_sidecars = any(
+        os.path.isdir(os.path.join(parent, n))
+        and _norm_folder_token(n) in sidecar_dirs
+        for n in names
+    )
+    if has_sidecars or len(model_files) > 1:
+        return parent, os.path.basename(os.path.dirname(parent)), leaf
     return parent, os.path.basename(parent), stem
 
 
@@ -2105,3 +2200,134 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
     summary["target_probe"] = disk["path"]
     items.sort(key=lambda x: (x["status"] != "move", x["category"].lower(), x["subcategory"].lower(), x["author"].lower(), x["pack"].lower()))
     return {"target_root": target_root, "summary": summary, "items": items[:max(1, int(limit or 500))], "total": len(items)}
+
+
+def _update_asset_paths_for_folder(source_folder, target_folder):
+    source_folder = os.path.normpath(source_folder or "")
+    target_folder = os.path.normpath(target_folder or "")
+    if not source_folder or not target_folder:
+        return 0
+    rows = []
+    with connect() as conn:
+        for r in conn.execute(
+            "SELECT id, path FROM assets WHERE path LIKE ? ESCAPE '!'",
+            (_path_like(source_folder),),
+        ).fetchall():
+            rel = os.path.relpath(r["path"], source_folder)
+            new_path = os.path.normpath(os.path.join(target_folder, rel))
+            rows.append((r["id"], r["path"], new_path))
+        updated = 0
+        for asset_id, old_path, new_path in rows:
+            if os.path.normcase(os.path.normpath(old_path)) == os.path.normcase(new_path):
+                continue
+            existing = conn.execute(
+                "SELECT id FROM assets WHERE path=? AND id<>?", (new_path, asset_id)
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute("UPDATE assets SET path=? WHERE id=?", (new_path, asset_id))
+            updated += 1
+    return updated
+
+
+def apply_organise_disk_plan(target_root="D:\\Hangar", limit=25):
+    """Copy planned model-pack folders into the clean layout and verify each copy.
+
+    This deliberately does not delete the old source folders. The index is moved
+    to the verified copy, and a receipt is written so later cleanup can be
+    reviewed pack by pack.
+    """
+    limit = max(1, min(500, int(limit or 25)))
+    plan = organise_disk_plan(target_root, limit=max(limit * 3, limit))
+    copied = skipped = failed = updated_assets = bytes_copied = 0
+    results = []
+    started = time.time()
+
+    for item in plan.get("items", []):
+        if copied >= limit:
+            break
+        source = os.path.normpath(item.get("source") or "")
+        target = os.path.normpath(item.get("target") or "")
+        status = item.get("status") or ""
+        result = {
+            "source": source,
+            "target": target,
+            "pack": item.get("pack") or os.path.basename(source),
+            "status": status,
+        }
+        if status != "move":
+            skipped += 1
+            result["result"] = "skipped"
+            result["reason"] = status
+            results.append(result)
+            continue
+        if not source or not os.path.isdir(source):
+            failed += 1
+            result["result"] = "failed"
+            result["reason"] = "source_missing"
+            results.append(result)
+            continue
+        src_norm = os.path.normcase(os.path.abspath(source))
+        dst_norm = os.path.normcase(os.path.abspath(target))
+        if dst_norm == src_norm or dst_norm.startswith(src_norm + os.sep):
+            failed += 1
+            result["result"] = "failed"
+            result["reason"] = "target_inside_source"
+            results.append(result)
+            continue
+        if os.path.exists(target):
+            skipped += 1
+            result["result"] = "skipped"
+            result["reason"] = "target_exists"
+            results.append(result)
+            continue
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copytree(source, target, copy_function=shutil.copy2)
+            ok, manifest = _folder_manifests_match(source, target)
+            result.update(manifest)
+            if not ok:
+                shutil.rmtree(target, ignore_errors=True)
+                failed += 1
+                result["result"] = "failed"
+                result["reason"] = "verify_failed"
+                results.append(result)
+                continue
+            changed = _update_asset_paths_for_folder(source, target)
+            copied += 1
+            updated_assets += changed
+            bytes_copied += int(manifest.get("bytes") or 0)
+            result["result"] = "copied"
+            result["assets_updated"] = changed
+            results.append(result)
+        except OSError as e:
+            shutil.rmtree(target, ignore_errors=True)
+            failed += 1
+            result["result"] = "failed"
+            result["reason"] = str(e)
+            results.append(result)
+
+    receipt = {
+        "started_at": started,
+        "finished_at": time.time(),
+        "target_root": os.path.normpath(target_root or "D:\\Hangar"),
+        "limit": limit,
+        "copied": copied,
+        "skipped": skipped,
+        "failed": failed,
+        "updated_assets": updated_assets,
+        "bytes_copied": bytes_copied,
+        "results": results,
+    }
+    name = time.strftime("organise-%Y%m%d-%H%M%S.json", time.localtime(receipt["finished_at"]))
+    try:
+        (ORGANISE_RECEIPT_DIR / name).write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        receipt["receipt"] = str(ORGANISE_RECEIPT_DIR / name)
+    except OSError:
+        receipt["receipt"] = ""
+    if copied:
+        try:
+            add_library(receipt["target_root"], Path(receipt["target_root"]).name or "Hangar")
+        except OSError:
+            pass
+    return receipt

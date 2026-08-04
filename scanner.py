@@ -125,12 +125,53 @@ for e in MATERIAL_EXTS:
 
 ALL_EXTS = set(EXT_KIND)
 
-IGNORE_DIRS = {".git", "__pycache__", ".hangar", "node_modules", ".svn"}
+IGNORE_DIRS = {
+    ".git", "__pycache__", ".hangar", "node_modules", ".svn",
+    "$recycle.bin", "system volume information",
+}
+SUPPORT_IMAGE_DIRS = {
+    "render", "renders", "preview", "previews", "thumb", "thumbs",
+    "thumbnail", "thumbnails", "screenshot", "screenshots",
+}
+TEXTURE_CONTAINER_DIRS = {
+    "map", "maps", "texture", "textures", "material", "materials",
+}
 # Texture maps that are part of a model rather than browsable assets in their
 # own right would flood the grid; we still index them but they're filterable.
 
 MAX_STATS_BYTES = 250 * 1024 * 1024  # skip mesh-stat parsing above this size
 UPSERT_BATCH_SIZE = 500
+
+
+def _folder_tokens(path):
+    return {
+        _norm_token(p)
+        for p in os.path.normpath(path).split(os.sep)
+        if p
+    }
+
+
+def _norm_token(value):
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def is_support_image(fname, folder, sibling_files):
+    """Images used as previews/renders are useful beside models, but they are not
+    texture maps and should not clutter the Textures library bucket."""
+    ext = os.path.splitext(fname)[1].lower()
+    if ext not in TEXTURE_EXTS:
+        return False
+    tokens = _folder_tokens(folder)
+    if tokens & SUPPORT_IMAGE_DIRS:
+        return True
+    if tokens & TEXTURE_CONTAINER_DIRS:
+        return False
+    stem = os.path.splitext(fname)[0].lower()
+    for other in sibling_files:
+        other_ext = os.path.splitext(other)[1].lower()
+        if other_ext in MODEL_EXTS and os.path.splitext(other)[0].lower() == stem:
+            return True
+    return False
 
 
 def classify_kind(ext, folder, name_noext):
@@ -177,9 +218,11 @@ def count_files(library_path):
     library_path = str(Path(library_path).expanduser().resolve())
     n = 0
     for root, dirs, files in os.walk(library_path):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+        dirs[:] = [d for d in dirs if d.lower() not in IGNORE_DIRS]
         for fname in files:
             if is_redundant_hdri_blend(fname, files):
+                continue
+            if is_support_image(fname, root, files):
                 continue
             if os.path.splitext(fname)[1].lower() in ALL_EXTS:
                 n += 1
@@ -211,9 +254,11 @@ def scan_library(library_path, on_file=None):
         batch = []
 
     for root, dirs, files in os.walk(library_path):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+        dirs[:] = [d for d in dirs if d.lower() not in IGNORE_DIRS]
         for fname in files:
             if is_redundant_hdri_blend(fname, files):
+                continue
+            if is_support_image(fname, root, files):
                 continue
             ext = os.path.splitext(fname)[1].lower()
             if ext not in ALL_EXTS:

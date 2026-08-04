@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.49"
+__version__ = "0.15.50"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1499,6 +1499,15 @@ def organise_plan():
     return jsonify(store.organise_disk_plan(target, limit))
 
 
+@app.post("/api/organise/apply")
+def organise_apply():
+    data = request.get_json(silent=True) or {}
+    target = (data.get("target") or "D:\\Hangar").strip() or "D:\\Hangar"
+    limit = int(data.get("limit") or 25)
+    result = store.apply_organise_disk_plan(target, limit)
+    return jsonify({"ok": True, **result, "plan": store.organise_disk_plan(target, 500)})
+
+
 @app.delete("/api/assets/missing")
 def purge_missing():
     """Remove all missing (file-not-found) assets from the index permanently."""
@@ -1989,6 +1998,10 @@ def _blend_info(asset):
             len(info.get("missing_textures") or []),
             info.get("packed_textures"),
             info.get("external_textures"),
+            info.get("packed_texture_maps"),
+            info.get("packed_hdris"),
+            info.get("external_texture_maps"),
+            info.get("external_hdris"),
         )
     except Exception:
         pass
@@ -2039,6 +2052,10 @@ def _run_meta_index(generation):
                     len(info.get("missing_textures") or []),
                     info.get("packed_textures"),
                     info.get("external_textures"),
+                    info.get("packed_texture_maps"),
+                    info.get("packed_hdris"),
+                    info.get("external_texture_maps"),
+                    info.get("external_hdris"),
                 )
         except Exception:
             pass
