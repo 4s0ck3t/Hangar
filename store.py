@@ -2050,14 +2050,42 @@ def _clean_path_part(value, fallback="Unknown"):
 _PHYSICAL_CATEGORY_NAMES = {
     "Architecture": "Architectural",
 }
+_PHYSICAL_CATEGORY_PRIORITY = [
+    "Furniture", "Bathrooms", "Kitchens", "Bedrooms", "Living Rooms",
+    "Dining Rooms", "Offices", "Architecture", "Buildings", "Nature",
+    "Vehicles", "Industrial", "Food", "Props", "Characters", "Sci-Fi",
+    "Fantasy", "Weapons",
+]
 
 
 def _preferred_category_for_path(path, categories):
+    present = {c for c in categories if c}
+    for name in _PHYSICAL_CATEGORY_PRIORITY:
+        if name in present:
+            return name
     for name, kws in _ROOM_CATEGORY_RULES:
         if _path_has_keyword(path, kws):
             return name
     preferred = [c for c in categories if c not in {"Architecture", "Props"}]
     return preferred[0] if preferred else (categories[0] if categories else "Uncategorised")
+
+
+def _physical_subcategory(category, subfolder, pack_name):
+    """Prefer the useful browsing folder in the physical layout.
+
+    Chocofur-style paths like Chocofur/Furniture/Beds otherwise become
+    Models/Furniture/Furniture/Chocofur/Beds. The repeated broad folder is not
+    helpful; the pack folder itself is the useful subcategory.
+    """
+    broad = {
+        "furniture", "models", "model", "details", "assets", "3dassets",
+        _source_token(category),
+    }
+    sub = _clean_path_part(subfolder, "")
+    pack = _clean_path_part(pack_name, "")
+    if _source_token(sub) in broad and pack:
+        return pack
+    return sub or pack or "General"
 
 
 def _pack_parts_for_asset(path):
@@ -2124,7 +2152,7 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
             "source": pack_folder,
             "category": cat,
             "author": author,
-            "subcategory": subfolder,
+            "subcategory": _physical_subcategory(cat, subfolder, pack_name),
             "pack": pack_name,
             "formats": set(),
             "count": 0,
@@ -2275,7 +2303,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=25):
         target = os.path.normpath(os.path.join(
             target_root, "Models",
             _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(cat, cat)),
-            _clean_path_part(subfolder),
+            _clean_path_part(_physical_subcategory(cat, subfolder, pack_name)),
             _clean_path_part(author),
             _clean_path_part(pack_name),
         ))

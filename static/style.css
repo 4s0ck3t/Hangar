@@ -779,6 +779,26 @@ button, input, select { font-family: inherit; color: inherit; }
   opacity: .62;
   cursor: wait;
 }
+.organise-result {
+  margin: 10px 22px 2px; padding: 10px 12px;
+  border: 1px solid rgba(74, 183, 123, .42);
+  border-radius: 8px; background: rgba(61, 190, 139, .09);
+}
+.organise-result-title { color: var(--ink); font-weight: 700; font-size: 12.5px; }
+.organise-result-meta { margin-top: 4px; color: var(--mute); font-size: 11.5px; }
+.organise-result-list { margin-top: 8px; display: grid; gap: 5px; }
+.organise-result-path {
+  display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px;
+  align-items: baseline;
+}
+.organise-result-path span {
+  color: var(--ink); font-size: 11px; overflow: hidden;
+  white-space: nowrap; text-overflow: ellipsis;
+}
+.organise-result-path code {
+  color: var(--faint); font-family: var(--mono); font-size: 10.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .organise-rows { display: flex; flex-direction: column; gap: 8px; padding: 10px 22px 14px; }
 .organise-row {
   padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;

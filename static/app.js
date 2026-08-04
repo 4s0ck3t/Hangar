@@ -73,6 +73,7 @@ const state = {
             noAuthor: false, linked: false, author: "", dupKind: "" },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   organiseTargetRoot: localStorage.getItem("hangar_organise_target_root") || "D:\\Hangar",
+  organiseLastResult: null,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
 let appCounts = null;
@@ -1998,11 +1999,30 @@ function renderOrganisePlan(data) {
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${(s.collision || 0) + (s.target_exists || 0)} need review</span>`;
   frag.appendChild(tools);
+  const lastResult = data.organise_result || state.organiseLastResult;
+  if (lastResult) {
+    const copiedRows = (lastResult.results || []).filter((x) => x.result === "copied");
+    const panel = document.createElement("div");
+    panel.className = "organise-result";
+    const targets = copiedRows.slice(0, 5).map((x) =>
+      `<div class="organise-result-path"><span>${esc(x.pack || baseName(x.target))}</span><code>${esc(x.target || "")}</code></div>`
+    ).join("");
+    panel.innerHTML =
+      `<div class="organise-result-title">Last copy: ${lastResult.copied || 0} pack${(lastResult.copied || 0) === 1 ? "" : "s"} copied</div>` +
+      `<div class="organise-result-meta">` +
+      `${lastResult.updated_assets || 0} indexed file${(lastResult.updated_assets || 0) === 1 ? "" : "s"} moved to the new paths` +
+      ` · ${fmtSize(lastResult.bytes_copied || 0)} copied` +
+      ` · ${lastResult.failed || 0} failed` +
+      ` · ${lastResult.skipped || 0} skipped</div>` +
+      (targets ? `<div class="organise-result-list">${targets}</div>` : "");
+    frag.appendChild(panel);
+  }
   const applyTarget = () => {
     const input = tools.querySelector("#organiseTargetRoot");
     const next = (input && input.value.trim()) || "D:\\Hangar";
     state.organiseTargetRoot = next;
     localStorage.setItem("hangar_organise_target_root", next);
+    state.organiseLastResult = null;
     refresh();
   };
   tools.querySelector("#organiseTargetApply").onclick = applyTarget;
@@ -2045,7 +2065,19 @@ function renderOrganisePlan(data) {
     }
     state.organiseTargetRoot = r.target_root || target;
     localStorage.setItem("hangar_organise_target_root", state.organiseTargetRoot);
-    refresh();
+    state.organiseLastResult = r;
+    const copiedSources = new Set((r.results || []).filter((x) => x.result === "copied").map((x) => (x.source || "").toLowerCase()));
+    const nextSummary = { ...(data.summary || {}) };
+    nextSummary.move = Math.max(0, (nextSummary.move || 0) - (r.copied || 0));
+    nextSummary.already_clean = (nextSummary.already_clean || 0) + (r.copied || 0);
+    nextSummary.bytes_to_organise = Math.max(0, (nextSummary.bytes_to_organise || 0) - (r.bytes_copied || 0));
+    nextSummary.copy_stage_bytes = Math.max(0, (nextSummary.copy_stage_bytes || 0) - (r.bytes_copied || 0));
+    renderOrganisePlan({
+      ...data,
+      summary: nextSummary,
+      organise_result: r,
+      items: (data.items || []).filter((item) => !copiedSources.has((item.source || "").toLowerCase())),
+    });
     loadState();
     toast(`Copied ${r.copied || 0} pack${(r.copied || 0) === 1 ? "" : "s"}; ${r.updated_assets || 0} indexed file${(r.updated_assets || 0) === 1 ? "" : "s"} moved to the new path.`, r.failed ? "error" : "success");
   };
