@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.51"
+__version__ = "0.15.52"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1505,7 +1505,7 @@ def organise_apply():
     target = (data.get("target") or "D:\\Hangar").strip() or "D:\\Hangar"
     limit = int(data.get("limit") or 25)
     result = store.apply_organise_disk_plan(target, limit)
-    return jsonify({"ok": True, **result, "plan": store.organise_disk_plan(target, 500)})
+    return jsonify({"ok": True, **result})
 
 
 @app.delete("/api/assets/missing")

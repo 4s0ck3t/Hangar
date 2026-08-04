@@ -2093,7 +2093,7 @@ def _pack_parts_for_asset(path):
     return parent, os.path.basename(parent), stem
 
 
-def organise_disk_plan(target_root="D:\\Hangar", limit=500):
+def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
     """Read-only plan for a clean physical disk layout.
 
     Proposes Models/Category/Author/Subfolder/PackName targets from the current
@@ -2144,7 +2144,7 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
     }
     seen_targets = {}
     for p in packs.values():
-        disk_size = _folder_size(p["source"], size_cache) or p["size"]
+        disk_size = (_folder_size(p["source"], size_cache) or p["size"]) if include_sizes else int(p["size"] or 0)
         target = os.path.join(
             target_root, "Models", _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(p["category"], p["category"])),
             _clean_path_part(p["subcategory"]), _clean_path_part(p["author"]),
@@ -2162,7 +2162,7 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
         seen_targets[dst_norm] = src_norm
         summary["packs"] += 1
         summary[status if status in summary else "collisions"] = summary.get(status if status in summary else "collisions", 0) + 1
-        if status == "move":
+        if status == "move" and include_sizes:
             summary["bytes_to_organise"] += disk_size
             summary["copy_stage_bytes"] += disk_size
         items.append({
@@ -2179,25 +2179,27 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500):
             "status": status,
         })
 
-    saving_folders = set()
-    for group in duplicate_pack_groups():
-        keep = next((r for r in group["roots"] if r.get("preferred")), None)
-        if not keep:
-            continue
-        for root in group["roots"]:
-            if root.get("preferred"):
+    if include_sizes:
+        saving_folders = set()
+        for group in duplicate_pack_groups():
+            keep = next((r for r in group["roots"] if r.get("preferred")), None)
+            if not keep:
                 continue
-            ok, _missing = _folder_contains_all_files(keep["folder"], root["folder"])
-            folder_key = os.path.normcase(os.path.normpath(root["folder"]))
-            if ok and folder_key not in saving_folders:
-                saving_folders.add(folder_key)
-                summary["potential_duplicate_savings"] += _folder_size(root["folder"], size_cache)
+            for root in group["roots"]:
+                if root.get("preferred"):
+                    continue
+                ok, _missing = _folder_contains_all_files(keep["folder"], root["folder"])
+                folder_key = os.path.normcase(os.path.normpath(root["folder"]))
+                if ok and folder_key not in saving_folders:
+                    saving_folders.add(folder_key)
+                    summary["potential_duplicate_savings"] += _folder_size(root["folder"], size_cache)
 
-    disk = _disk_usage_for_path(target_root)
-    summary["target_total"] = disk["total"]
-    summary["target_used"] = disk["used"]
-    summary["target_free"] = disk["free"]
-    summary["target_probe"] = disk["path"]
+    if include_sizes:
+        disk = _disk_usage_for_path(target_root)
+        summary["target_total"] = disk["total"]
+        summary["target_used"] = disk["used"]
+        summary["target_free"] = disk["free"]
+        summary["target_probe"] = disk["path"]
     items.sort(key=lambda x: (x["status"] != "move", x["category"].lower(), x["subcategory"].lower(), x["author"].lower(), x["pack"].lower()))
     return {"target_root": target_root, "summary": summary, "items": items[:max(1, int(limit or 500))], "total": len(items)}
 
@@ -2238,21 +2240,58 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=25):
     reviewed pack by pack.
     """
     limit = max(1, min(500, int(limit or 25)))
-    plan = organise_disk_plan(target_root, limit=max(limit * 3, limit))
     copied = skipped = failed = updated_assets = bytes_copied = 0
     results = []
     started = time.time()
+    target_root = os.path.normpath(target_root or "D:\\Hangar")
+    seen_sources = set()
+    seen_targets = set()
 
-    for item in plan.get("items", []):
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT a.id, a.path, a.name, a.ext, a.author, a.size, "
+            "GROUP_CONCAT(cat.name, '|') categories "
+            "FROM assets a "
+            "LEFT JOIN asset_categories ac ON ac.asset_id=a.id "
+            "LEFT JOIN categories cat ON cat.id=ac.category_id "
+            "WHERE a.missing=0 AND a.hidden=0 AND a.kind='model' "
+            "GROUP BY a.id ORDER BY a.path COLLATE NOCASE"
+        ).fetchall()
+
+    for r in rows:
         if copied >= limit:
             break
-        source = os.path.normpath(item.get("source") or "")
-        target = os.path.normpath(item.get("target") or "")
-        status = item.get("status") or ""
+        pack_folder, subfolder, pack_name = _pack_parts_for_asset(r["path"])
+        if not pack_folder:
+            continue
+        source = os.path.normpath(pack_folder)
+        src_key = os.path.normcase(source)
+        if src_key in seen_sources:
+            continue
+        seen_sources.add(src_key)
+        cats = [c for c in (r["categories"] or "").split("|") if c]
+        cat = _preferred_category_for_path(r["path"], cats)
+        author = r["author"] or source_folder(r["path"], os.path.splitdrive(r["path"])[0] + os.sep) or "Unknown"
+        target = os.path.normpath(os.path.join(
+            target_root, "Models",
+            _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(cat, cat)),
+            _clean_path_part(subfolder),
+            _clean_path_part(author),
+            _clean_path_part(pack_name),
+        ))
+        dst_key = os.path.normcase(target)
+        status = "move"
+        if src_key == dst_key or src_key.startswith(os.path.normcase(target_root) + os.sep):
+            status = "already_clean"
+        elif dst_key in seen_targets:
+            status = "collision"
+        elif os.path.exists(target):
+            status = "target_exists"
+        seen_targets.add(dst_key)
         result = {
             "source": source,
             "target": target,
-            "pack": item.get("pack") or os.path.basename(source),
+            "pack": pack_name or os.path.basename(source),
             "status": status,
         }
         if status != "move":

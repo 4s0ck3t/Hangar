@@ -2045,7 +2045,7 @@ function renderOrganisePlan(data) {
     }
     state.organiseTargetRoot = r.target_root || target;
     localStorage.setItem("hangar_organise_target_root", state.organiseTargetRoot);
-    renderOrganisePlan(r.plan || data);
+    refresh();
     loadState();
     toast(`Copied ${r.copied || 0} pack${(r.copied || 0) === 1 ? "" : "s"}; ${r.updated_assets || 0} indexed file${(r.updated_assets || 0) === 1 ? "" : "s"} moved to the new path.`, r.failed ? "error" : "success");
   };
