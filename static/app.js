@@ -2018,6 +2018,12 @@ function renderDuplicatePacks(groups, hiddenCount) {
 let _organisePoll = null;
 let _organiseCleanupPoll = null;
 let _organisePlanData = null;
+let _organiseLoadingTimer = null;
+
+function stopOrganiseLoadingTimer() {
+  if (_organiseLoadingTimer) clearInterval(_organiseLoadingTimer);
+  _organiseLoadingTimer = null;
+}
 
 function organiseTaskSpec(st) {
   st = st || {};
@@ -2149,6 +2155,7 @@ function startOrganisePolling(plan) {
 }
 
 function renderOrganiseLoading(target) {
+  stopOrganiseLoadingTimer();
   const grid = $("#grid"); const empty = $("#emptyState");
   _vAssets = []; _vRange = { start: -1, end: -1 };
   _currentAssets = [];
@@ -2162,15 +2169,23 @@ function renderOrganiseLoading(target) {
   if (texBar) texBar.classList.add("hidden");
   const panel = document.createElement("div");
   panel.className = "organise-result organise-running";
+  const started = Date.now();
   panel.innerHTML =
     `<div class="organise-result-title">Planning clean library</div>` +
-    `<div class="organise-result-meta">Checking folders for ${esc(target || "D:\\Hangar")}...</div>` +
-    `<div class="organise-progress-bar"><span style="width:18%"></span></div>`;
+    `<div class="organise-result-meta"><span id="organisePlanningElapsed">Checking folders for ${esc(target || "D:\\Hangar")}... 0s</span></div>` +
+    `<div class="organise-progress-bar organise-indeterminate"><span></span></div>`;
   grid.replaceChildren(panel);
   grid.scrollTop = 0;
+  _organiseLoadingTimer = setInterval(() => {
+    const el = $("#organisePlanningElapsed");
+    if (!el) { stopOrganiseLoadingTimer(); return; }
+    const seconds = Math.floor((Date.now() - started) / 1000);
+    el.textContent = `Checking folders for ${target || "D:\\Hangar"}... ${seconds}s`;
+  }, 1000);
 }
 
 function renderOrganiseLoadError(err) {
+  stopOrganiseLoadingTimer();
   const grid = $("#grid"); const empty = $("#emptyState");
   _vAssets = []; _vRange = { start: -1, end: -1 };
   _currentAssets = [];
@@ -2190,6 +2205,7 @@ function renderOrganiseLoadError(err) {
 }
 
 function renderOrganisePlan(data) {
+  stopOrganiseLoadingTimer();
   const grid = $("#grid"); const empty = $("#emptyState");
   _vAssets = []; _vRange = { start: -1, end: -1 };
   _currentAssets = [];

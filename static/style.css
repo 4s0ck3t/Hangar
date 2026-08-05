@@ -836,6 +836,14 @@ button, input, select { font-family: inherit; color: inherit; }
   display: block; height: 100%;
   background: linear-gradient(90deg, var(--select), #3dbe8b);
 }
+.organise-progress-bar.organise-indeterminate span {
+  width: 34%;
+  animation: organiseSweep 1.25s ease-in-out infinite;
+}
+@keyframes organiseSweep {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(310%); }
+}
 .organise-rows { display: flex; flex-direction: column; gap: 8px; padding: 10px 22px 14px; }
 .organise-row {
   padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;

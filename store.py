@@ -10,6 +10,7 @@ import json
 import shutil
 import sqlite3
 import time
+from functools import lru_cache
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("HANGAR_HOME", Path.home() / ".hangar"))
@@ -2097,12 +2098,8 @@ def _physical_subcategory(category, subfolder, pack_name):
     return sub or pack or "General"
 
 
-def _pack_parts_for_asset(path):
-    parent = os.path.dirname(path or "")
-    stem = os.path.splitext(os.path.basename(path or ""))[0]
-    leaf = os.path.basename(parent)
-    if parent and _looks_self_named_asset_folder(_norm_folder_token(leaf), _norm_folder_token(stem)):
-        return parent, os.path.basename(os.path.dirname(parent)), leaf
+@lru_cache(maxsize=20000)
+def _pack_parent_info(parent):
     try:
         names = os.listdir(parent)
     except OSError:
@@ -2125,7 +2122,17 @@ def _pack_parts_for_asset(path):
         and _norm_folder_token(n) in sidecar_dirs
         for n in names
     )
-    if has_sidecars or len(model_files) > 1:
+    return len(model_files), has_sidecars
+
+
+def _pack_parts_for_asset(path):
+    parent = os.path.dirname(path or "")
+    stem = os.path.splitext(os.path.basename(path or ""))[0]
+    leaf = os.path.basename(parent)
+    if parent and _looks_self_named_asset_folder(_norm_folder_token(leaf), _norm_folder_token(stem)):
+        return parent, os.path.basename(os.path.dirname(parent)), leaf
+    model_count, has_sidecars = _pack_parent_info(parent)
+    if has_sidecars or model_count > 1:
         return parent, os.path.basename(os.path.dirname(parent)), leaf
     return parent, os.path.basename(parent), stem
 
@@ -2194,7 +2201,7 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
             status = "already_clean"
         elif dst_norm in seen_targets and seen_targets[dst_norm] != src_norm:
             status = "collision"
-        elif os.path.exists(target):
+        elif include_sizes and os.path.exists(target):
             status = "target_exists"
         seen_targets[dst_norm] = src_norm
         summary["packs"] += 1
