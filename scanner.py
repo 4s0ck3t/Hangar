@@ -138,6 +138,7 @@ TEXTURE_CONTAINER_DIRS = {
 }
 # Texture maps that are part of a model rather than browsable assets in their
 # own right would flood the grid; we still index them but they're filterable.
+MODEL_ROOT_DIRS = {"model", "models", "allmodels"}
 
 MAX_STATS_BYTES = 250 * 1024 * 1024  # skip mesh-stat parsing above this size
 UPSERT_BATCH_SIZE = 500
@@ -153,6 +154,15 @@ def _folder_tokens(path):
 
 def _norm_token(value):
     return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def is_model_pack_texture_sidecar(path):
+    """True for image maps living inside a model pack's texture/map folder."""
+    parts = [_norm_token(p) for p in os.path.normpath(path).split(os.sep) if p]
+    for i, token in enumerate(parts[:-1]):
+        if token in TEXTURE_CONTAINER_DIRS and any(p in MODEL_ROOT_DIRS for p in parts[:i]):
+            return True
+    return False
 
 
 def is_support_image(fname, folder, sibling_files):

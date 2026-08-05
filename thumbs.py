@@ -64,6 +64,35 @@ def _thumb_meta_path(thumb_path):
     return p.with_name(p.stem + ".meta.json")
 
 
+def copy_cached_thumb(src_asset, dst_asset):
+    """Carry a cached preview from one asset path key to another.
+
+    Organise Disk copies verified packs with shutil.copy2, so mtime is preserved.
+    The thumbnail cache key includes the path, though, which means a moved asset
+    would otherwise look uncached until Hangar warms it again.
+    """
+    try:
+        src = _thumb_path(src_asset)
+        dst = _thumb_path(dst_asset)
+        if not src.exists():
+            return False
+        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        if not dst.exists():
+            import shutil
+            shutil.copy2(src, dst)
+        src_meta = _thumb_meta_path(src)
+        if src_meta.exists():
+            dst_meta = _thumb_meta_path(dst)
+            if not dst_meta.exists():
+                import shutil
+                shutil.copy2(src_meta, dst_meta)
+        return True
+    except Exception:
+        log.exception("copy_cached_thumb failed for %s -> %s",
+                      src_asset.get("path", "?"), dst_asset.get("path", "?"))
+        return False
+
+
 def _write_thumb_source(thumb_path, source, engine=None):
     """Record how a cached thumbnail was produced (embedded vs Hangar render, and
     the engine for a render) in a sidecar JSON, so the UI can show it. Best-effort."""

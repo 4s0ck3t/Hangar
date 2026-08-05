@@ -829,7 +829,16 @@ def iter_thumb_targets():
             "WHEN 'material' THEN 2 WHEN 'model' THEN 3 ELSE 4 END, "
             "CASE ext WHEN '.hdr' THEN 0 WHEN '.exr' THEN 2 ELSE 1 END, id"
         ).fetchall()
-    return [dict(r) for r in rows]
+    targets = [dict(r) for r in rows]
+    try:
+        import scanner  # lazy: avoids an import cycle at module load
+        targets = [
+            a for a in targets
+            if not (a["kind"] == "texture" and scanner.is_model_pack_texture_sidecar(a["path"]))
+        ]
+    except Exception:
+        pass
+    return targets
 
 
 def iter_dup_hash_targets():
@@ -2232,7 +2241,7 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
     return {"target_root": target_root, "summary": summary, "items": items[:max(1, int(limit or 500))], "total": len(items)}
 
 
-def _update_asset_paths_for_folder(source_folder, target_folder):
+def _update_asset_paths_for_folder(source_folder, target_folder, on_path_moved=None):
     source_folder = os.path.normpath(source_folder or "")
     target_folder = os.path.normpath(target_folder or "")
     if not source_folder or not target_folder:
@@ -2240,14 +2249,14 @@ def _update_asset_paths_for_folder(source_folder, target_folder):
     rows = []
     with connect() as conn:
         for r in conn.execute(
-            "SELECT id, path FROM assets WHERE path LIKE ? ESCAPE '!'",
+            "SELECT id, path, kind, mtime FROM assets WHERE path LIKE ? ESCAPE '!'",
             (_path_like(source_folder),),
         ).fetchall():
             rel = os.path.relpath(r["path"], source_folder)
             new_path = os.path.normpath(os.path.join(target_folder, rel))
-            rows.append((r["id"], r["path"], new_path))
+            rows.append((r["id"], r["path"], new_path, r["kind"], r["mtime"]))
         updated = 0
-        for asset_id, old_path, new_path in rows:
+        for asset_id, old_path, new_path, kind, mtime in rows:
             if os.path.normcase(os.path.normpath(old_path)) == os.path.normcase(new_path):
                 continue
             existing = conn.execute(
@@ -2255,12 +2264,20 @@ def _update_asset_paths_for_folder(source_folder, target_folder):
             ).fetchone()
             if existing:
                 continue
+            if on_path_moved:
+                try:
+                    on_path_moved(
+                        {"id": asset_id, "path": old_path, "kind": kind, "mtime": mtime},
+                        {"id": asset_id, "path": new_path, "kind": kind, "mtime": mtime},
+                    )
+                except Exception:
+                    pass
             conn.execute("UPDATE assets SET path=? WHERE id=?", (new_path, asset_id))
             updated += 1
     return updated
 
 
-def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None):
+def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None, on_path_moved=None):
     """Copy planned model-pack folders into the clean layout and verify each copy.
 
     This deliberately does not delete the old source folders. The index is moved
@@ -2439,7 +2456,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None)
                         "bytes_copied": bytes_copied,
                     })
                 continue
-            changed = _update_asset_paths_for_folder(source, target)
+            changed = _update_asset_paths_for_folder(source, target, on_path_moved=on_path_moved)
             copied += 1
             updated_assets += changed
             bytes_copied += int(manifest.get("bytes") or 0)

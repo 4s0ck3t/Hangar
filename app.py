@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.58"
+__version__ = "0.15.59"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1518,7 +1518,10 @@ def _run_organise_apply(target, limit):
         _organise_update(**(update or {}))
 
     try:
-        result = store.apply_organise_disk_plan(target, limit, progress=progress)
+        result = store.apply_organise_disk_plan(
+            target, limit, progress=progress,
+            on_path_moved=thumbs.copy_cached_thumb,
+        )
         _organise_update(
             running=False, done=True, phase="done", error=None, result=result,
             copied=result.get("copied", 0), skipped=result.get("skipped", 0),
