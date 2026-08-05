@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.70"
+__version__ = "0.15.71"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1504,7 +1504,7 @@ CLEANUP = {
     "running": False, "done": False, "error": None, "result": None,
     "target": None, "limit": 0, "phase": None, "started_at": None,
     "updated_at": None, "deleted": 0, "skipped": 0, "failed": 0,
-    "bytes_deleted": 0, "index_deleted": 0, "current_pack": "",
+    "attempted": 0, "bytes_deleted": 0, "index_deleted": 0, "current_pack": "",
     "current_source": "",
 }
 CLEANUP_LOCK = threading.Lock()
@@ -1563,6 +1563,7 @@ def _run_organise_cleanup(target, limit, sources=None):
             running=False, done=True, phase="done", error=None, result=result,
             deleted=result.get("deleted", 0), skipped=result.get("skipped", 0),
             failed=result.get("failed", 0),
+            attempted=result.get("attempted", 0),
             bytes_deleted=result.get("bytes_deleted", 0),
             index_deleted=result.get("index_deleted", 0),
         )
@@ -1624,7 +1625,7 @@ def organise_cleanup_apply():
             "target": target, "limit": limit, "phase": "starting",
             "started_at": time.time(), "updated_at": time.time(),
             "deleted": 0, "skipped": 0, "failed": 0, "bytes_deleted": 0,
-            "index_deleted": 0, "checked": 0,
+            "index_deleted": 0, "attempted": 0, "checked": 0,
             "current_pack": "", "current_source": "",
         })
     threading.Thread(target=_run_organise_cleanup,

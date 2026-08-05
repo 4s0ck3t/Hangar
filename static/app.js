@@ -76,6 +76,7 @@ const state = {
   organiseBatchSize: parseInt(localStorage.getItem("hangar_organise_batch_size") || "100", 10) || 100,
   organiseSpaceDetails: localStorage.getItem("hangar_organise_space_details") === "1",
   organiseLastResult: null,
+  organiseLastCleanupResult: null,
   organiseProgress: null,
   organiseCleanupProgress: null,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
@@ -2044,11 +2045,12 @@ function organiseTaskSpec(st) {
 function organiseCleanupTaskSpec(st) {
   st = st || {};
   const deleted = st.deleted || 0;
+  const attempted = st.attempted || deleted;
   const checked = st.checked || 0;
   const limit = st.limit || 0;
   const elapsed = st.started_at ? (Date.now() / 1000 - st.started_at) : 0;
   const rate = elapsed > 2 && deleted ? deleted / elapsed : 0;
-  const eta = rate && limit > deleted ? `ETA ${fmtDuration((limit - deleted) / rate)}` : "ETA estimating";
+  const eta = rate && limit > attempted ? `ETA ${fmtDuration((limit - attempted) / rate)}` : "ETA estimating";
   if (st.phase === "finalising") {
     return {
       label: "Finalising cleanup",
@@ -2069,7 +2071,7 @@ function organiseCleanupTaskSpec(st) {
   }
   return {
     label: "Cleaning old folders",
-    done: deleted,
+    done: attempted,
     total: limit || null,
     detail: `${deleted}/${limit || "?"} folders · ${fmtSize(st.bytes_deleted || 0)} · ${eta}`,
     file: st.current_source || "",
@@ -2114,9 +2116,15 @@ function startOrganiseCleanupPolling(plan) {
       return;
     }
     if (st.result) {
+      state.organiseLastCleanupResult = st.result;
       await refresh();
-      loadState();
-      toast(`Deleted ${st.result.deleted || 0} old folder${(st.result.deleted || 0) === 1 ? "" : "s"} and reclaimed ${fmtSize(st.result.bytes_deleted || 0)}. Removed ${st.result.index_deleted || 0} stale indexed row${(st.result.index_deleted || 0) === 1 ? "" : "s"}.`, st.result.failed ? "error" : "success");
+      const failedRows = (st.result.results || []).filter((x) => x.result === "failed");
+      const skippedRows = (st.result.results || []).filter((x) => x.result === "skipped");
+      const problem = failedRows[0] || skippedRows[0];
+      const msg = problem
+        ? `Deleted ${st.result.deleted || 0} old folder${(st.result.deleted || 0) === 1 ? "" : "s"}. ${problem.pack || baseName(problem.source)} did not delete: ${problem.reason || problem.status || "unknown reason"}.`
+        : `Deleted ${st.result.deleted || 0} old folder${(st.result.deleted || 0) === 1 ? "" : "s"} and reclaimed ${fmtSize(st.result.bytes_deleted || 0)}. Removed ${st.result.index_deleted || 0} stale indexed row${(st.result.index_deleted || 0) === 1 ? "" : "s"}.`;
+      toast(msg, (st.result.failed || st.result.skipped) ? "error" : "success");
       return;
     }
     renderOrganisePlan(_organisePlanData || {});
@@ -2272,6 +2280,26 @@ function renderOrganisePlan(data) {
       (targets ? `<div class="organise-result-list">${targets}</div>` : "");
     frag.appendChild(panel);
   }
+  const lastCleanup = data.cleanup_result || state.organiseLastCleanupResult;
+  if (lastCleanup) {
+    const failedRows = (lastCleanup.results || []).filter((x) => x.result === "failed");
+    const skippedRows = (lastCleanup.results || []).filter((x) => x.result === "skipped");
+    const problemRows = [...failedRows, ...skippedRows].slice(0, 6);
+    const problems = problemRows.map((x) =>
+      `<div class="organise-result-path"><span>${esc(x.pack || baseName(x.source))}</span><code>${esc(x.reason || x.status || x.source || "")}</code></div>`
+    ).join("");
+    const panel = document.createElement("div");
+    panel.className = `organise-result organise-cleanup${(lastCleanup.failed || lastCleanup.skipped) ? " organise-warning" : ""}`;
+    panel.innerHTML =
+      `<div class="organise-result-title">Last cleanup: ${lastCleanup.deleted || 0} old folder${(lastCleanup.deleted || 0) === 1 ? "" : "s"} deleted</div>` +
+      `<div class="organise-result-meta">` +
+      `${fmtSize(lastCleanup.bytes_deleted || 0)} reclaimed` +
+      ` Â· ${lastCleanup.index_deleted || 0} stale indexed row${(lastCleanup.index_deleted || 0) === 1 ? "" : "s"} removed` +
+      ` Â· ${lastCleanup.failed || 0} failed` +
+      ` Â· ${lastCleanup.skipped || 0} skipped</div>` +
+      (problems ? `<div class="organise-result-list">${problems}</div>` : "");
+    frag.appendChild(panel);
+  }
   const progress = state.organiseProgress;
   if (progress && progress.running) {
     const elapsed = progress.started_at ? (Date.now() / 1000 - progress.started_at) : 0;
@@ -2329,13 +2357,14 @@ function renderOrganisePlan(data) {
   if (cleanupProgress && cleanupProgress.running) {
     const elapsed = cleanupProgress.started_at ? (Date.now() / 1000 - cleanupProgress.started_at) : 0;
     const deleted = cleanupProgress.deleted || 0;
+    const attempted = cleanupProgress.attempted || deleted;
     const checked = cleanupProgress.checked || 0;
     const limit = cleanupProgress.limit || 0;
     const rate = elapsed > 2 && deleted ? deleted / elapsed : 0;
-    const eta = rate && limit > deleted ? fmtDuration((limit - deleted) / rate) : "estimating";
+    const eta = rate && limit > attempted ? fmtDuration((limit - attempted) / rate) : "estimating";
     const isChecking = cleanupProgress.phase === "checking";
     const isFinalising = cleanupProgress.phase === "finalising";
-    const done = isChecking ? checked : deleted;
+    const done = isChecking ? checked : attempted;
     const pct = limit ? Math.max(0, Math.min(100, Math.round(done / limit * 100))) : 0;
     const panel = document.createElement("div");
     panel.className = "organise-result organise-cleanup organise-running";
@@ -2483,6 +2512,7 @@ function renderOrganisePlan(data) {
     if (!confirm(`Delete ${n} old verified source folder${n === 1 ? "" : "s"}?\n\nHangar will re-check each folder first. It only deletes an old folder when the clean copy still contains every file with the same path and size.\n\nAny stale indexed rows from those old folders will be removed too.\n\nExpected space reclaimed: ${fmtSize(cleanupSummary.bytes_ready || 0)}\n\nThis deletes files from disk.`)) return;
     cleanupBtn.disabled = true;
     cleanupBtn.textContent = "Deleting...";
+    state.organiseLastCleanupResult = null;
     let r;
     try {
       r = await post("organise/cleanup-apply", { target, limit: batch });
@@ -2498,7 +2528,7 @@ function renderOrganisePlan(data) {
       cleanupBtn.textContent = "Delete old verified folders";
       return;
     }
-    state.organiseCleanupProgress = (r && r.status) || { running: true, limit: batch, deleted: 0, skipped: 0, failed: 0, bytes_deleted: 0, index_deleted: 0 };
+    state.organiseCleanupProgress = (r && r.status) || { running: true, limit: batch, attempted: 0, deleted: 0, skipped: 0, failed: 0, bytes_deleted: 0, index_deleted: 0 };
     renderOrganisePlan(data);
     Tasks.set("organise-cleanup", organiseCleanupTaskSpec(state.organiseCleanupProgress));
     startOrganiseCleanupPolling(data);

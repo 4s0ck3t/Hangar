@@ -9,6 +9,7 @@ import re
 import json
 import shutil
 import sqlite3
+import stat
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -2780,6 +2781,17 @@ def _prune_empty_parents(start_folder, stop_roots):
     return removed
 
 
+def _rmtree_allow_readonly(folder):
+    def onerror(func, path, exc_info):
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        except OSError:
+            raise exc_info[1]
+
+    shutil.rmtree(folder, onerror=onerror)
+
+
 def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, progress=None):
     """Delete verified old Organise source folders.
 
@@ -2795,12 +2807,13 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
     roots = [r["path"] for r in list_libraries()]
     target_root = os.path.normpath(target_root or "D:\\Hangar")
     ready_total = sum(1 for i in plan["items"] if i["status"] == "ready")
-    deleted = failed = skipped = bytes_deleted = index_deleted = 0
+    attempted = deleted = failed = skipped = bytes_deleted = index_deleted = 0
     results = []
     if progress:
         progress({
             "phase": "deleting",
             "limit": min(limit, ready_total),
+            "attempted": attempted,
             "deleted": deleted,
             "failed": failed,
             "skipped": skipped,
@@ -2810,11 +2823,12 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
             "current_source": "",
         })
     for item in plan["items"]:
-        if deleted >= limit:
+        if attempted >= limit:
             break
         source_key = os.path.normcase(os.path.normpath(item["source"]))
         if wanted and source_key not in wanted:
             continue
+        attempted += 1
         result = {
             "source": item["source"],
             "target": item["target"],
@@ -2829,6 +2843,7 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
                 "limit": min(limit, ready_total),
                 "current_pack": result["pack"],
                 "current_source": item["source"],
+                "attempted": attempted,
                 "deleted": deleted,
                 "failed": failed,
                 "skipped": skipped,
@@ -2842,7 +2857,7 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
             results.append(result)
             continue
         try:
-            shutil.rmtree(item["source"])
+            _rmtree_allow_readonly(item["source"])
             pruned = _prune_empty_parents(
                 os.path.dirname(item["source"]),
                 [target_root, *roots],
@@ -2866,6 +2881,7 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
                 "limit": min(limit, ready_total),
                 "current_pack": result["pack"],
                 "current_source": item["source"],
+                "attempted": attempted,
                 "deleted": deleted,
                 "failed": failed,
                 "skipped": skipped,
@@ -2878,6 +2894,7 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
             "limit": min(limit, ready_total),
             "current_pack": "",
             "current_source": "",
+            "attempted": attempted,
             "deleted": deleted,
             "failed": failed,
             "skipped": skipped,
@@ -2888,6 +2905,7 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
     return {
         "ok": True,
         "target_root": target_root,
+        "attempted": attempted,
         "deleted": deleted,
         "failed": failed,
         "skipped": skipped,
