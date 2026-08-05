@@ -2571,7 +2571,7 @@ def _delete_index_rows_under(folder):
         ).rowcount
 
 
-def organise_cleanup_plan(target_root="D:\\Hangar", limit=500):
+def organise_cleanup_plan(target_root="D:\\Hangar", limit=500, progress=None):
     """Old source folders that can be removed after Organise copied them.
 
     A folder is "ready" only when the clean target still contains every file
@@ -2584,9 +2584,29 @@ def organise_cleanup_plan(target_root="D:\\Hangar", limit=500):
     seen = {}
     size_cache = {}
     out = []
-    for row in _organise_receipt_rows():
+    receipt_rows = _organise_receipt_rows()
+    total_rows = len(receipt_rows)
+    checked = 0
+    if progress:
+        progress({
+            "phase": "checking",
+            "limit": total_rows,
+            "checked": 0,
+            "current_pack": "",
+            "current_source": "",
+        })
+    for row in receipt_rows:
+        checked += 1
         source = row["source"]
         target = row["target"]
+        if progress and (checked == 1 or checked == total_rows or checked % 10 == 0):
+            progress({
+                "phase": "checking",
+                "limit": total_rows,
+                "checked": checked,
+                "current_pack": row.get("pack") or os.path.basename(source),
+                "current_source": source,
+            })
         source_key = os.path.normcase(os.path.normpath(source))
         if source_key in seen:
             continue
@@ -2677,7 +2697,7 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
         os.path.normcase(os.path.normpath(s))
         for s in (sources or []) if s
     }
-    plan = organise_cleanup_plan(target_root, limit=2000)
+    plan = organise_cleanup_plan(target_root, limit=2000, progress=progress)
     roots = [r["path"] for r in list_libraries()]
     target_root = os.path.normpath(target_root or "D:\\Hangar")
     ready_total = sum(1 for i in plan["items"] if i["status"] == "ready")
@@ -2758,6 +2778,19 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
                 "bytes_deleted": bytes_deleted,
                 "index_deleted": index_deleted,
             })
+    if progress:
+        progress({
+            "phase": "finalising",
+            "limit": min(limit, ready_total),
+            "current_pack": "",
+            "current_source": "",
+            "deleted": deleted,
+            "failed": failed,
+            "skipped": skipped,
+            "bytes_deleted": bytes_deleted,
+            "index_deleted": index_deleted,
+        })
+    remaining = organise_cleanup_plan(target_root, limit=500)
     return {
         "ok": True,
         "target_root": target_root,
@@ -2767,5 +2800,5 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
         "bytes_deleted": bytes_deleted,
         "index_deleted": index_deleted,
         "results": results,
-        "remaining": organise_cleanup_plan(target_root, limit=500)["summary"],
+        "remaining": remaining["summary"],
     }

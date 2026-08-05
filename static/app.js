@@ -2002,10 +2002,29 @@ function organiseTaskSpec(st) {
 function organiseCleanupTaskSpec(st) {
   st = st || {};
   const deleted = st.deleted || 0;
+  const checked = st.checked || 0;
   const limit = st.limit || 0;
   const elapsed = st.started_at ? (Date.now() / 1000 - st.started_at) : 0;
   const rate = elapsed > 2 && deleted ? deleted / elapsed : 0;
   const eta = rate && limit > deleted ? `ETA ${fmtDuration((limit - deleted) / rate)}` : "ETA estimating";
+  if (st.phase === "finalising") {
+    return {
+      label: "Finalising cleanup",
+      done: deleted,
+      total: limit || null,
+      detail: `${deleted}/${limit || "?"} folders deleted`,
+      file: "",
+    };
+  }
+  if (st.phase === "checking") {
+    return {
+      label: "Checking old folders",
+      done: checked,
+      total: limit || null,
+      detail: `${checked}/${limit || "?"} folders checked`,
+      file: st.current_source || "",
+    };
+  }
   return {
     label: "Cleaning old folders",
     done: deleted,
@@ -2056,7 +2075,9 @@ function startOrganiseCleanupPolling(plan) {
       await refresh();
       loadState();
       toast(`Deleted ${st.result.deleted || 0} old folder${(st.result.deleted || 0) === 1 ? "" : "s"} and reclaimed ${fmtSize(st.result.bytes_deleted || 0)}. Removed ${st.result.index_deleted || 0} stale indexed row${(st.result.index_deleted || 0) === 1 ? "" : "s"}.`, st.result.failed ? "error" : "success");
+      return;
     }
+    renderOrganisePlan(_organisePlanData || {});
   }, 1000);
 }
 
@@ -2199,14 +2220,19 @@ function renderOrganisePlan(data) {
   if (cleanupProgress && cleanupProgress.running) {
     const elapsed = cleanupProgress.started_at ? (Date.now() / 1000 - cleanupProgress.started_at) : 0;
     const deleted = cleanupProgress.deleted || 0;
+    const checked = cleanupProgress.checked || 0;
     const limit = cleanupProgress.limit || 0;
     const rate = elapsed > 2 && deleted ? deleted / elapsed : 0;
     const eta = rate && limit > deleted ? fmtDuration((limit - deleted) / rate) : "estimating";
-    const pct = limit ? Math.max(0, Math.min(100, Math.round(deleted / limit * 100))) : 0;
+    const isChecking = cleanupProgress.phase === "checking";
+    const isFinalising = cleanupProgress.phase === "finalising";
+    const done = isChecking ? checked : deleted;
+    const pct = limit ? Math.max(0, Math.min(100, Math.round(done / limit * 100))) : 0;
     const panel = document.createElement("div");
     panel.className = "organise-result organise-cleanup organise-running";
+    const title = isChecking ? "Checking old folders" : isFinalising ? "Finalising cleanup" : "Deleting old verified folders";
     panel.innerHTML =
-      `<div class="organise-result-title">Deleting old verified folders: ${deleted}/${limit || "?"}</div>` +
+      `<div class="organise-result-title">${title}: ${done}/${limit || "?"}</div>` +
       `<div class="organise-result-meta">` +
       `${fmtSize(cleanupProgress.bytes_deleted || 0)} reclaimed` +
       ` · ${cleanupProgress.index_deleted || 0} stale indexed rows removed` +

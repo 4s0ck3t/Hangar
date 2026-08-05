@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.64"
+__version__ = "0.15.65"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1624,7 +1624,8 @@ def organise_cleanup_apply():
             "target": target, "limit": limit, "phase": "starting",
             "started_at": time.time(), "updated_at": time.time(),
             "deleted": 0, "skipped": 0, "failed": 0, "bytes_deleted": 0,
-            "index_deleted": 0, "current_pack": "", "current_source": "",
+            "index_deleted": 0, "checked": 0,
+            "current_pack": "", "current_source": "",
         })
     threading.Thread(target=_run_organise_cleanup,
                      args=(target, limit, sources), daemon=True).start()
