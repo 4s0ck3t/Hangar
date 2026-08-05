@@ -762,6 +762,18 @@ button, input, select { font-family: inherit; color: inherit; }
   display: inline-flex; align-items: center; gap: 8px;
   color: var(--mute); font-size: 12.5px;
 }
+.organise-batch {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--mute); font-size: 12.5px;
+}
+.organise-batch-select {
+  height: 28px; padding: 4px 8px;
+  background: var(--raised); border: 1px solid var(--line);
+  border-radius: 6px; color: var(--ink); outline: none;
+}
+.organise-batch-select:focus {
+  border-color: var(--select); box-shadow: 0 0 0 3px rgba(91,141,239,.15);
+}
 .organise-root-input {
   width: min(360px, 42vw); height: 28px; padding: 5px 9px;
   background: var(--raised); border: 1px solid var(--line);

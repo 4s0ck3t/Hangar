@@ -73,6 +73,7 @@ const state = {
             noAuthor: false, linked: false, author: "", dupKind: "" },
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   organiseTargetRoot: localStorage.getItem("hangar_organise_target_root") || "D:\\Hangar",
+  organiseBatchSize: parseInt(localStorage.getItem("hangar_organise_batch_size") || "100", 10) || 100,
   organiseLastResult: null,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
@@ -1992,6 +1993,10 @@ function renderOrganisePlan(data) {
     `<button id="organiseTargetBrowse" class="rescan" title="Choose the folder where Hangar should plan the clean library">Browse</button>` +
     `<button id="organiseTargetApply" class="rescan" title="Recalculate the plan for this target root">Apply</button>` +
     `<button id="organiseCopyVerified" class="rescan organise-primary" title="Copy the next verified model-pack folders into the clean library. Old folders are kept.">Copy verified packs</button>` +
+    `<label class="organise-batch">Batch ` +
+    `<select id="organiseBatchSize" class="organise-batch-select">` +
+    `${[25, 100, 250, 500].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v}</option>`).join("")}` +
+    `</select></label>` +
     `<span>${fmtSize(s.target_free || 0)} free</span>` +
     `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` +
     `<span title="Estimated space in duplicate pack folders that look safe to remove later after review. Nothing is deleted by this plan.">${fmtSize(s.potential_duplicate_savings || 0)} duplicate estimate</span>` +
@@ -2026,6 +2031,10 @@ function renderOrganisePlan(data) {
     refresh();
   };
   tools.querySelector("#organiseTargetApply").onclick = applyTarget;
+  tools.querySelector("#organiseBatchSize").onchange = (e) => {
+    state.organiseBatchSize = parseInt(e.target.value || "100", 10) || 100;
+    localStorage.setItem("hangar_organise_batch_size", String(state.organiseBatchSize));
+  };
   tools.querySelector("#organiseTargetRoot").addEventListener("keydown", (e) => {
     if (e.key === "Enter") applyTarget();
   });
@@ -2040,17 +2049,18 @@ function renderOrganisePlan(data) {
     const btn = e.currentTarget;
     const input = tools.querySelector("#organiseTargetRoot");
     const target = (input && input.value.trim()) || state.organiseTargetRoot || "D:\\Hangar";
+    const batch = Math.max(1, Math.min(1000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
     const n = s.move || 0;
     if (!n) {
       toast("There are no planned packs ready to copy.", "success");
       return;
     }
-    if (!confirm(`Copy the next ${Math.min(25, n)} verified pack folder${Math.min(25, n) === 1 ? "" : "s"} into:\n${target}\n\nHangar will verify the copy and update its index. Old folders stay on disk.`)) return;
+    if (!confirm(`Copy the next ${Math.min(batch, n)} verified pack folder${Math.min(batch, n) === 1 ? "" : "s"} into:\n${target}\n\nHangar will verify the copy and update its index. Old folders stay on disk.`)) return;
     btn.disabled = true;
     btn.textContent = "Copying...";
     let r;
     try {
-      r = await post("organise/apply", { target, limit: 25 });
+      r = await post("organise/apply", { target, limit: batch });
     } catch (err) {
       btn.disabled = false;
       btn.textContent = "Copy verified packs";

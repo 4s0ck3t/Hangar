@@ -2260,14 +2260,14 @@ def _update_asset_paths_for_folder(source_folder, target_folder):
     return updated
 
 
-def apply_organise_disk_plan(target_root="D:\\Hangar", limit=25):
+def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100):
     """Copy planned model-pack folders into the clean layout and verify each copy.
 
     This deliberately does not delete the old source folders. The index is moved
     to the verified copy, and a receipt is written so later cleanup can be
     reviewed pack by pack.
     """
-    limit = max(1, min(500, int(limit or 25)))
+    limit = max(1, min(1000, int(limit or 100)))
     copied = skipped = failed = updated_assets = bytes_copied = 0
     results = []
     started = time.time()
