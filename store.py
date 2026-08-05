@@ -2182,7 +2182,8 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
     items = []
     size_cache = {}
     summary = {
-        "packs": 0, "already_clean": 0, "collisions": 0, "move": 0,
+        "packs": 0, "already_clean": 0, "collision": 0, "collisions": 0,
+        "target_exists": 0, "move": 0,
         "bytes_to_organise": 0, "copy_stage_bytes": 0,
         "potential_duplicate_savings": 0,
     }
@@ -2201,8 +2202,12 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
             status = "already_clean"
         elif dst_norm in seen_targets and seen_targets[dst_norm] != src_norm:
             status = "collision"
-        elif include_sizes and os.path.exists(target):
-            status = "target_exists"
+        elif os.path.exists(target):
+            if os.path.isdir(p["source"]) and os.path.isdir(target):
+                ok, _manifest = _folder_manifests_match(p["source"], target)
+                status = "move" if ok else "target_exists"
+            else:
+                status = "target_exists"
         seen_targets[dst_norm] = src_norm
         summary["packs"] += 1
         summary[status if status in summary else "collisions"] = summary.get(status if status in summary else "collisions", 0) + 1
@@ -2296,24 +2301,16 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
     results = []
     started = time.time()
     target_root = os.path.normpath(target_root or "D:\\Hangar")
-    seen_sources = set()
     seen_targets = set()
 
-    with connect() as conn:
-        rows = conn.execute(
-            "SELECT a.id, a.path, a.name, a.ext, a.author, a.size, "
-            "GROUP_CONCAT(cat.name, '|') categories "
-            "FROM assets a "
-            "LEFT JOIN asset_categories ac ON ac.asset_id=a.id "
-            "LEFT JOIN categories cat ON cat.id=ac.category_id "
-            "WHERE a.missing=0 AND a.hidden=0 AND a.kind='model' "
-            "GROUP BY a.id ORDER BY a.path COLLATE NOCASE"
-        ).fetchall()
+    plan = organise_disk_plan(target_root, limit=10000, include_sizes=False)
+    candidates = [i for i in plan.get("items", []) if i.get("status") == "move"]
+    effective_limit = min(limit, len(candidates))
     if progress:
         progress({
             "phase": "planning",
-            "limit": limit,
-            "candidate_files": len(rows),
+            "limit": effective_limit,
+            "candidate_packs": len(candidates),
             "copied": copied,
             "skipped": skipped,
             "failed": failed,
@@ -2321,27 +2318,12 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
             "bytes_copied": bytes_copied,
         })
 
-    for r in rows:
+    for item in candidates:
         if copied >= limit:
             break
-        pack_folder, subfolder, pack_name = _pack_parts_for_asset(r["path"])
-        if not pack_folder:
-            continue
-        source = os.path.normpath(pack_folder)
+        source = os.path.normpath(item.get("source") or "")
         src_key = os.path.normcase(source)
-        if src_key in seen_sources:
-            continue
-        seen_sources.add(src_key)
-        cats = [c for c in (r["categories"] or "").split("|") if c]
-        cat = _preferred_category_for_path(r["path"], cats)
-        author = r["author"] or source_folder(r["path"], os.path.splitdrive(r["path"])[0] + os.sep) or "Unknown"
-        target = os.path.normpath(os.path.join(
-            target_root, "Models",
-            _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(cat, cat)),
-            _clean_path_part(_physical_subcategory(cat, subfolder, pack_name)),
-            _clean_path_part(author),
-            _clean_path_part(pack_name),
-        ))
+        target = os.path.normpath(item.get("target") or "")
         dst_key = os.path.normcase(target)
         status = "move"
         if src_key == dst_key or src_key.startswith(os.path.normcase(target_root) + os.sep):
@@ -2354,7 +2336,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
         result = {
             "source": source,
             "target": target,
-            "pack": pack_name or os.path.basename(source),
+            "pack": item.get("pack") or os.path.basename(source),
             "status": status,
         }
         if progress:
@@ -2424,9 +2406,31 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
                 })
             continue
         if os.path.exists(target):
-            skipped += 1
-            result["result"] = "skipped"
-            result["reason"] = "target_exists"
+            ok, manifest = _folder_manifests_match(source, target)
+            result.update(manifest)
+            if not ok:
+                skipped += 1
+                result["result"] = "skipped"
+                result["reason"] = "target_exists"
+                results.append(result)
+                if progress:
+                    progress({
+                        "phase": "copying",
+                        "limit": limit,
+                        "current_pack": result["pack"],
+                        "copied": copied,
+                        "skipped": skipped,
+                        "failed": failed,
+                        "updated_assets": updated_assets,
+                        "bytes_copied": bytes_copied,
+                    })
+                continue
+            changed = _update_asset_paths_for_folder(source, target, on_path_moved=on_path_moved)
+            copied += 1
+            updated_assets += changed
+            result["result"] = "copied"
+            result["reason"] = "target_already_verified"
+            result["assets_updated"] = changed
             results.append(result)
             if progress:
                 progress({
