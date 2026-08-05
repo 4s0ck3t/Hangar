@@ -77,6 +77,7 @@ const state = {
   organiseSpaceDetails: localStorage.getItem("hangar_organise_space_details") === "1",
   organiseLastResult: null,
   organiseProgress: null,
+  organiseCleanupProgress: null,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
 };
 let appCounts = null;
@@ -1979,6 +1980,7 @@ function renderDuplicatePacks(groups, hiddenCount) {
 }
 
 let _organisePoll = null;
+let _organiseCleanupPoll = null;
 let _organisePlanData = null;
 
 function organiseTaskSpec(st) {
@@ -1997,6 +1999,22 @@ function organiseTaskSpec(st) {
   };
 }
 
+function organiseCleanupTaskSpec(st) {
+  st = st || {};
+  const deleted = st.deleted || 0;
+  const limit = st.limit || 0;
+  const elapsed = st.started_at ? (Date.now() / 1000 - st.started_at) : 0;
+  const rate = elapsed > 2 && deleted ? deleted / elapsed : 0;
+  const eta = rate && limit > deleted ? `ETA ${fmtDuration((limit - deleted) / rate)}` : "ETA estimating";
+  return {
+    label: "Cleaning old folders",
+    done: deleted,
+    total: limit || null,
+    detail: `${deleted}/${limit || "?"} folders · ${fmtSize(st.bytes_deleted || 0)} · ${eta}`,
+    file: st.current_source || "",
+  };
+}
+
 function applyOrganiseResultToPlan(plan, result) {
   state.organiseLastResult = result;
   state.organiseProgress = null;
@@ -2012,6 +2030,34 @@ function applyOrganiseResultToPlan(plan, result) {
     organise_result: result,
     items: ((plan || {}).items || []).filter((item) => !copiedSources.has((item.source || "").toLowerCase())),
   });
+}
+
+function startOrganiseCleanupPolling(plan) {
+  _organisePlanData = plan || _organisePlanData;
+  if (_organiseCleanupPoll) clearInterval(_organiseCleanupPoll);
+  _organiseCleanupPoll = setInterval(async () => {
+    let st; try { st = await api("organise/cleanup-status"); } catch (_) { return; }
+    if (!st || !st.ok) return;
+    state.organiseCleanupProgress = st;
+    if (st.running) {
+      Tasks.set("organise-cleanup", organiseCleanupTaskSpec(st));
+      renderOrganisePlan(_organisePlanData || {});
+      return;
+    }
+    clearInterval(_organiseCleanupPoll); _organiseCleanupPoll = null;
+    Tasks.done("organise-cleanup");
+    state.organiseCleanupProgress = null;
+    if (st.error) {
+      renderOrganisePlan(_organisePlanData || {});
+      toast(`Cleanup failed: ${st.error}`, "error");
+      return;
+    }
+    if (st.result) {
+      await refresh();
+      loadState();
+      toast(`Deleted ${st.result.deleted || 0} old folder${(st.result.deleted || 0) === 1 ? "" : "s"} and reclaimed ${fmtSize(st.result.bytes_deleted || 0)}. Removed ${st.result.index_deleted || 0} stale indexed row${(st.result.index_deleted || 0) === 1 ? "" : "s"}.`, st.result.failed ? "error" : "success");
+    }
+  }, 1000);
 }
 
 function startOrganisePolling(plan) {
@@ -2059,6 +2105,7 @@ function renderOrganisePlan(data) {
   const s = data.summary || {};
   const cleanup = data.cleanup || {};
   const cleanupSummary = cleanup.summary || {};
+  const cleanupProgress = state.organiseCleanupProgress;
   const spaceKnown = Object.prototype.hasOwnProperty.call(s, "target_free");
   const frag = document.createDocumentFragment();
   const tools = document.createElement("div");
@@ -2126,6 +2173,7 @@ function renderOrganisePlan(data) {
     const panel = document.createElement("div");
     panel.className = "organise-result organise-cleanup";
     const readyRows = (cleanup.items || []).filter((x) => x.status === "ready");
+    const indexedRows = readyRows.reduce((sum, x) => sum + (x.indexed || 0), 0);
     const readyList = readyRows.slice(0, 6).map((x) =>
       `<div class="organise-result-path"><span>${esc(x.pack || baseName(x.source))}</span><code>${esc(x.source || "")}</code></div>`
     ).join("");
@@ -2137,11 +2185,33 @@ function renderOrganisePlan(data) {
       `<div class="organise-result-meta">` +
       `${cleanupSummary.ready || 0} verified folder${(cleanupSummary.ready || 0) === 1 ? "" : "s"} can be removed` +
       ` · ${fmtSize(cleanupSummary.bytes_ready || 0)} reclaimable` +
+      (indexedRows ? ` · ${indexedRows} stale indexed row${indexedRows === 1 ? "" : "s"} will be removed` : "") +
       (cleanupSummary.gone ? ` · ${cleanupSummary.gone} already gone` : "") +
       blockedNote +
       `</div>` +
       (readyList ? `<div class="organise-result-list">${readyList}</div>` : "") +
-      (readyRows.length ? `<button id="organiseCleanupApply" class="rescan organise-danger" title="Delete old source folders only after Hangar re-checks that the clean copy contains every file">Delete old verified folders</button>` : "");
+      (readyRows.length ? `<button id="organiseCleanupApply" class="rescan organise-danger" ${cleanupProgress?.running ? "disabled" : ""} title="Delete old source folders only after Hangar re-checks that the clean copy contains every file">${cleanupProgress?.running ? "Deleting..." : "Delete old verified folders"}</button>` : "");
+    frag.appendChild(panel);
+  }
+  if (cleanupProgress && cleanupProgress.running) {
+    const elapsed = cleanupProgress.started_at ? (Date.now() / 1000 - cleanupProgress.started_at) : 0;
+    const deleted = cleanupProgress.deleted || 0;
+    const limit = cleanupProgress.limit || 0;
+    const rate = elapsed > 2 && deleted ? deleted / elapsed : 0;
+    const eta = rate && limit > deleted ? fmtDuration((limit - deleted) / rate) : "estimating";
+    const pct = limit ? Math.max(0, Math.min(100, Math.round(deleted / limit * 100))) : 0;
+    const panel = document.createElement("div");
+    panel.className = "organise-result organise-cleanup organise-running";
+    panel.innerHTML =
+      `<div class="organise-result-title">Deleting old verified folders: ${deleted}/${limit || "?"}</div>` +
+      `<div class="organise-result-meta">` +
+      `${fmtSize(cleanupProgress.bytes_deleted || 0)} reclaimed` +
+      ` · ${cleanupProgress.index_deleted || 0} stale indexed rows removed` +
+      ` · ${cleanupProgress.skipped || 0} skipped` +
+      ` · ${cleanupProgress.failed || 0} failed` +
+      ` · elapsed ${fmtDuration(elapsed)} · ETA ${eta}</div>` +
+      `<div class="organise-progress-bar"><span style="width:${pct}%"></span></div>` +
+      (cleanupProgress.current_pack ? `<div class="organise-result-path"><span>${esc(cleanupProgress.current_pack)}</span><code>${esc(cleanupProgress.current_source || "")}</code></div>` : "");
     frag.appendChild(panel);
   }
   if (!items.length) {
@@ -2272,7 +2342,7 @@ function renderOrganisePlan(data) {
       toast("There are no old verified folders ready to remove.", "success");
       return;
     }
-    if (!confirm(`Delete ${n} old verified source folder${n === 1 ? "" : "s"}?\n\nHangar will re-check each folder first. It only deletes an old folder when the clean copy still contains every file with the same path and size.\n\nExpected space reclaimed: ${fmtSize(cleanupSummary.bytes_ready || 0)}\n\nThis deletes files from disk.`)) return;
+    if (!confirm(`Delete ${n} old verified source folder${n === 1 ? "" : "s"}?\n\nHangar will re-check each folder first. It only deletes an old folder when the clean copy still contains every file with the same path and size.\n\nAny stale indexed rows from those old folders will be removed too.\n\nExpected space reclaimed: ${fmtSize(cleanupSummary.bytes_ready || 0)}\n\nThis deletes files from disk.`)) return;
     cleanupBtn.disabled = true;
     cleanupBtn.textContent = "Deleting...";
     let r;
@@ -2290,8 +2360,11 @@ function renderOrganisePlan(data) {
       cleanupBtn.textContent = "Delete old verified folders";
       return;
     }
-    toast(`Deleted ${r.deleted || 0} old folder${(r.deleted || 0) === 1 ? "" : "s"} and reclaimed ${fmtSize(r.bytes_deleted || 0)}.`, r.failed ? "error" : "success");
-    refresh(); loadState();
+    state.organiseCleanupProgress = (r && r.status) || { running: true, limit: batch, deleted: 0, skipped: 0, failed: 0, bytes_deleted: 0, index_deleted: 0 };
+    renderOrganisePlan(data);
+    Tasks.set("organise-cleanup", organiseCleanupTaskSpec(state.organiseCleanupProgress));
+    startOrganiseCleanupPolling(data);
+    toast(`Deleting ${n} old verified folder${n === 1 ? "" : "s"} in the background.`, "success");
   };
   grid.scrollTop = 0;
 }

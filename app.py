@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.61"
+__version__ = "0.15.62"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1500,6 +1500,14 @@ ORGANISE = {
     "current_source": "", "current_target": "",
 }
 ORGANISE_LOCK = threading.Lock()
+CLEANUP = {
+    "running": False, "done": False, "error": None, "result": None,
+    "target": None, "limit": 0, "phase": None, "started_at": None,
+    "updated_at": None, "deleted": 0, "skipped": 0, "failed": 0,
+    "bytes_deleted": 0, "index_deleted": 0, "current_pack": "",
+    "current_source": "",
+}
+CLEANUP_LOCK = threading.Lock()
 
 
 def _organise_snapshot():
@@ -1511,6 +1519,17 @@ def _organise_update(**changes):
     with ORGANISE_LOCK:
         ORGANISE.update(changes)
         ORGANISE["updated_at"] = time.time()
+
+
+def _cleanup_snapshot():
+    with CLEANUP_LOCK:
+        return dict(CLEANUP)
+
+
+def _cleanup_update(**changes):
+    with CLEANUP_LOCK:
+        CLEANUP.update(changes)
+        CLEANUP["updated_at"] = time.time()
 
 
 def _run_organise_apply(target, limit):
@@ -1531,6 +1550,24 @@ def _run_organise_apply(target, limit):
         )
     except Exception as e:
         _organise_update(running=False, done=False, phase="error", error=str(e))
+
+
+def _run_organise_cleanup(target, limit, sources=None):
+    def progress(update):
+        _cleanup_update(**(update or {}))
+
+    try:
+        result = store.apply_organise_cleanup(
+            target, limit, sources=sources, progress=progress)
+        _cleanup_update(
+            running=False, done=True, phase="done", error=None, result=result,
+            deleted=result.get("deleted", 0), skipped=result.get("skipped", 0),
+            failed=result.get("failed", 0),
+            bytes_deleted=result.get("bytes_deleted", 0),
+            index_deleted=result.get("index_deleted", 0),
+        )
+    except Exception as e:
+        _cleanup_update(running=False, done=False, phase="error", error=str(e))
 
 
 @app.get("/api/organise/plan")
@@ -1579,7 +1616,24 @@ def organise_cleanup_apply():
     target = (data.get("target") or "D:\\Hangar").strip() or "D:\\Hangar"
     limit = int(data.get("limit") or 100)
     sources = data.get("sources") if isinstance(data.get("sources"), list) else None
-    return jsonify(store.apply_organise_cleanup(target, limit, sources=sources))
+    with CLEANUP_LOCK:
+        if CLEANUP.get("running"):
+            return jsonify({"ok": True, "running": True, "status": dict(CLEANUP)})
+        CLEANUP.update({
+            "running": True, "done": False, "error": None, "result": None,
+            "target": target, "limit": limit, "phase": "starting",
+            "started_at": time.time(), "updated_at": time.time(),
+            "deleted": 0, "skipped": 0, "failed": 0, "bytes_deleted": 0,
+            "index_deleted": 0, "current_pack": "", "current_source": "",
+        })
+    threading.Thread(target=_run_organise_cleanup,
+                     args=(target, limit, sources), daemon=True).start()
+    return jsonify({"ok": True, "running": True, "status": _cleanup_snapshot()})
+
+
+@app.get("/api/organise/cleanup-status")
+def organise_cleanup_status():
+    return jsonify({"ok": True, **_cleanup_snapshot()})
 
 
 @app.delete("/api/assets/missing")

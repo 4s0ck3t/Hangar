@@ -2563,12 +2563,21 @@ def _indexed_count_under(folder):
         ).fetchone()["c"]
 
 
+def _delete_index_rows_under(folder):
+    with connect() as conn:
+        return conn.execute(
+            "DELETE FROM assets WHERE path LIKE ? ESCAPE '!'",
+            (_path_like(folder),),
+        ).rowcount
+
+
 def organise_cleanup_plan(target_root="D:\\Hangar", limit=500):
     """Old source folders that can be removed after Organise copied them.
 
     A folder is "ready" only when the clean target still contains every file
-    from the old source with the same relative path and byte size, and no live
-    indexed asset still points at the old source.
+    from the old source with the same relative path and byte size. If the old
+    folder was re-indexed while it still existed, cleanup removes those stale
+    rows after the folder is deleted.
     """
     target_root = os.path.normpath(target_root or "D:\\Hangar")
     limit = max(1, min(2000, int(limit or 500)))
@@ -2610,9 +2619,6 @@ def organise_cleanup_plan(target_root="D:\\Hangar", limit=500):
                 status = "target_incomplete"
                 reason = f"{missing} file(s) are not present in the clean target"
             indexed = _indexed_count_under(source)
-            if status == "ready" and indexed:
-                status = "still_indexed"
-                reason = f"{indexed} indexed file(s) still point at the old folder"
             size = _folder_size(source, size_cache)
         item = {
             **row,
@@ -2660,7 +2666,7 @@ def _prune_empty_parents(start_folder, stop_roots):
     return removed
 
 
-def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None):
+def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, progress=None):
     """Delete verified old Organise source folders.
 
     This re-builds the cleanup plan immediately before deleting, so a stale UI
@@ -2674,8 +2680,21 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None):
     plan = organise_cleanup_plan(target_root, limit=2000)
     roots = [r["path"] for r in list_libraries()]
     target_root = os.path.normpath(target_root or "D:\\Hangar")
-    deleted = failed = skipped = bytes_deleted = 0
+    ready_total = sum(1 for i in plan["items"] if i["status"] == "ready")
+    deleted = failed = skipped = bytes_deleted = index_deleted = 0
     results = []
+    if progress:
+        progress({
+            "phase": "deleting",
+            "limit": min(limit, ready_total),
+            "deleted": deleted,
+            "failed": failed,
+            "skipped": skipped,
+            "bytes_deleted": bytes_deleted,
+            "index_deleted": index_deleted,
+            "current_pack": "",
+            "current_source": "",
+        })
     for item in plan["items"]:
         if deleted >= limit:
             break
@@ -2687,8 +2706,21 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None):
             "target": item["target"],
             "pack": item.get("pack") or os.path.basename(item["source"]),
             "bytes": item.get("bytes") or 0,
+            "indexed": item.get("indexed") or 0,
             "status": item["status"],
         }
+        if progress:
+            progress({
+                "phase": "deleting",
+                "limit": min(limit, ready_total),
+                "current_pack": result["pack"],
+                "current_source": item["source"],
+                "deleted": deleted,
+                "failed": failed,
+                "skipped": skipped,
+                "bytes_deleted": bytes_deleted,
+                "index_deleted": index_deleted,
+            })
         if item["status"] != "ready":
             skipped += 1
             result["result"] = "skipped"
@@ -2701,9 +2733,12 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None):
                 os.path.dirname(item["source"]),
                 [target_root, *roots],
             )
+            removed_rows = _delete_index_rows_under(item["source"])
             deleted += 1
             bytes_deleted += int(item.get("bytes") or 0)
+            index_deleted += int(removed_rows or 0)
             result["result"] = "deleted"
+            result["index_deleted"] = removed_rows
             result["pruned"] = pruned
             results.append(result)
         except OSError as e:
@@ -2711,6 +2746,18 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None):
             result["result"] = "failed"
             result["reason"] = str(e)
             results.append(result)
+        if progress:
+            progress({
+                "phase": "deleting",
+                "limit": min(limit, ready_total),
+                "current_pack": result["pack"],
+                "current_source": item["source"],
+                "deleted": deleted,
+                "failed": failed,
+                "skipped": skipped,
+                "bytes_deleted": bytes_deleted,
+                "index_deleted": index_deleted,
+            })
     return {
         "ok": True,
         "target_root": target_root,
@@ -2718,6 +2765,7 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None):
         "failed": failed,
         "skipped": skipped,
         "bytes_deleted": bytes_deleted,
+        "index_deleted": index_deleted,
         "results": results,
         "remaining": organise_cleanup_plan(target_root, limit=500)["summary"],
     }
