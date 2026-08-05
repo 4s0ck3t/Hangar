@@ -2084,7 +2084,10 @@ function startOrganisePolling(plan) {
       applyOrganiseResultToPlan(_organisePlanData || {}, st.result);
       loadState();
       toast(`Copied ${st.result.copied || 0} pack${(st.result.copied || 0) === 1 ? "" : "s"}; ${st.result.updated_assets || 0} indexed file${(st.result.updated_assets || 0) === 1 ? "" : "s"} moved.`, st.result.failed ? "error" : "success");
+      return;
     }
+    state.organiseProgress = null;
+    renderOrganisePlan(_organisePlanData || {});
   }, 1000);
 }
 
