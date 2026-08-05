@@ -271,6 +271,17 @@ function looksSelfNamedAssetFolder(folderLeaf, assetStem) {
   return false;
 }
 function api(path, opts) { return fetch("/api/" + path, opts).then((r) => r.json()); }
+async function apiWithTimeout(path, timeoutMs = 45000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const r = await fetch("/api/" + path, { signal: controller.signal });
+    if (!r.ok) throw new Error(`Request failed (${r.status})`);
+    return await r.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
 function post(path, body) {
   return api(path, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -1306,6 +1317,7 @@ function bindHoverPreview(card, a) {
 let currentAssets = [];  // last fetched asset list for drawer prev/next
 let drawerIdx = -1;      // position of the open drawer asset in currentAssets
 let drawerAssetId = null; // id of the asset currently shown in the drawer
+let _refreshSeq = 0;     // prevents slow old grid requests from repainting stale views
 
 function loadSectionCollapsed() {
   try { return new Set(JSON.parse(localStorage.getItem("hangar_section_collapsed") || "[]")); }
@@ -1375,6 +1387,7 @@ function sectionBulkToolbar(sections) {
 }
 
 async function refresh() {
+  const refreshSeq = ++_refreshSeq;
   // Nothing on screen yet (first load / coming from an empty view) → show
   // shimmering placeholder tiles instead of a blank pane while we fetch.
   if (!$("#grid").querySelector(".card")) renderGridSkeleton();
@@ -1470,7 +1483,14 @@ async function refresh() {
     return;
   }
 
-  const data = await api("assets?" + p.toString());
+  let data;
+  try {
+    data = await apiWithTimeout("assets?" + p.toString());
+  } catch (e) {
+    if (refreshSeq === _refreshSeq) renderGridLoadError(e);
+    return;
+  }
+  if (refreshSeq !== _refreshSeq) return;
   recordThumbMtimes(data.assets);
   if (dupes) renderGroupedByContent(data.assets);
   else if (folderGrouped) renderGroupedByFolder(data.assets, f.folder);
@@ -3706,6 +3726,27 @@ function renderGridSkeleton() {
     frag.appendChild(s);
   }
   grid.replaceChildren(frag);
+}
+
+function renderGridLoadError(err) {
+  const grid = $("#grid");
+  const empty = $("#emptyState");
+  grid.classList.remove("grouped");
+  grid.replaceChildren();
+  _vAssets = []; _vRange = { start: -1, end: -1 };
+  _currentAssets = []; _displaySections = [];
+  currentAssets = [];
+  empty.classList.remove("hidden");
+  const timedOut = err && err.name === "AbortError";
+  empty.innerHTML =
+    `<h2>${timedOut ? "Still loading assets" : "Couldn't load this view"}</h2>` +
+    `<p>${timedOut
+      ? "Hangar is taking longer than expected after recent library changes."
+      : "The asset list did not finish loading cleanly."}</p>` +
+    `<button id="gridRetryBtn">Retry</button>`;
+  const btn = $("#gridRetryBtn");
+  if (btn) btn.onclick = () => refresh();
+  if (timedOut) setTimeout(() => refresh(), 2000);
 }
 
 function renderGrid(assets, total) {
