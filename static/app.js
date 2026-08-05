@@ -1462,11 +1462,16 @@ async function refresh() {
   if (organise) {
     const target = encodeURIComponent(state.organiseTargetRoot || "D:\\Hangar");
     const fast = state.organiseSpaceDetails ? "0" : "1";
-    const [data, cleanup] = await Promise.all([
-      api(`organise/plan?limit=500&fast=${fast}&target=${target}`),
-      api(`organise/cleanup-plan?limit=200&target=${target}`),
-    ]);
-    data.cleanup = cleanup;
+    renderOrganiseLoading(state.organiseTargetRoot || "D:\\Hangar");
+    let data;
+    try {
+      data = await apiWithTimeout(`organise/plan?limit=500&fast=${fast}&target=${target}`, 90000);
+    } catch (e) {
+      if (refreshSeq === _refreshSeq) renderOrganiseLoadError(e);
+      return;
+    }
+    if (refreshSeq !== _refreshSeq) return;
+    data.cleanup = { loading: true, summary: {}, items: [] };
     state.organiseTargetRoot = data.target_root || state.organiseTargetRoot || "D:\\Hangar";
     renderOrganisePlan(data);
     await loadState();
@@ -1480,6 +1485,17 @@ async function refresh() {
     updateHealthBtn();
     updateFacetStrip();
     recordViewAfterRefresh();
+    apiWithTimeout(`organise/cleanup-plan?limit=200&target=${target}`, 120000)
+      .then((cleanup) => {
+        if (refreshSeq !== _refreshSeq || !state.filter.organiseDisk) return;
+        data.cleanup = cleanup;
+        renderOrganisePlan(data);
+      })
+      .catch((e) => {
+        if (refreshSeq !== _refreshSeq || !state.filter.organiseDisk) return;
+        data.cleanup = { error: e && e.name === "AbortError" ? "Cleanup check is still taking longer than expected." : "Cleanup check failed.", summary: {}, items: [] };
+        renderOrganisePlan(data);
+      });
     return;
   }
 
@@ -2132,6 +2148,47 @@ function startOrganisePolling(plan) {
   }, 1000);
 }
 
+function renderOrganiseLoading(target) {
+  const grid = $("#grid"); const empty = $("#emptyState");
+  _vAssets = []; _vRange = { start: -1, end: -1 };
+  _currentAssets = [];
+  currentAssets = [];
+  grid.classList.remove("grouped");
+  grid.classList.add("grouped");
+  empty.classList.add("hidden");
+  const crumbBar = $("#folderBreadcrumb");
+  if (crumbBar) crumbBar.classList.add("hidden");
+  const texBar = $("#texfixBar");
+  if (texBar) texBar.classList.add("hidden");
+  const panel = document.createElement("div");
+  panel.className = "organise-result organise-running";
+  panel.innerHTML =
+    `<div class="organise-result-title">Planning clean library</div>` +
+    `<div class="organise-result-meta">Checking folders for ${esc(target || "D:\\Hangar")}...</div>` +
+    `<div class="organise-progress-bar"><span style="width:18%"></span></div>`;
+  grid.replaceChildren(panel);
+  grid.scrollTop = 0;
+}
+
+function renderOrganiseLoadError(err) {
+  const grid = $("#grid"); const empty = $("#emptyState");
+  _vAssets = []; _vRange = { start: -1, end: -1 };
+  _currentAssets = [];
+  currentAssets = [];
+  grid.classList.remove("grouped");
+  empty.classList.add("hidden");
+  const timedOut = err && err.name === "AbortError";
+  const panel = document.createElement("div");
+  panel.className = "organise-result";
+  panel.innerHTML =
+    `<div class="organise-result-title">${timedOut ? "Organise Disk is still planning" : "Organise Disk could not load"}</div>` +
+    `<div class="organise-result-meta">${timedOut ? "The library check is taking longer than expected after recent disk changes." : "The plan request did not finish cleanly."}</div>` +
+    `<button id="organiseRetryPlan" class="rescan organise-primary">Retry</button>`;
+  grid.replaceChildren(panel);
+  const btn = $("#organiseRetryPlan");
+  if (btn) btn.onclick = () => refresh();
+}
+
 function renderOrganisePlan(data) {
   const grid = $("#grid"); const empty = $("#emptyState");
   _vAssets = []; _vRange = { start: -1, end: -1 };
@@ -2211,6 +2268,14 @@ function renderOrganisePlan(data) {
       ` · elapsed ${fmtDuration(elapsed)} · ETA ${eta}</div>` +
       `<div class="organise-progress-bar"><span style="width:${pct}%"></span></div>` +
       (progress.current_pack ? `<div class="organise-result-path"><span>${esc(progress.current_pack)}</span><code>${esc(progress.current_target || progress.current_source || "")}</code></div>` : "");
+    frag.appendChild(panel);
+  }
+  if (cleanup.loading || cleanup.error) {
+    const panel = document.createElement("div");
+    panel.className = "organise-result organise-cleanup";
+    panel.innerHTML =
+      `<div class="organise-result-title">${cleanup.loading ? "Checking old copied folders" : "Cleanup check delayed"}</div>` +
+      `<div class="organise-result-meta">${esc(cleanup.error || "Hangar is checking which old source folders are safe to remove. You can still review/copy the main plan while this finishes.")}</div>`;
     frag.appendChild(panel);
   }
   if ((cleanupSummary.ready || cleanupSummary.blocked || cleanupSummary.gone)) {
