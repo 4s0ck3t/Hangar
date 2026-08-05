@@ -4517,9 +4517,16 @@ async function manualCheckUpdate() {
   let u;
   // Manual checks may refresh GitHub, but the server enforces a short cooldown
   // so repeated clicks do not burn through GitHub's unauthenticated API limit.
-  try { u = await api("update/check?force=1&manual=1"); }
-  catch (e) { u = null; }
-  btn.disabled = false; btn.textContent = prev;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    u = await api("update/check?force=1&manual=1", { signal: controller.signal });
+  } catch (e) {
+    u = null;
+  } finally {
+    clearTimeout(timer);
+    btn.disabled = false; btn.textContent = prev;
+  }
   if (!u || !u.ok) {
     toast((u && u.error) || "Couldn't reach GitHub to check for updates.", "error");
     return;
