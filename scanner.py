@@ -136,6 +136,7 @@ SUPPORT_IMAGE_DIRS = {
 TEXTURE_CONTAINER_DIRS = {
     "map", "maps", "texture", "textures", "material", "materials",
 }
+MATERIAL_CONTAINER_DIRS = {"material", "materials"}
 # Texture maps that are part of a model rather than browsable assets in their
 # own right would flood the grid; we still index them but they're filterable.
 MODEL_ROOT_DIRS = {"model", "models", "allmodels"}
@@ -202,6 +203,36 @@ def classify_kind(ext, folder, name_noext):
         if tokens & texture_context and not tokens & hdri_context:
             return "texture"
     return EXT_KIND[ext]
+
+
+def is_obvious_material_asset(ext, folder, name_noext, sibling_files=()):
+    """True for image maps that should live in Materials, not loose Textures.
+
+    A single photo/bitmap is still a texture. A recognised PBR map that either
+    lives in a material-named folder or has sibling maps from the same set is a
+    material asset. Model-pack texture sidecars stay out of this promotion so
+    imported models do not flood the Materials bucket.
+    """
+    if ext not in TEXTURE_EXTS and ext not in HDRI_EXTS:
+        return False
+    if is_model_pack_texture_sidecar(os.path.join(folder, name_noext + ext)):
+        return False
+    set_key, role, _order = texture_set_info(folder, name_noext)
+    if not role:
+        return False
+    folder_tokens = _folder_tokens(folder)
+    if folder_tokens & MATERIAL_CONTAINER_DIRS:
+        return True
+    roles = {role}
+    for sibling in sibling_files or ():
+        sib_ext = os.path.splitext(sibling)[1].lower()
+        if sib_ext not in TEXTURE_EXTS and sib_ext not in HDRI_EXTS:
+            continue
+        sib_name = os.path.splitext(sibling)[0]
+        sib_key, sib_role, _sib_order = texture_set_info(folder, sib_name)
+        if sib_key == set_key and sib_role:
+            roles.add(sib_role)
+    return len(roles) >= 2
 
 
 def is_redundant_hdri_blend(fname, sibling_files):
@@ -285,6 +316,12 @@ def scan_library(library_path, on_file=None):
                 continue
             name_noext = os.path.splitext(fname)[0]
             kind = classify_kind(ext, root, name_noext)
+            sk = role = ""
+            order = 50
+            if kind == "texture":
+                sk, role, order = texture_set_info(root, name_noext)
+                if is_obvious_material_asset(ext, root, name_noext, files):
+                    kind = "material"
             meta = {
                 "path": full,
                 "name": name_noext,
@@ -297,8 +334,9 @@ def scan_library(library_path, on_file=None):
                 "author": store.source_folder(full, library_path),
             }
             # Group texture maps of the same material into one set.
-            if kind == "texture":
-                sk, role, order = texture_set_info(root, name_noext)
+            if kind in ("texture", "material"):
+                if not sk:
+                    sk, role, order = texture_set_info(root, name_noext)
                 meta["set_key"], meta["map_role"], meta["map_order"] = sk, role, order
             # Decal/atlas subtype + resolution facets for images (textures + HDRIs).
             if kind in ("texture", "hdri"):

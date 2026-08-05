@@ -2170,9 +2170,16 @@ function renderOrganiseLoading(target) {
   const panel = document.createElement("div");
   panel.className = "organise-result organise-running";
   const started = Date.now();
+  const stages = [
+    "Reading the model index",
+    "Grouping files into asset packs",
+    "Checking clean-library destinations",
+    "Separating copyable packs from review items",
+    "Preparing cleanup counts",
+  ];
   panel.innerHTML =
     `<div class="organise-result-title">Planning clean library</div>` +
-    `<div class="organise-result-meta"><span id="organisePlanningElapsed">Checking folders for ${esc(target || "D:\\Hangar")}... 0s</span></div>` +
+    `<div class="organise-result-meta"><span id="organisePlanningElapsed">Reading the model index for ${esc(target || "D:\\Hangar")}... 0s</span></div>` +
     `<div class="organise-progress-bar organise-indeterminate"><span></span></div>`;
   grid.replaceChildren(panel);
   grid.scrollTop = 0;
@@ -2180,7 +2187,8 @@ function renderOrganiseLoading(target) {
     const el = $("#organisePlanningElapsed");
     if (!el) { stopOrganiseLoadingTimer(); return; }
     const seconds = Math.floor((Date.now() - started) / 1000);
-    el.textContent = `Checking folders for ${target || "D:\\Hangar"}... ${seconds}s`;
+    const stage = stages[Math.min(stages.length - 1, Math.floor(seconds / 3) % stages.length)];
+    el.textContent = `${stage} for ${target || "D:\\Hangar"}... ${seconds}s`;
   }, 1000);
 }
 

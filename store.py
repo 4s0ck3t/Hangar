@@ -195,6 +195,29 @@ DEFAULT_CATEGORIES = [
     ("Plastic",      "🧴", "texture", ["plastic", "rubber"]),
     ("Paper",        "📄", "texture", ["paper", "cardboard"]),
     ("Asphalt",      "🛣", "texture", ["asphalt", "tarmac"]),
+    # Material categories mirror the surface taxonomy but stay separate from
+    # single loose texture images.
+    ("Wood materials",     "🪵", "material", ["wood", "wooden", "plank", "planks",
+                            "parquet", "timber", "bark", "log"]),
+    ("Brick materials",    "🧱", "material", ["brick", "bricks", "brickwall"]),
+    ("Concrete materials", "⬜", "material", ["concrete", "cement"]),
+    ("Metal materials",    "⚙", "material", ["metal", "metallic", "steel", "iron",
+                            "rust", "rusty", "rusted", "aluminium", "aluminum",
+                            "copper", "bronze", "brass"]),
+    ("Stone materials",    "🪨", "material", ["stone", "cobble", "cobblestone",
+                            "granite", "slate", "pebble", "pebbles"]),
+    ("Tile materials",     "🔲", "material", ["tile", "tiles", "tiling"]),
+    ("Fabric materials",   "🧵", "material", ["fabric", "cloth", "textile", "denim",
+                            "wool", "cotton", "linen", "canvas"]),
+    ("Ground materials",   "🟫", "material", ["ground", "dirt", "soil", "mud",
+                            "terrain", "sand", "gravel", "moss"]),
+    ("Plaster materials",  "🎨", "material", ["plaster", "stucco"]),
+    ("Marble materials",   "🔘", "material", ["marble"]),
+    ("Roof materials",     "🏠", "material", ["roof", "roofing", "shingle", "shingles"]),
+    ("Leather materials",  "🟤", "material", ["leather", "hide"]),
+    ("Plastic materials",  "🧴", "material", ["plastic", "rubber"]),
+    ("Paper materials",    "📄", "material", ["paper", "cardboard"]),
+    ("Asphalt materials",  "🛣", "material", ["asphalt", "tarmac"]),
 ]
 # {category_id: (name, set(keywords))} cache, built lazily from the DB and
 # invalidated whenever a category is created/edited/removed. See _matchers().
@@ -348,6 +371,14 @@ def init_db():
                 pass
             conn.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES('hdri_kind_repair_v1','1')")
+        if not conn.execute(
+                "SELECT 1 FROM settings WHERE key='material_kind_repair_v1'").fetchone():
+            try:
+                _repair_obvious_material_textures(conn)
+            except Exception:
+                pass
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('material_kind_repair_v1','1')")
         # One-time: after new default categories ship (e.g. the texture set),
         # back-fill auto-classification across the existing library so they're
         # populated without the user having to hit ⚡. Bumped flag = re-run once.
@@ -423,6 +454,58 @@ def _repair_hdri_texture_maps(conn):
                 (r["id"], cid),
             )
         _auto_categorize(conn, r["id"], r["path"], "texture")
+
+
+def _repair_obvious_material_textures(conn):
+    """Move existing obvious PBR material map sets from Textures to Materials."""
+    import scanner  # lazy: avoids an import cycle at module load
+    texture_cat_ids = [
+        r["id"] for r in conn.execute(
+            "SELECT id FROM categories WHERE kind='texture'").fetchall()
+    ]
+    rows = [
+        dict(r) for r in conn.execute(
+            "SELECT id, path, ext, set_key, map_role FROM assets "
+            "WHERE missing=0 AND hidden=0 AND kind='texture'").fetchall()
+    ]
+    by_set = {}
+    for r in rows:
+        if scanner.is_model_pack_texture_sidecar(r["path"]):
+            continue
+        folder = os.path.dirname(r["path"])
+        name_noext = os.path.splitext(os.path.basename(r["path"]))[0]
+        set_key, role, order = scanner.texture_set_info(folder, name_noext)
+        if not r.get("set_key") or r.get("set_key") != set_key:
+            conn.execute(
+                "UPDATE assets SET set_key=?, map_role=?, map_order=? WHERE id=?",
+                (set_key, role, order, r["id"]),
+            )
+        r["set_key"], r["map_role"] = set_key, role
+        by_set.setdefault(set_key, set()).add(role)
+
+    for r in rows:
+        if scanner.is_model_pack_texture_sidecar(r["path"]):
+            continue
+        folder = os.path.dirname(r["path"])
+        name_noext = os.path.splitext(os.path.basename(r["path"]))[0]
+        role = r.get("map_role") or ""
+        if not role:
+            continue
+        folder_tokens = scanner._folder_tokens(folder)
+        role_count = len({x for x in by_set.get(r["set_key"], set()) if x})
+        if not (folder_tokens & scanner.MATERIAL_CONTAINER_DIRS or role_count >= 2):
+            continue
+        subtype, resolution = scanner.texture_facets(folder, name_noext)
+        conn.execute(
+            "UPDATE assets SET kind='material', subtype=?, resolution=? WHERE id=?",
+            (subtype, resolution, r["id"]),
+        )
+        for cid in texture_cat_ids:
+            conn.execute(
+                "DELETE FROM asset_categories WHERE asset_id=? AND category_id=?",
+                (r["id"], cid),
+            )
+        _auto_categorize(conn, r["id"], r["path"], "material")
 
 
 # ---- libraries ------------------------------------------------------------
