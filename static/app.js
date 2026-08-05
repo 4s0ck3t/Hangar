@@ -4746,7 +4746,8 @@ async function manualCheckUpdate() {
   // Manual checks may refresh GitHub, but the server enforces a short cooldown
   // so repeated clicks do not burn through GitHub's unauthenticated API limit.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, 30000);
   try {
     u = await api("update/check?force=1&manual=1", { signal: controller.signal });
   } catch (e) {
@@ -4756,7 +4757,9 @@ async function manualCheckUpdate() {
     btn.disabled = false; btn.textContent = prev;
   }
   if (!u || !u.ok) {
-    toast((u && u.error) || "Couldn't reach GitHub to check for updates.", "error");
+    toast((u && u.error) || (timedOut
+      ? "GitHub took too long to answer. Try again in a moment."
+      : "Couldn't reach GitHub to check for updates."), "error");
     return;
   }
   if (u.update_available) {
