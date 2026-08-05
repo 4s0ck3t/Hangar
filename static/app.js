@@ -1436,7 +1436,7 @@ async function refresh() {
 
   if (organise) {
     const target = encodeURIComponent(state.organiseTargetRoot || "D:\\Hangar");
-    const data = await api(`organise/plan?limit=500&target=${target}`);
+    const data = await api(`organise/plan?limit=500&fast=1&target=${target}`);
     state.organiseTargetRoot = data.target_root || state.organiseTargetRoot || "D:\\Hangar";
     renderOrganisePlan(data);
     await loadState();
@@ -1997,9 +1997,9 @@ function renderOrganisePlan(data) {
     `<select id="organiseBatchSize" class="organise-batch-select">` +
     `${[25, 100, 250, 500].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v}</option>`).join("")}` +
     `</select></label>` +
-    `<span>${fmtSize(s.target_free || 0)} free</span>` +
-    `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` +
-    `<span title="Estimated space in duplicate pack folders that look safe to remove later after review. Nothing is deleted by this plan.">${fmtSize(s.potential_duplicate_savings || 0)} duplicate estimate</span>` +
+    (s.target_free ? `<span>${fmtSize(s.target_free || 0)} free</span>` : `<span title="Fast preview skips slow disk-space scanning">fast preview</span>`) +
+    (s.bytes_to_organise ? `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` : "") +
+    (s.potential_duplicate_savings ? `<span title="Estimated space in duplicate pack folders that look safe to remove later after review. Nothing is deleted by this plan.">${fmtSize(s.potential_duplicate_savings || 0)} duplicate estimate</span>` : "") +
     `<span>${s.move || 0} to copy</span>` +
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${(s.collision || 0) + (s.target_exists || 0)} need review</span>`;

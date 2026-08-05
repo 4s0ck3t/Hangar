@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.56"
+__version__ = "0.15.57"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1496,7 +1496,8 @@ def duplicate_pack_restore():
 def organise_plan():
     target = request.args.get("target", "D:\\Hangar").strip() or "D:\\Hangar"
     limit = int(request.args.get("limit", 500))
-    return jsonify(store.organise_disk_plan(target, limit))
+    fast = request.args.get("fast") in ("1", "true", "yes")
+    return jsonify(store.organise_disk_plan(target, limit, include_sizes=not fast))
 
 
 @app.post("/api/organise/apply")
