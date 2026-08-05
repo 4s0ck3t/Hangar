@@ -2518,3 +2518,206 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
     if progress:
         progress({"phase": "done", **receipt})
     return receipt
+
+
+def _is_same_or_child(path, root):
+    path = os.path.normcase(os.path.abspath(os.path.normpath(path or "")))
+    root = os.path.normcase(os.path.abspath(os.path.normpath(root or "")))
+    return bool(path and root and (path == root or path.startswith(root + os.sep)))
+
+
+def _organise_receipt_rows():
+    rows = []
+    try:
+        files = sorted(ORGANISE_RECEIPT_DIR.glob("organise-*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return rows
+    for p in files:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for r in data.get("results") or []:
+            if r.get("result") != "copied":
+                continue
+            source = os.path.normpath(r.get("source") or "")
+            target = os.path.normpath(r.get("target") or "")
+            if not source or not target:
+                continue
+            rows.append({
+                "source": source,
+                "target": target,
+                "pack": r.get("pack") or os.path.basename(source),
+                "receipt": str(p),
+                "finished_at": data.get("finished_at") or 0,
+            })
+    return rows
+
+
+def _indexed_count_under(folder):
+    with connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) c FROM assets WHERE missing=0 AND path LIKE ? ESCAPE '!'",
+            (_path_like(folder),),
+        ).fetchone()["c"]
+
+
+def organise_cleanup_plan(target_root="D:\\Hangar", limit=500):
+    """Old source folders that can be removed after Organise copied them.
+
+    A folder is "ready" only when the clean target still contains every file
+    from the old source with the same relative path and byte size, and no live
+    indexed asset still points at the old source.
+    """
+    target_root = os.path.normpath(target_root or "D:\\Hangar")
+    limit = max(1, min(2000, int(limit or 500)))
+    seen = {}
+    size_cache = {}
+    out = []
+    for row in _organise_receipt_rows():
+        source = row["source"]
+        target = row["target"]
+        source_key = os.path.normcase(os.path.normpath(source))
+        if source_key in seen:
+            continue
+        source_abs = os.path.normcase(os.path.abspath(os.path.normpath(source)))
+        target_abs = os.path.normcase(os.path.abspath(os.path.normpath(target)))
+        target_root_abs = os.path.normcase(os.path.abspath(os.path.normpath(target_root)))
+        status = "ready"
+        reason = ""
+        missing = 0
+        indexed = 0
+        size = 0
+        if source_abs == target_abs:
+            status = "same_folder"
+            reason = "Old and clean folders are the same"
+        elif source_abs == target_root_abs:
+            status = "target_root"
+            reason = "Old folder is the clean target root"
+        elif _is_same_or_child(target, source):
+            status = "unsafe_nested"
+            reason = "Target is inside the old source"
+        elif not os.path.isdir(source):
+            status = "gone"
+            reason = "Old folder is already gone"
+        elif not os.path.isdir(target):
+            status = "target_missing"
+            reason = "Clean target is missing"
+        else:
+            ok, missing = _folder_contains_all_files(target, source)
+            if not ok:
+                status = "target_incomplete"
+                reason = f"{missing} file(s) are not present in the clean target"
+            indexed = _indexed_count_under(source)
+            if status == "ready" and indexed:
+                status = "still_indexed"
+                reason = f"{indexed} indexed file(s) still point at the old folder"
+            size = _folder_size(source, size_cache)
+        item = {
+            **row,
+            "status": status,
+            "reason": reason,
+            "missing": missing,
+            "indexed": indexed,
+            "bytes": size,
+        }
+        seen[source_key] = item
+        out.append(item)
+    out.sort(key=lambda x: (
+        x["status"] != "ready",
+        -(x.get("bytes") or 0),
+        x["source"].lower(),
+    ))
+    summary = {
+        "total": len(out),
+        "ready": sum(1 for x in out if x["status"] == "ready"),
+        "gone": sum(1 for x in out if x["status"] == "gone"),
+        "blocked": sum(1 for x in out if x["status"] not in {"ready", "gone"}),
+        "bytes_ready": sum(x.get("bytes") or 0 for x in out if x["status"] == "ready"),
+    }
+    return {"target_root": target_root, "summary": summary, "items": out[:limit]}
+
+
+def _prune_empty_parents(start_folder, stop_roots):
+    removed = []
+    stops = {
+        os.path.normcase(os.path.abspath(os.path.normpath(r)))
+        for r in (stop_roots or []) if r
+    }
+    cur = os.path.abspath(os.path.normpath(start_folder or ""))
+    while cur:
+        key = os.path.normcase(cur)
+        parent = os.path.dirname(cur)
+        if key in stops or parent == cur:
+            break
+        try:
+            os.rmdir(cur)
+            removed.append(cur)
+        except OSError:
+            break
+        cur = parent
+    return removed
+
+
+def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None):
+    """Delete verified old Organise source folders.
+
+    This re-builds the cleanup plan immediately before deleting, so a stale UI
+    cannot delete a folder that stopped being safe after the plan was shown.
+    """
+    limit = max(1, min(1000, int(limit or 100)))
+    wanted = {
+        os.path.normcase(os.path.normpath(s))
+        for s in (sources or []) if s
+    }
+    plan = organise_cleanup_plan(target_root, limit=2000)
+    roots = [r["path"] for r in list_libraries()]
+    target_root = os.path.normpath(target_root or "D:\\Hangar")
+    deleted = failed = skipped = bytes_deleted = 0
+    results = []
+    for item in plan["items"]:
+        if deleted >= limit:
+            break
+        source_key = os.path.normcase(os.path.normpath(item["source"]))
+        if wanted and source_key not in wanted:
+            continue
+        result = {
+            "source": item["source"],
+            "target": item["target"],
+            "pack": item.get("pack") or os.path.basename(item["source"]),
+            "bytes": item.get("bytes") or 0,
+            "status": item["status"],
+        }
+        if item["status"] != "ready":
+            skipped += 1
+            result["result"] = "skipped"
+            result["reason"] = item.get("reason") or item["status"]
+            results.append(result)
+            continue
+        try:
+            shutil.rmtree(item["source"])
+            pruned = _prune_empty_parents(
+                os.path.dirname(item["source"]),
+                [target_root, *roots],
+            )
+            deleted += 1
+            bytes_deleted += int(item.get("bytes") or 0)
+            result["result"] = "deleted"
+            result["pruned"] = pruned
+            results.append(result)
+        except OSError as e:
+            failed += 1
+            result["result"] = "failed"
+            result["reason"] = str(e)
+            results.append(result)
+    return {
+        "ok": True,
+        "target_root": target_root,
+        "deleted": deleted,
+        "failed": failed,
+        "skipped": skipped,
+        "bytes_deleted": bytes_deleted,
+        "results": results,
+        "remaining": organise_cleanup_plan(target_root, limit=500)["summary"],
+    }

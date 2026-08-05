@@ -74,6 +74,7 @@ const state = {
   search: "", sort: "name", scanTimer: null, wasScanning: false,
   organiseTargetRoot: localStorage.getItem("hangar_organise_target_root") || "D:\\Hangar",
   organiseBatchSize: parseInt(localStorage.getItem("hangar_organise_batch_size") || "100", 10) || 100,
+  organiseSpaceDetails: localStorage.getItem("hangar_organise_space_details") === "1",
   organiseLastResult: null,
   organiseProgress: null,
   collapsed: loadCollapsed(),   // sidebar type sections the user has collapsed
@@ -1446,7 +1447,12 @@ async function refresh() {
 
   if (organise) {
     const target = encodeURIComponent(state.organiseTargetRoot || "D:\\Hangar");
-    const data = await api(`organise/plan?limit=500&fast=1&target=${target}`);
+    const fast = state.organiseSpaceDetails ? "0" : "1";
+    const [data, cleanup] = await Promise.all([
+      api(`organise/plan?limit=500&fast=${fast}&target=${target}`),
+      api(`organise/cleanup-plan?limit=200&target=${target}`),
+    ]);
+    data.cleanup = cleanup;
     state.organiseTargetRoot = data.target_root || state.organiseTargetRoot || "D:\\Hangar";
     renderOrganisePlan(data);
     await loadState();
@@ -2050,14 +2056,10 @@ function renderOrganisePlan(data) {
   if (texBar) texBar.classList.add("hidden");
 
   const items = data.items || [];
-  if (!items.length) {
-    grid.replaceChildren();
-    empty.classList.remove("hidden");
-    empty.innerHTML = `<h2>No organise plan yet</h2><p>Hangar did not find model packs that need a clean disk target.</p>`;
-    return;
-  }
-
   const s = data.summary || {};
+  const cleanup = data.cleanup || {};
+  const cleanupSummary = cleanup.summary || {};
+  const spaceKnown = Object.prototype.hasOwnProperty.call(s, "target_free");
   const frag = document.createDocumentFragment();
   const tools = document.createElement("div");
   tools.className = "organise-tools";
@@ -2067,13 +2069,15 @@ function renderOrganisePlan(data) {
     `<button id="organiseTargetBrowse" class="rescan" title="Choose the folder where Hangar should plan the clean library">Browse</button>` +
     `<button id="organiseTargetApply" class="rescan" title="Recalculate the plan for this target root">Apply</button>` +
     `<button id="organiseCopyVerified" class="rescan organise-primary" ${state.organiseProgress?.running ? "disabled" : ""} title="Copy the next verified model-pack folders into the clean library. Old folders are kept.">${state.organiseProgress?.running ? "Copying..." : "Copy verified packs"}</button>` +
+    `<button id="organiseSpaceDetails" class="rescan" title="Toggle slower accurate disk-space figures for this plan">${state.organiseSpaceDetails ? "Fast preview" : "Calculate space"}</button>` +
     `<label class="organise-batch">Batch ` +
     `<select id="organiseBatchSize" class="organise-batch-select">` +
     `${[25, 100, 250, 500].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v}</option>`).join("")}` +
     `</select></label>` +
-    (s.target_free ? `<span>${fmtSize(s.target_free || 0)} free</span>` : `<span title="Fast preview skips slow disk-space scanning">fast preview</span>`) +
+    (spaceKnown ? `<span>${fmtSize(s.target_free || 0)} free</span>` : `<span title="Fast preview skips slower disk-space scanning">fast preview</span>`) +
     (s.bytes_to_organise ? `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` : "") +
     (s.potential_duplicate_savings ? `<span title="Estimated space in duplicate pack folders that look safe to remove later after review. Nothing is deleted by this plan.">${fmtSize(s.potential_duplicate_savings || 0)} duplicate estimate</span>` : "") +
+    (cleanupSummary.ready ? `<span title="Old copied source folders verified safe to remove">${fmtSize(cleanupSummary.bytes_ready || 0)} reclaimable</span>` : "") +
     `<span>${s.move || 0} to copy</span>` +
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${(s.collision || 0) + (s.target_exists || 0)} need review</span>`;
@@ -2118,6 +2122,36 @@ function renderOrganisePlan(data) {
       (progress.current_pack ? `<div class="organise-result-path"><span>${esc(progress.current_pack)}</span><code>${esc(progress.current_target || progress.current_source || "")}</code></div>` : "");
     frag.appendChild(panel);
   }
+  if ((cleanupSummary.ready || cleanupSummary.blocked || cleanupSummary.gone)) {
+    const panel = document.createElement("div");
+    panel.className = "organise-result organise-cleanup";
+    const readyRows = (cleanup.items || []).filter((x) => x.status === "ready");
+    const readyList = readyRows.slice(0, 6).map((x) =>
+      `<div class="organise-result-path"><span>${esc(x.pack || baseName(x.source))}</span><code>${esc(x.source || "")}</code></div>`
+    ).join("");
+    const blockedNote = cleanupSummary.blocked
+      ? ` · ${cleanupSummary.blocked} blocked until the clean copy fully matches`
+      : "";
+    panel.innerHTML =
+      `<div class="organise-result-title">Old copied folders ready for cleanup</div>` +
+      `<div class="organise-result-meta">` +
+      `${cleanupSummary.ready || 0} verified folder${(cleanupSummary.ready || 0) === 1 ? "" : "s"} can be removed` +
+      ` · ${fmtSize(cleanupSummary.bytes_ready || 0)} reclaimable` +
+      (cleanupSummary.gone ? ` · ${cleanupSummary.gone} already gone` : "") +
+      blockedNote +
+      `</div>` +
+      (readyList ? `<div class="organise-result-list">${readyList}</div>` : "") +
+      (readyRows.length ? `<button id="organiseCleanupApply" class="rescan organise-danger" title="Delete old source folders only after Hangar re-checks that the clean copy contains every file">Delete old verified folders</button>` : "");
+    frag.appendChild(panel);
+  }
+  if (!items.length) {
+    const panel = document.createElement("div");
+    panel.className = "organise-result";
+    panel.innerHTML =
+      `<div class="organise-result-title">No packs waiting to copy</div>` +
+      `<div class="organise-result-meta">Hangar did not find model packs that need a clean disk target.</div>`;
+    frag.appendChild(panel);
+  }
   const applyTarget = () => {
     const input = tools.querySelector("#organiseTargetRoot");
     const next = (input && input.value.trim()) || "D:\\Hangar";
@@ -2127,6 +2161,11 @@ function renderOrganisePlan(data) {
     refresh();
   };
   tools.querySelector("#organiseTargetApply").onclick = applyTarget;
+  tools.querySelector("#organiseSpaceDetails").onclick = () => {
+    state.organiseSpaceDetails = !state.organiseSpaceDetails;
+    localStorage.setItem("hangar_organise_space_details", state.organiseSpaceDetails ? "1" : "0");
+    refresh();
+  };
   tools.querySelector("#organiseBatchSize").onchange = (e) => {
     state.organiseBatchSize = parseInt(e.target.value || "100", 10) || 100;
     localStorage.setItem("hangar_organise_batch_size", String(state.organiseBatchSize));
@@ -2177,7 +2216,6 @@ function renderOrganisePlan(data) {
     startOrganisePolling(data);
     toast(`Organising ${Math.min(batch, n)} pack${Math.min(batch, n) === 1 ? "" : "s"} in the background.`, "success");
   };
-
   const byCat = new Map();
   for (const item of items) {
     const key = item.category || "Uncategorised";
@@ -2224,6 +2262,37 @@ function renderOrganisePlan(data) {
     frag.appendChild(section);
   }
   grid.replaceChildren(frag);
+  const cleanupBtn = grid.querySelector("#organiseCleanupApply");
+  if (cleanupBtn) cleanupBtn.onclick = async () => {
+    const target = state.organiseTargetRoot || "D:\\Hangar";
+    const batch = Math.max(1, Math.min(1000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
+    const ready = cleanupSummary.ready || 0;
+    const n = Math.min(batch, ready);
+    if (!ready) {
+      toast("There are no old verified folders ready to remove.", "success");
+      return;
+    }
+    if (!confirm(`Delete ${n} old verified source folder${n === 1 ? "" : "s"}?\n\nHangar will re-check each folder first. It only deletes an old folder when the clean copy still contains every file with the same path and size.\n\nExpected space reclaimed: ${fmtSize(cleanupSummary.bytes_ready || 0)}\n\nThis deletes files from disk.`)) return;
+    cleanupBtn.disabled = true;
+    cleanupBtn.textContent = "Deleting...";
+    let r;
+    try {
+      r = await post("organise/cleanup-apply", { target, limit: batch });
+    } catch (_) {
+      toast("Cleanup failed before it could start.", "error");
+      cleanupBtn.disabled = false;
+      cleanupBtn.textContent = "Delete old verified folders";
+      return;
+    }
+    if (!r || !r.ok) {
+      toast((r && r.error) || "Cleanup failed.", "error");
+      cleanupBtn.disabled = false;
+      cleanupBtn.textContent = "Delete old verified folders";
+      return;
+    }
+    toast(`Deleted ${r.deleted || 0} old folder${(r.deleted || 0) === 1 ? "" : "s"} and reclaimed ${fmtSize(r.bytes_deleted || 0)}.`, r.failed ? "error" : "success");
+    refresh(); loadState();
+  };
   grid.scrollTop = 0;
 }
 

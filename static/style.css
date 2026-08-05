@@ -815,6 +815,19 @@ button, input, select { font-family: inherit; color: inherit; }
   border-color: rgba(91, 141, 239, .45);
   background: rgba(91, 141, 239, .09);
 }
+.organise-cleanup {
+  border-color: rgba(232, 125, 62, .42);
+  background: rgba(232, 125, 62, .09);
+}
+.organise-danger {
+  margin-top: 10px;
+  border-color: rgba(199, 89, 107, .55);
+  color: #ffd2d8;
+}
+.organise-danger:disabled {
+  opacity: .62;
+  cursor: wait;
+}
 .organise-progress-bar {
   height: 6px; margin-top: 9px; overflow: hidden;
   border-radius: 999px; background: rgba(255,255,255,.08);

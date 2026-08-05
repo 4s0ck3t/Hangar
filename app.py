@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.59"
+__version__ = "0.15.60"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1564,6 +1564,22 @@ def organise_apply():
 @app.get("/api/organise/status")
 def organise_status():
     return jsonify({"ok": True, **_organise_snapshot()})
+
+
+@app.get("/api/organise/cleanup-plan")
+def organise_cleanup_plan():
+    target = request.args.get("target", "D:\\Hangar").strip() or "D:\\Hangar"
+    limit = int(request.args.get("limit", 500))
+    return jsonify(store.organise_cleanup_plan(target, limit))
+
+
+@app.post("/api/organise/cleanup-apply")
+def organise_cleanup_apply():
+    data = request.get_json(silent=True) or {}
+    target = (data.get("target") or "D:\\Hangar").strip() or "D:\\Hangar"
+    limit = int(data.get("limit") or 100)
+    sources = data.get("sources") if isinstance(data.get("sources"), list) else None
+    return jsonify(store.apply_organise_cleanup(target, limit, sources=sources))
 
 
 @app.delete("/api/assets/missing")
