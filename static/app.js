@@ -4526,9 +4526,10 @@ async function manualCheckUpdate() {
   }
   if (u.update_available) {
     _updateInfo = u;
-    // Start the download straight away in the background; the pill tracks it and
-    // becomes a "Restart to finish" button when it's ready.
-    beginBackgroundUpdate();
+    _updateReady = false;
+    _setPill(`⬆ Update to v${u.latest}`, openUpdateModal);
+    toast(`Update v${u.latest} is available.`, "success");
+    openUpdateModal();
   } else {
     const note = u.cached && u.retry_after
       ? ` Cached to avoid GitHub rate limits; fresh check available in ${Math.ceil(u.retry_after / 60)} min.`
