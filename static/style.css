@@ -811,6 +811,18 @@ button, input, select { font-family: inherit; color: inherit; }
   color: var(--faint); font-family: var(--mono); font-size: 10.5px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.organise-running {
+  border-color: rgba(91, 141, 239, .45);
+  background: rgba(91, 141, 239, .09);
+}
+.organise-progress-bar {
+  height: 6px; margin-top: 9px; overflow: hidden;
+  border-radius: 999px; background: rgba(255,255,255,.08);
+}
+.organise-progress-bar span {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, var(--select), #3dbe8b);
+}
 .organise-rows { display: flex; flex-direction: column; gap: 8px; padding: 10px 22px 14px; }
 .organise-row {
   padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;

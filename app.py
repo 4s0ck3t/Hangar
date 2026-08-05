@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.57"
+__version__ = "0.15.58"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1492,6 +1492,44 @@ def duplicate_pack_restore():
     return jsonify({"ok": True, "changed": changed, "groups": store.duplicate_pack_groups()})
 
 
+ORGANISE = {
+    "running": False, "done": False, "error": None, "result": None,
+    "target": None, "limit": 0, "phase": None, "started_at": None,
+    "updated_at": None, "copied": 0, "skipped": 0, "failed": 0,
+    "updated_assets": 0, "bytes_copied": 0, "current_pack": "",
+    "current_source": "", "current_target": "",
+}
+ORGANISE_LOCK = threading.Lock()
+
+
+def _organise_snapshot():
+    with ORGANISE_LOCK:
+        return dict(ORGANISE)
+
+
+def _organise_update(**changes):
+    with ORGANISE_LOCK:
+        ORGANISE.update(changes)
+        ORGANISE["updated_at"] = time.time()
+
+
+def _run_organise_apply(target, limit):
+    def progress(update):
+        _organise_update(**(update or {}))
+
+    try:
+        result = store.apply_organise_disk_plan(target, limit, progress=progress)
+        _organise_update(
+            running=False, done=True, phase="done", error=None, result=result,
+            copied=result.get("copied", 0), skipped=result.get("skipped", 0),
+            failed=result.get("failed", 0),
+            updated_assets=result.get("updated_assets", 0),
+            bytes_copied=result.get("bytes_copied", 0),
+        )
+    except Exception as e:
+        _organise_update(running=False, done=False, phase="error", error=str(e))
+
+
 @app.get("/api/organise/plan")
 def organise_plan():
     target = request.args.get("target", "D:\\Hangar").strip() or "D:\\Hangar"
@@ -1505,8 +1543,24 @@ def organise_apply():
     data = request.get_json(silent=True) or {}
     target = (data.get("target") or "D:\\Hangar").strip() or "D:\\Hangar"
     limit = int(data.get("limit") or 100)
-    result = store.apply_organise_disk_plan(target, limit)
-    return jsonify({"ok": True, **result})
+    with ORGANISE_LOCK:
+        if ORGANISE.get("running"):
+            return jsonify({"ok": True, "running": True, "status": dict(ORGANISE)})
+        ORGANISE.update({
+            "running": True, "done": False, "error": None, "result": None,
+            "target": target, "limit": limit, "phase": "starting",
+            "started_at": time.time(), "updated_at": time.time(),
+            "copied": 0, "skipped": 0, "failed": 0, "updated_assets": 0,
+            "bytes_copied": 0, "current_pack": "", "current_source": "",
+            "current_target": "",
+        })
+    threading.Thread(target=_run_organise_apply, args=(target, limit), daemon=True).start()
+    return jsonify({"ok": True, "running": True, "status": _organise_snapshot()})
+
+
+@app.get("/api/organise/status")
+def organise_status():
+    return jsonify({"ok": True, **_organise_snapshot()})
 
 
 @app.delete("/api/assets/missing")

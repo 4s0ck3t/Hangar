@@ -2260,7 +2260,7 @@ def _update_asset_paths_for_folder(source_folder, target_folder):
     return updated
 
 
-def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100):
+def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None):
     """Copy planned model-pack folders into the clean layout and verify each copy.
 
     This deliberately does not delete the old source folders. The index is moved
@@ -2285,6 +2285,17 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100):
             "WHERE a.missing=0 AND a.hidden=0 AND a.kind='model' "
             "GROUP BY a.id ORDER BY a.path COLLATE NOCASE"
         ).fetchall()
+    if progress:
+        progress({
+            "phase": "planning",
+            "limit": limit,
+            "candidate_files": len(rows),
+            "copied": copied,
+            "skipped": skipped,
+            "failed": failed,
+            "updated_assets": updated_assets,
+            "bytes_copied": bytes_copied,
+        })
 
     for r in rows:
         if copied >= limit:
@@ -2322,17 +2333,52 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100):
             "pack": pack_name or os.path.basename(source),
             "status": status,
         }
+        if progress:
+            progress({
+                "phase": "copying",
+                "limit": limit,
+                "current_pack": result["pack"],
+                "current_source": source,
+                "current_target": target,
+                "copied": copied,
+                "skipped": skipped,
+                "failed": failed,
+                "updated_assets": updated_assets,
+                "bytes_copied": bytes_copied,
+            })
         if status != "move":
             skipped += 1
             result["result"] = "skipped"
             result["reason"] = status
             results.append(result)
+            if progress:
+                progress({
+                    "phase": "copying",
+                    "limit": limit,
+                    "current_pack": result["pack"],
+                    "copied": copied,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "updated_assets": updated_assets,
+                    "bytes_copied": bytes_copied,
+                })
             continue
         if not source or not os.path.isdir(source):
             failed += 1
             result["result"] = "failed"
             result["reason"] = "source_missing"
             results.append(result)
+            if progress:
+                progress({
+                    "phase": "copying",
+                    "limit": limit,
+                    "current_pack": result["pack"],
+                    "copied": copied,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "updated_assets": updated_assets,
+                    "bytes_copied": bytes_copied,
+                })
             continue
         src_norm = os.path.normcase(os.path.abspath(source))
         dst_norm = os.path.normcase(os.path.abspath(target))
@@ -2341,12 +2387,34 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100):
             result["result"] = "failed"
             result["reason"] = "target_inside_source"
             results.append(result)
+            if progress:
+                progress({
+                    "phase": "copying",
+                    "limit": limit,
+                    "current_pack": result["pack"],
+                    "copied": copied,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "updated_assets": updated_assets,
+                    "bytes_copied": bytes_copied,
+                })
             continue
         if os.path.exists(target):
             skipped += 1
             result["result"] = "skipped"
             result["reason"] = "target_exists"
             results.append(result)
+            if progress:
+                progress({
+                    "phase": "copying",
+                    "limit": limit,
+                    "current_pack": result["pack"],
+                    "copied": copied,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "updated_assets": updated_assets,
+                    "bytes_copied": bytes_copied,
+                })
             continue
         try:
             os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -2359,6 +2427,17 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100):
                 result["result"] = "failed"
                 result["reason"] = "verify_failed"
                 results.append(result)
+                if progress:
+                    progress({
+                        "phase": "copying",
+                        "limit": limit,
+                        "current_pack": result["pack"],
+                        "copied": copied,
+                        "skipped": skipped,
+                        "failed": failed,
+                        "updated_assets": updated_assets,
+                        "bytes_copied": bytes_copied,
+                    })
                 continue
             changed = _update_asset_paths_for_folder(source, target)
             copied += 1
@@ -2367,12 +2446,34 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100):
             result["result"] = "copied"
             result["assets_updated"] = changed
             results.append(result)
+            if progress:
+                progress({
+                    "phase": "copying",
+                    "limit": limit,
+                    "current_pack": result["pack"],
+                    "copied": copied,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "updated_assets": updated_assets,
+                    "bytes_copied": bytes_copied,
+                })
         except OSError as e:
             shutil.rmtree(target, ignore_errors=True)
             failed += 1
             result["result"] = "failed"
             result["reason"] = str(e)
             results.append(result)
+            if progress:
+                progress({
+                    "phase": "copying",
+                    "limit": limit,
+                    "current_pack": result["pack"],
+                    "copied": copied,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "updated_assets": updated_assets,
+                    "bytes_copied": bytes_copied,
+                })
 
     receipt = {
         "started_at": started,
@@ -2397,4 +2498,6 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100):
             add_library(receipt["target_root"], Path(receipt["target_root"]).name or "Hangar")
         except OSError:
             pass
+    if progress:
+        progress({"phase": "done", **receipt})
     return receipt
