@@ -2171,6 +2171,129 @@ def relink_blend_textures(blend_path, mapping):
     return {"ok": False, "changed": 0, "error": _render_failure_summary(proc)}
 
 
+_PACK_RELINK_SKIP_EXTS = {".blend", ".blend1", ".fbx", ".obj", ".glb", ".gltf"}
+_PACK_RELINK_HDRI_RES_SUFFIX = re.compile(r"_(?:\d+k|\d{3,5})$", re.I)
+
+
+def _strip_long_path_prefix(path):
+    path = str(path or "")
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    if path.startswith("\\\\?\\"):
+        return path[4:]
+    return path
+
+
+def _resolve_blend_ref(blend_path, ref):
+    ref = (ref or "").strip()
+    if not ref:
+        return ""
+    if ref.startswith("//"):
+        ref = os.path.join(os.path.dirname(blend_path), ref[2:].lstrip("/\\"))
+    return os.path.normpath(ref.replace("\\", os.sep))
+
+
+def _pack_relink_is_hdri(path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".hdr":
+        return True
+    if ext != ".exr":
+        return False
+    try:
+        import scanner
+        folder = os.path.dirname(path)
+        name = os.path.splitext(os.path.basename(path))[0]
+        return scanner.classify_kind(ext, folder, name) == "hdri"
+    except Exception:
+        return False
+
+
+def _pack_relink_hdri_key(path):
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    return _PACK_RELINK_HDRI_RES_SUFFIX.sub("", stem)
+
+
+def _pack_relink_resolution(path):
+    stem = os.path.splitext(os.path.basename(path))[0].lower()
+    m = re.search(r"_(\d+)k$", stem)
+    if m:
+        return int(m.group(1)) * 1024
+    m = re.search(r"_(\d{3,5})$", stem)
+    if m:
+        return int(m.group(1))
+    return 0
+
+
+def _pack_relink_score(candidate, target, blend_path):
+    blend_dir = os.path.normcase(os.path.normpath(os.path.dirname(blend_path)))
+    cand_dir = os.path.normcase(os.path.normpath(os.path.dirname(candidate)))
+    proximity = 0
+    if cand_dir == blend_dir:
+        proximity = 10000
+    elif cand_dir.startswith(blend_dir + os.sep):
+        proximity = 9000
+    same_ext = 200 if os.path.splitext(candidate)[1].lower() == os.path.splitext(target)[1].lower() else 0
+    want_res = _pack_relink_resolution(target)
+    have_res = _pack_relink_resolution(candidate)
+    res_fit = max(0, 100 - abs(want_res - have_res)) if want_res and have_res else 0
+    return proximity + same_ext + res_fit
+
+
+def _pack_texture_candidates(pack_root):
+    by_name = {}
+    by_hdri_key = {}
+    for dirpath, dirnames, filenames in os.walk(_fs(pack_root)):
+        dirnames[:] = [
+            d for d in dirnames
+            if d.lower() not in {"$recycle.bin", "system volume information", ".trashes"}
+        ]
+        for fn in filenames:
+            if os.path.splitext(fn)[1].lower() in _PACK_RELINK_SKIP_EXTS:
+                continue
+            fp = _strip_long_path_prefix(os.path.join(dirpath, fn))
+            by_name.setdefault(fn.lower(), []).append(fp)
+            if _pack_relink_is_hdri(fp):
+                by_hdri_key.setdefault(_pack_relink_hdri_key(fp), []).append(fp)
+    return by_name, by_hdri_key
+
+
+def relink_blend_to_pack_textures(blend_path, pack_root=None):
+    """Relink missing image paths to same-named files inside this asset pack."""
+    pack_root = pack_root or os.path.dirname(blend_path)
+    info = inspect_blend(blend_path) or {}
+    missing = info.get("missing_textures") or []
+    if not missing:
+        return {"ok": True, "changed": 0, "still_missing": 0}
+    by_name, by_hdri_key = _pack_texture_candidates(pack_root)
+    mapping = {}
+    unresolved = 0
+    for m in missing:
+        target = _resolve_blend_ref(blend_path, m.get("path"))
+        if not target or os.path.exists(_fs(target)):
+            continue
+        cands = by_name.get(os.path.basename(target).lower(), [])
+        if not cands and _pack_relink_is_hdri(target):
+            cands = by_hdri_key.get(_pack_relink_hdri_key(target), [])
+        cands = sorted(cands, key=lambda c: -_pack_relink_score(c, target, blend_path))
+        if cands:
+            mapping[target] = cands[0]
+        else:
+            unresolved += 1
+    if not mapping:
+        return {"ok": True, "changed": 0, "still_missing": len(missing), "unresolved": unresolved}
+    result = relink_blend_textures(blend_path, mapping)
+    changed = int(result.get("changed") or 0) if result.get("ok") else 0
+    clear_inspect_cache(blend_path)
+    still = len((inspect_blend(blend_path) or {}).get("missing_textures") or [])
+    return {
+        "ok": bool(result.get("ok")),
+        "changed": changed,
+        "still_missing": still,
+        "unresolved": unresolved + max(0, len(mapping) - changed),
+        "error": result.get("error"),
+    }
+
+
 # Extract one marked datablock into its own .blend. bpy.data.libraries.write
 # writes the named object/collection plus every datablock it depends on (mesh,
 # materials, textures), leaving the source file untouched.

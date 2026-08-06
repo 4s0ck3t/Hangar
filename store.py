@@ -955,6 +955,17 @@ def list_blend_assets():
     return [dict(r) for r in rows]
 
 
+def list_blend_assets_under(folder):
+    """id + path of live .blend files under a folder."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, path FROM assets WHERE missing=0 AND hidden=0 AND ext='.blend' "
+            "AND path LIKE ? ESCAPE '!' ORDER BY path",
+            (_path_like(folder),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def donor_blend_candidates(path, limit=2000):
     """Healthy .blend files to borrow a DNA1 catalog from when repairing
     `path` — same-folder files first (an asset pack is usually saved by one
@@ -2381,7 +2392,8 @@ def _update_asset_paths_for_folder(source_folder, target_folder, on_path_moved=N
     return updated
 
 
-def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None, on_path_moved=None):
+def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
+                             on_path_moved=None, on_pack_copied=None):
     """Copy planned model-pack folders into the clean layout and verify each copy.
 
     This deliberately does not delete the old source folders. The index is moved
@@ -2390,6 +2402,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
     """
     limit = max(1, min(1000, int(limit or 100)))
     copied = skipped = failed = updated_assets = bytes_copied = 0
+    blends_relinked = texture_refs_relinked = 0
     results = []
     started = time.time()
     target_root = os.path.normpath(target_root or "D:\\Hangar")
@@ -2418,7 +2431,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
         target = os.path.normpath(item.get("target") or "")
         dst_key = os.path.normcase(target)
         status = "move"
-        if src_key == dst_key or src_key.startswith(os.path.normcase(target_root) + os.sep):
+        if src_key == dst_key:
             status = "already_clean"
         elif dst_key in seen_targets:
             status = "collision"
@@ -2518,11 +2531,20 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
                     })
                 continue
             changed = _update_asset_paths_for_folder(source, target, on_path_moved=on_path_moved)
+            relink_result = {}
+            if on_pack_copied:
+                try:
+                    relink_result = on_pack_copied(target) or {}
+                except Exception as e:
+                    relink_result = {"error": str(e)}
+            blends_relinked += int(relink_result.get("blends_relinked") or 0)
+            texture_refs_relinked += int(relink_result.get("texture_refs_relinked") or 0)
             copied += 1
             updated_assets += changed
             result["result"] = "copied"
             result["reason"] = "target_already_verified"
             result["assets_updated"] = changed
+            result["relink"] = relink_result
             results.append(result)
             if progress:
                 progress({
@@ -2560,11 +2582,20 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
                     })
                 continue
             changed = _update_asset_paths_for_folder(source, target, on_path_moved=on_path_moved)
+            relink_result = {}
+            if on_pack_copied:
+                try:
+                    relink_result = on_pack_copied(target) or {}
+                except Exception as e:
+                    relink_result = {"error": str(e)}
+            blends_relinked += int(relink_result.get("blends_relinked") or 0)
+            texture_refs_relinked += int(relink_result.get("texture_refs_relinked") or 0)
             copied += 1
             updated_assets += changed
             bytes_copied += int(manifest.get("bytes") or 0)
             result["result"] = "copied"
             result["assets_updated"] = changed
+            result["relink"] = relink_result
             results.append(result)
             if progress:
                 progress({
@@ -2605,6 +2636,8 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
         "failed": failed,
         "updated_assets": updated_assets,
         "bytes_copied": bytes_copied,
+        "blends_relinked": blends_relinked,
+        "texture_refs_relinked": texture_refs_relinked,
         "results": results,
     }
     name = time.strftime("organise-%Y%m%d-%H%M%S.json", time.localtime(receipt["finished_at"]))

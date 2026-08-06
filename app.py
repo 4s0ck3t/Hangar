@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.72"
+__version__ = "0.15.73"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -960,6 +960,53 @@ def _texfix_local_target(blend_path, found_path):
     return os.path.join(tex_dir, name)
 
 
+def _refresh_blend_texture_meta(asset_id, blend_path):
+    thumbs.clear_inspect_cache(blend_path)
+    info = thumbs.inspect_blend(blend_path) or {}
+    store.set_blend_meta(
+        asset_id,
+        _blend_search_text(info),
+        len(info.get("missing_textures") or []),
+        info.get("packed_textures"),
+        info.get("external_textures"),
+        info.get("packed_texture_maps"),
+        info.get("packed_hdris"),
+        info.get("external_texture_maps"),
+        info.get("external_hdris"),
+    )
+    return info
+
+
+def _relink_blends_to_pack_textures(pack_root):
+    """Relink copied .blend files to matching files already inside the pack."""
+    checked = blends_relinked = refs_relinked = unresolved = 0
+    errors = []
+    for asset in store.list_blend_assets_under(pack_root):
+        checked += 1
+        blend_path = asset["path"]
+        try:
+            result = thumbs.relink_blend_to_pack_textures(blend_path, pack_root)
+            changed = int(result.get("changed") or 0) if result.get("ok") else 0
+            if changed:
+                blends_relinked += 1
+                refs_relinked += changed
+            unresolved += int(result.get("unresolved") or 0)
+            _refresh_blend_texture_meta(asset["id"], blend_path)
+            if result.get("error") and len(errors) < 10:
+                errors.append({"blend": blend_path, "error": result.get("error")})
+        except Exception as e:
+            unresolved += 1
+            if len(errors) < 10:
+                errors.append({"blend": blend_path, "error": str(e)})
+    return {
+        "blends_checked": checked,
+        "blends_relinked": blends_relinked,
+        "texture_refs_relinked": refs_relinked,
+        "unresolved": unresolved,
+        "errors": errors,
+    }
+
+
 def _run_texfix(generation, source):
     by_name = {}
     by_hdri_key = {}
@@ -1498,6 +1545,7 @@ ORGANISE = {
     "updated_at": None, "copied": 0, "skipped": 0, "failed": 0,
     "updated_assets": 0, "bytes_copied": 0, "current_pack": "",
     "current_source": "", "current_target": "",
+    "blends_relinked": 0, "texture_refs_relinked": 0,
 }
 ORGANISE_LOCK = threading.Lock()
 CLEANUP = {
@@ -1540,6 +1588,7 @@ def _run_organise_apply(target, limit):
         result = store.apply_organise_disk_plan(
             target, limit, progress=progress,
             on_path_moved=thumbs.copy_cached_thumb,
+            on_pack_copied=_relink_blends_to_pack_textures,
         )
         _organise_update(
             running=False, done=True, phase="done", error=None, result=result,
@@ -1547,6 +1596,8 @@ def _run_organise_apply(target, limit):
             failed=result.get("failed", 0),
             updated_assets=result.get("updated_assets", 0),
             bytes_copied=result.get("bytes_copied", 0),
+            blends_relinked=result.get("blends_relinked", 0),
+            texture_refs_relinked=result.get("texture_refs_relinked", 0),
         )
     except Exception as e:
         _organise_update(running=False, done=False, phase="error", error=str(e))
@@ -1593,7 +1644,8 @@ def organise_apply():
             "started_at": time.time(), "updated_at": time.time(),
             "copied": 0, "skipped": 0, "failed": 0, "updated_assets": 0,
             "bytes_copied": 0, "current_pack": "", "current_source": "",
-            "current_target": "",
+            "current_target": "", "blends_relinked": 0,
+            "texture_refs_relinked": 0,
         })
     threading.Thread(target=_run_organise_apply, args=(target, limit), daemon=True).start()
     return jsonify({"ok": True, "running": True, "status": _organise_snapshot()})
