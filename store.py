@@ -584,9 +584,23 @@ def remove_library(library_id):
         row = conn.execute("SELECT path FROM libraries WHERE id=?", (library_id,)).fetchone()
         if not row:
             return
-        # Drop assets that lived under this library root.
-        conn.execute("DELETE FROM assets WHERE path LIKE ? ESCAPE '!'",
-                     (_path_like(row["path"]),))
+        other_roots = [
+            r["path"] for r in conn.execute(
+                "SELECT path FROM libraries WHERE id<>?", (library_id,)
+            ).fetchall()
+        ]
+        if other_roots:
+            # A broad root such as D:\ can overlap a more specific root like
+            # D:\Hangar. Removing the broad root should not wipe rows still
+            # covered by another active library.
+            protected = " OR ".join("path LIKE ? ESCAPE '!'" for _ in other_roots)
+            conn.execute(
+                f"DELETE FROM assets WHERE path LIKE ? ESCAPE '!' AND NOT ({protected})",
+                [_path_like(row["path"]), *[_path_like(r) for r in other_roots]],
+            )
+        else:
+            conn.execute("DELETE FROM assets WHERE path LIKE ? ESCAPE '!'",
+                         (_path_like(row["path"]),))
         conn.execute("DELETE FROM libraries WHERE id=?", (library_id,))
     purge_orphan_assets()
 
@@ -2242,6 +2256,60 @@ def _physical_subcategory(category, subfolder, pack_name):
     return sub or pack or "General"
 
 
+_PHYSICAL_KIND_ROOTS = {
+    "texture": "Textures",
+    "hdri": "HDRIs",
+    "material": "Materials",
+}
+
+
+def _physical_file_group(asset):
+    kind = asset.get("kind") or ""
+    if kind == "hdri":
+        return ""
+    if kind in {"texture", "material"}:
+        if asset.get("set_key"):
+            name = str(asset.get("set_key") or "").split("|")[-1]
+            if name:
+                return _clean_path_part(name, "")
+        return _clean_path_part(asset.get("subtype") or "", "")
+    return ""
+
+
+def _physical_file_target(target_root, asset):
+    root = _PHYSICAL_KIND_ROOTS.get(asset.get("kind") or "")
+    if not root:
+        return ""
+    drive_root = os.path.splitdrive(asset["path"])[0] + os.sep
+    parts = [target_root, root]
+    try:
+        rel_parent = os.path.relpath(os.path.dirname(asset["path"]), drive_root)
+        rel_parts = [p for p in rel_parent.split(os.sep) if p and p != os.curdir]
+    except (OSError, ValueError):
+        rel_parts = []
+    source_buckets = {
+        "3dassets", "assets", "models", "model", "textures", "texture",
+        "hdris", "hdri", "materials", "material", "3dmodels",
+    }
+    while rel_parts and _source_token(rel_parts[0]) in source_buckets:
+        rel_parts = rel_parts[1:]
+    cleaned_rel = [_clean_path_part(p) for p in rel_parts if _clean_path_part(p, "")]
+    if cleaned_rel:
+        parts.extend(cleaned_rel)
+    else:
+        author = asset.get("author") or source_folder(asset["path"], drive_root) or "Unknown"
+        parts.append(_clean_path_part(author))
+    group = _physical_file_group(asset)
+    rel_tokens = {_source_token(p) for p in cleaned_rel[-3:]}
+    has_texture_folder = any(
+        _source_token(p) in {"texture", "textures", "map", "maps", "material", "materials"}
+        for p in cleaned_rel
+    )
+    if group and not has_texture_folder and _source_token(group) not in rel_tokens:
+        parts.append(group)
+    return os.path.join(*parts, _clean_path_part(os.path.basename(asset["path"])))
+
+
 @lru_cache(maxsize=20000)
 def _pack_parent_info(parent):
     try:
@@ -2306,6 +2374,15 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
             "WHERE a.missing=0 AND a.hidden=0 AND a.kind='model' "
             "GROUP BY a.id ORDER BY a.path COLLATE NOCASE"
         ).fetchall()
+        file_rows = [
+            dict(r) for r in conn.execute(
+                "SELECT id, path, name, ext, kind, author, size, set_key, "
+                "subtype, resolution FROM assets "
+                "WHERE missing=0 AND hidden=0 "
+                "AND kind IN ('texture', 'hdri', 'material') "
+                "ORDER BY path COLLATE NOCASE"
+            ).fetchall()
+        ]
 
     packs = {}
     for r in rows:
@@ -2336,11 +2413,15 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
     summary = {
         "packs": 0, "already_clean": 0, "collision": 0, "collisions": 0,
         "target_exists": 0, "move": 0,
+        "model_packs": 0, "loose_files": 0, "model_pack_moves": 0,
+        "loose_file_moves": 0,
         "bytes_to_organise": 0, "copy_stage_bytes": 0,
         "potential_duplicate_savings": 0,
     }
     seen_targets = {}
+    pack_source_keys = set()
     for p in packs.values():
+        pack_source_keys.add(os.path.normcase(os.path.abspath(os.path.normpath(p["source"]))))
         disk_size = (_folder_size(p["source"], size_cache) or p["size"]) if include_sizes else int(p["size"] or 0)
         target = os.path.join(
             target_root, "Models", _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(p["category"], p["category"])),
@@ -2362,11 +2443,15 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
                 status = "target_exists"
         seen_targets[dst_norm] = src_norm
         summary["packs"] += 1
+        summary["model_packs"] += 1
+        if status == "move":
+            summary["model_pack_moves"] += 1
         summary[status if status in summary else "collisions"] = summary.get(status if status in summary else "collisions", 0) + 1
         if status == "move" and include_sizes:
             summary["bytes_to_organise"] += disk_size
             summary["copy_stage_bytes"] += disk_size
         items.append({
+            "mode": "pack",
             "source": p["source"],
             "target": target,
             "category": p["category"],
@@ -2378,6 +2463,67 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
             "size": p["size"],
             "disk_size": disk_size,
             "status": status,
+        })
+
+    target_root_norm = os.path.normcase(os.path.abspath(os.path.normpath(target_root)))
+    for r in file_rows:
+        source = os.path.normpath(r["path"])
+        source_abs = os.path.normcase(os.path.abspath(source))
+        if source_abs == target_root_norm or source_abs.startswith(target_root_norm + os.sep):
+            continue
+        cur = os.path.dirname(source_abs)
+        inside_planned_pack = False
+        while cur:
+            if cur in pack_source_keys:
+                inside_planned_pack = True
+                break
+            parent = os.path.dirname(cur)
+            if parent == cur:
+                break
+            cur = parent
+        if inside_planned_pack:
+            continue
+        target = _physical_file_target(target_root, r)
+        if not target:
+            continue
+        src_norm = os.path.normcase(os.path.normpath(source))
+        dst_norm = os.path.normcase(os.path.normpath(target))
+        status = "move"
+        if src_norm == dst_norm:
+            status = "already_clean"
+        elif dst_norm in seen_targets and seen_targets[dst_norm] != src_norm:
+            status = "collision"
+        elif os.path.exists(target):
+            try:
+                same = os.path.getsize(source) == os.path.getsize(target)
+            except OSError:
+                same = False
+            status = "move" if same else "target_exists"
+        seen_targets[dst_norm] = src_norm
+        disk_size = int(r.get("size") or 0)
+        summary["packs"] += 1
+        summary["loose_files"] += 1
+        if status == "move":
+            summary["loose_file_moves"] += 1
+        summary[status if status in summary else "collisions"] = summary.get(status if status in summary else "collisions", 0) + 1
+        if status == "move" and include_sizes:
+            summary["bytes_to_organise"] += disk_size
+            summary["copy_stage_bytes"] += disk_size
+        items.append({
+            "mode": "file",
+            "asset_id": r["id"],
+            "source": source,
+            "target": target,
+            "category": _PHYSICAL_KIND_ROOTS.get(r["kind"], r["kind"]),
+            "author": r.get("author") or "Unknown",
+            "subcategory": _physical_file_group(r) or _PHYSICAL_KIND_ROOTS.get(r["kind"], ""),
+            "pack": r.get("name") or os.path.splitext(os.path.basename(source))[0],
+            "formats": [r["ext"]] if r.get("ext") else [],
+            "count": 1,
+            "size": disk_size,
+            "disk_size": disk_size,
+            "status": status,
+            "kind": r["kind"],
         })
 
     if include_sizes:
@@ -2441,6 +2587,63 @@ def _update_asset_paths_for_folder(source_folder, target_folder, on_path_moved=N
     return updated
 
 
+def _update_asset_path(asset_id, old_path, new_path, kind="", mtime=0, on_path_moved=None):
+    old_path = os.path.normpath(old_path or "")
+    new_path = os.path.normpath(new_path or "")
+    if not asset_id or not old_path or not new_path:
+        return 0
+    if os.path.normcase(old_path) == os.path.normcase(new_path):
+        return 0
+    with connect() as conn:
+        existing = conn.execute(
+            "SELECT id FROM assets WHERE path=? AND id<>?", (new_path, asset_id)
+        ).fetchone()
+        if existing:
+            return 0
+        if on_path_moved:
+            try:
+                on_path_moved(
+                    {"id": asset_id, "path": old_path, "kind": kind, "mtime": mtime},
+                    {"id": asset_id, "path": new_path, "kind": kind, "mtime": mtime},
+                )
+            except Exception:
+                pass
+        conn.execute("UPDATE assets SET path=? WHERE id=?", (new_path, asset_id))
+    return 1
+
+
+def _copy_verified_file(source, target):
+    source = os.path.normpath(source or "")
+    target = os.path.normpath(target or "")
+    if not source or not os.path.isfile(source):
+        return False, "source_missing"
+    if os.path.exists(target):
+        try:
+            if os.path.isfile(target) and os.path.getsize(source) == os.path.getsize(target):
+                return True, "target_already_verified"
+        except OSError:
+            pass
+        return False, "target_exists"
+    tmp = target + ".hangar-copy"
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(source, tmp)
+        if os.path.getsize(source) != os.path.getsize(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False, "verify_failed"
+        os.replace(tmp, target)
+        return True, ""
+    except OSError as e:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False, str(e)
+
+
 def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
                              on_path_moved=None, on_pack_copied=None):
     """Copy planned model-pack folders into the clean layout and verify each copy.
@@ -2464,7 +2667,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
         progress({
             "phase": "planning",
             "limit": effective_limit,
-            "candidate_packs": len(candidates),
+            "candidate_items": len(candidates),
             "copied": copied,
             "skipped": skipped,
             "failed": failed,
@@ -2475,6 +2678,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
     for item in candidates:
         if copied >= limit:
             break
+        mode = item.get("mode") or "pack"
         source = os.path.normpath(item.get("source") or "")
         src_key = os.path.normcase(source)
         target = os.path.normpath(item.get("target") or "")
@@ -2485,9 +2689,16 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
         elif dst_key in seen_targets:
             status = "collision"
         elif os.path.exists(target):
-            status = "target_exists"
+            if mode == "file":
+                try:
+                    status = "move" if os.path.getsize(source) == os.path.getsize(target) else "target_exists"
+                except OSError:
+                    status = "target_exists"
+            else:
+                status = "target_exists"
         seen_targets.add(dst_key)
         result = {
+            "mode": mode,
             "source": source,
             "target": target,
             "pack": item.get("pack") or os.path.basename(source),
@@ -2510,6 +2721,51 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
             skipped += 1
             result["result"] = "skipped"
             result["reason"] = status
+            results.append(result)
+            if progress:
+                progress({
+                    "phase": "copying",
+                    "limit": limit,
+                    "current_pack": result["pack"],
+                    "copied": copied,
+                    "skipped": skipped,
+                    "failed": failed,
+                    "updated_assets": updated_assets,
+                    "bytes_copied": bytes_copied,
+                })
+            continue
+        if mode == "file":
+            ok, reason = _copy_verified_file(source, target)
+            if not ok:
+                failed += 1
+                result["result"] = "failed"
+                result["reason"] = reason
+                results.append(result)
+                if progress:
+                    progress({
+                        "phase": "copying",
+                        "limit": limit,
+                        "current_pack": result["pack"],
+                        "copied": copied,
+                        "skipped": skipped,
+                        "failed": failed,
+                        "updated_assets": updated_assets,
+                        "bytes_copied": bytes_copied,
+                    })
+                continue
+            changed = _update_asset_path(
+                item.get("asset_id"), source, target,
+                kind=item.get("kind") or "", on_path_moved=on_path_moved,
+            )
+            copied += 1
+            updated_assets += changed
+            try:
+                bytes_copied += int(os.path.getsize(target) or 0)
+            except OSError:
+                bytes_copied += int(item.get("size") or 0)
+            result["result"] = "copied"
+            result["reason"] = reason
+            result["assets_updated"] = changed
             results.append(result)
             if progress:
                 progress({

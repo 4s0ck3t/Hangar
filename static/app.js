@@ -2037,7 +2037,7 @@ function organiseTaskSpec(st) {
     label: "Organising disk",
     done: copied,
     total: limit || null,
-    detail: `${copied}/${limit || "?"} packs · ${fmtSize(st.bytes_copied || 0)} · ${eta}`,
+    detail: `${copied}/${limit || "?"} items · ${fmtSize(st.bytes_copied || 0)} · ${eta}`,
     file: st.current_source || st.current_target || "",
   };
 }
@@ -2085,6 +2085,11 @@ function applyOrganiseResultToPlan(plan, result) {
   const nextSummary = { ...((plan || {}).summary || {}) };
   nextSummary.move = Math.max(0, (nextSummary.move || 0) - (result.copied || 0));
   nextSummary.already_clean = (nextSummary.already_clean || 0) + (result.copied || 0);
+  const copiedRows = (result.results || []).filter((x) => x.result === "copied");
+  const copiedPacks = copiedRows.filter((x) => (x.mode || "pack") === "pack").length;
+  const copiedFiles = copiedRows.length - copiedPacks;
+  nextSummary.model_pack_moves = Math.max(0, (nextSummary.model_pack_moves || 0) - copiedPacks);
+  nextSummary.loose_file_moves = Math.max(0, (nextSummary.loose_file_moves || 0) - copiedFiles);
   nextSummary.bytes_to_organise = Math.max(0, (nextSummary.bytes_to_organise || 0) - (result.bytes_copied || 0));
   nextSummary.copy_stage_bytes = Math.max(0, (nextSummary.copy_stage_bytes || 0) - (result.bytes_copied || 0));
   renderOrganisePlan({
@@ -2154,7 +2159,7 @@ function startOrganisePolling(plan) {
     if (st.result) {
       applyOrganiseResultToPlan(_organisePlanData || {}, st.result);
       loadState();
-      toast(`Copied ${st.result.copied || 0} pack${(st.result.copied || 0) === 1 ? "" : "s"}; ${st.result.updated_assets || 0} indexed file${(st.result.updated_assets || 0) === 1 ? "" : "s"} moved.`, st.result.failed ? "error" : "success");
+      toast(`Copied ${st.result.copied || 0} item${(st.result.copied || 0) === 1 ? "" : "s"}; ${st.result.updated_assets || 0} indexed file${(st.result.updated_assets || 0) === 1 ? "" : "s"} moved.`, st.result.failed ? "error" : "success");
       return;
     }
     state.organiseProgress = null;
@@ -2179,10 +2184,10 @@ function renderOrganiseLoading(target) {
   panel.className = "organise-result organise-running";
   const started = Date.now();
   const stages = [
-    "Reading the model index",
-    "Grouping files into asset packs",
+    "Reading the asset index",
+    "Grouping model folders and loose files",
     "Checking clean-library destinations",
-    "Separating copyable packs from review items",
+    "Separating copyable items from review items",
     "Preparing cleanup counts",
   ];
   panel.innerHTML =
@@ -2248,17 +2253,18 @@ function renderOrganisePlan(data) {
     `<input id="organiseTargetRoot" class="organise-root-input" value="${esc(data.target_root || state.organiseTargetRoot || "D:\\Hangar")}"></label>` +
     `<button id="organiseTargetBrowse" class="rescan" title="Choose the folder where Hangar should plan the clean library">Browse</button>` +
     `<button id="organiseTargetApply" class="rescan" title="Recalculate the plan for this target root">Apply</button>` +
-    `<button id="organiseCopyVerified" class="rescan organise-primary" ${state.organiseProgress?.running ? "disabled" : ""} title="Copy the next verified model-pack folders into the clean library. Old folders are kept.">${state.organiseProgress?.running ? "Copying..." : "Copy verified packs"}</button>` +
+    `<button id="organiseCopyVerified" class="rescan organise-primary" ${state.organiseProgress?.running ? "disabled" : ""} title="Copy the next verified folders and loose files into the clean Hangar library. Old source files are kept.">${state.organiseProgress?.running ? "Copying..." : "Copy into Hangar"}</button>` +
     `<button id="organiseSpaceDetails" class="rescan" title="Toggle slower accurate disk-space figures for this plan">${state.organiseSpaceDetails ? "Fast preview" : "Calculate space"}</button>` +
     `<label class="organise-batch">Batch ` +
     `<select id="organiseBatchSize" class="organise-batch-select">` +
-    `${[25, 100, 250, 500].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v}</option>`).join("")}` +
+    `${[100, 250, 500, 1000].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v}</option>`).join("")}` +
     `</select></label>` +
     (spaceKnown ? `<span>${fmtSize(s.target_free || 0)} free</span>` : `<span title="Fast preview skips slower disk-space scanning">fast preview</span>`) +
     (s.bytes_to_organise ? `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` : "") +
     (s.potential_duplicate_savings ? `<span title="Estimated space in duplicate pack folders that look safe to remove later after review. Nothing is deleted by this plan.">${fmtSize(s.potential_duplicate_savings || 0)} duplicate estimate</span>` : "") +
     (cleanupSummary.ready ? `<span title="Old copied source folders verified safe to remove">${fmtSize(cleanupSummary.bytes_ready || 0)} reclaimable</span>` : "") +
     `<span>${s.move || 0} to copy</span>` +
+    ((s.model_pack_moves || s.loose_file_moves) ? `<span>${s.model_pack_moves || 0} packs · ${s.loose_file_moves || 0} loose files</span>` : "") +
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${(s.collision || 0) + (s.target_exists || 0)} need review</span>`;
   frag.appendChild(tools);
@@ -2271,7 +2277,7 @@ function renderOrganisePlan(data) {
       `<div class="organise-result-path"><span>${esc(x.pack || baseName(x.target))}</span><code>${esc(x.target || "")}</code></div>`
     ).join("");
     panel.innerHTML =
-      `<div class="organise-result-title">Last copy: ${lastResult.copied || 0} pack${(lastResult.copied || 0) === 1 ? "" : "s"} copied</div>` +
+      `<div class="organise-result-title">Last copy: ${lastResult.copied || 0} item${(lastResult.copied || 0) === 1 ? "" : "s"} copied</div>` +
       `<div class="organise-result-meta">` +
       `${lastResult.updated_assets || 0} indexed file${(lastResult.updated_assets || 0) === 1 ? "" : "s"} moved to the new paths` +
       ` · ${fmtSize(lastResult.bytes_copied || 0)} copied` +
@@ -2311,7 +2317,7 @@ function renderOrganisePlan(data) {
     const panel = document.createElement("div");
     panel.className = "organise-result organise-running";
     panel.innerHTML =
-      `<div class="organise-result-title">Copying packs: ${copied}/${limit || "?"}</div>` +
+      `<div class="organise-result-title">Copying into Hangar: ${copied}/${limit || "?"}</div>` +
       `<div class="organise-result-meta">` +
       `${fmtSize(progress.bytes_copied || 0)} copied` +
       ` · ${progress.updated_assets || 0} indexed files moved` +
@@ -2385,7 +2391,7 @@ function renderOrganisePlan(data) {
     const panel = document.createElement("div");
     panel.className = "organise-result";
     panel.innerHTML =
-      `<div class="organise-result-title">No packs waiting to copy or review</div>` +
+      `<div class="organise-result-title">No items waiting to copy or review</div>` +
       `<div class="organise-result-meta">Everything currently shown in this plan is already in the clean library layout.</div>`;
     frag.appendChild(panel);
   }
@@ -2424,10 +2430,10 @@ function renderOrganisePlan(data) {
     const batch = Math.max(1, Math.min(1000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
     const n = s.move || 0;
     if (!n) {
-      toast("There are no planned packs ready to copy.", "success");
+      toast("There are no planned items ready to copy.", "success");
       return;
     }
-    if (!confirm(`Copy the next ${Math.min(batch, n)} verified pack folder${Math.min(batch, n) === 1 ? "" : "s"} into:\n${target}\n\nHangar will verify the copy and update its index. Old folders stay on disk.`)) return;
+    if (!confirm(`Copy the next ${Math.min(batch, n)} verified item${Math.min(batch, n) === 1 ? "" : "s"} into:\n${target}\n\nHangar will verify each copy and update its index. Old source folders and files stay on disk.`)) return;
     btn.disabled = true;
     btn.textContent = "Starting...";
     let r;
@@ -2435,13 +2441,13 @@ function renderOrganisePlan(data) {
       r = await post("organise/apply", { target, limit: batch });
     } catch (err) {
       btn.disabled = false;
-      btn.textContent = "Copy verified packs";
+      btn.textContent = "Copy into Hangar";
       toast("Organise failed before it could start.", "error");
       return;
     }
     if (!r || r.error) {
       btn.disabled = false;
-      btn.textContent = "Copy verified packs";
+      btn.textContent = "Copy into Hangar";
       toast((r && r.error) || "Organise failed.", "error");
       return;
     }
@@ -2451,7 +2457,7 @@ function renderOrganisePlan(data) {
     renderOrganisePlan(data);
     Tasks.set("organise", organiseTaskSpec(state.organiseProgress));
     startOrganisePolling(data);
-    toast(`Organising ${Math.min(batch, n)} pack${Math.min(batch, n) === 1 ? "" : "s"} in the background.`, "success");
+    toast(`Organising ${Math.min(batch, n)} item${Math.min(batch, n) === 1 ? "" : "s"} in the background.`, "success");
   };
   const byCat = new Map();
   for (const item of items) {
