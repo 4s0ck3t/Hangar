@@ -3291,7 +3291,12 @@ async function renderBlendInfo(a) {
     }
     html += `</div>`;
     const hasCollections = info.assets.some(x => x.kind === "Collection");
+    const extractable = info.assets.filter(x =>
+      ["Object", "Collection", "Material"].includes(x.kind) && !x.has_individual);
     html += `<div class="d-mark-actions">`;
+    if (extractable.length) {
+      html += `<button class="d-mark-btn d-bulk-extract-btn" id="dExtractAllMissing">Extract all missing (${extractable.length})</button>`;
+    }
     html += `<button class="d-mark-btn" id="dMarkObjects">Mark objects as assets</button>`;
     if (hasCollections) {
       html += `<button class="d-mark-btn d-danger-btn" id="dUnmarkCollections">Unmark collections as assets</button>`;
@@ -3346,7 +3351,7 @@ async function renderBlendInfo(a) {
   // Show an animated status while a Blender job runs; disable all buttons so the
   // user can't kick off a second job. `verb` is e.g. "Marking objects".
   const setBusy = (busy, verb) => {
-    el.querySelectorAll(".d-mark-btn, .d-gen-previews-btn, .d-extract-btn").forEach(b => { b.disabled = busy; });
+    el.querySelectorAll(".d-mark-btn, .d-gen-previews-btn, .d-extract-btn, .d-bulk-extract-btn").forEach(b => { b.disabled = busy; });
     if (!status) return;
     if (busy) {
       status.hidden = false;
@@ -3396,6 +3401,72 @@ async function renderBlendInfo(a) {
   if (markBtnCol) markBtnCol.onclick = () => runMark("collections", "Marking collections");
   if (unmarkBtnCol) unmarkBtnCol.onclick = () => runUnmark("collections", "collections");
   if (unmarkBtnAll) unmarkBtnAll.onclick = () => runUnmark("all", "all asset marks");
+
+  const bulkExtractBtn = $("#dExtractAllMissing");
+  const updateBulkExtractStatus = (st) => {
+    if (!status || !st) return;
+    const done = st.done_count || st.created || 0;
+    const total = st.total || 0;
+    const elapsed = st.started_at ? (Date.now() / 1000 - st.started_at) : 0;
+    const rate = elapsed > 3 && done ? done / elapsed : 0;
+    const eta = rate && total > done ? ` ETA ${fmtDuration((total - done) / rate)}` : "";
+    status.hidden = false;
+    status.className = "d-blend-status d-blend-status-busy";
+    status.innerHTML = `<span class="d-spinner"></span>Extracting ${done}/${total || "?"}${eta}` +
+      (st.current ? `<br><span>${esc(st.current)}</span>` : "");
+    Tasks.set("blend-extract", {
+      label: "Extracting Blender assets",
+      done,
+      total: total || null,
+      detail: `${done}/${total || "?"} individual .blend files${eta}`,
+      file: st.current || st.output_dir || "",
+    });
+  };
+  const pollBulkExtract = () => {
+    const timer = setInterval(async () => {
+      let st;
+      try { st = await api(`assets/${a.id}/extract-assets/status`); }
+      catch (_) { return; }
+      if (!st || !st.ok) return;
+      if (st.running) {
+        updateBulkExtractStatus(st);
+        return;
+      }
+      clearInterval(timer);
+      Tasks.done("blend-extract");
+      if (st.error || (st.result && !st.result.ok)) {
+        setBusy(false);
+        setDone(st.error || st.result.error || "Bulk extraction failed - check last_render.log.", false);
+        return;
+      }
+      const r = st.result || {};
+      setDone(`Extracted ${r.created || 0} file${(r.created || 0) === 1 ? "" : "s"} and indexed ${r.indexed || 0}. Refreshing...`, true);
+      refresh();
+      renderBlendInfo(a);
+    }, 1200);
+  };
+  if (bulkExtractBtn) bulkExtractBtn.onclick = async () => {
+    const n = extractable.length;
+    if (!confirm(`Extract ${n} marked asset${n === 1 ? "" : "s"} from "${a.name}.blend" into individual .blend files?\n\nThe source file will not be changed. Hangar will create a folder beside it and index the new files.`)) return;
+    setBusy(true, "Preparing extraction");
+    let r;
+    try { r = await post(`assets/${a.id}/extract-assets`, { only_missing: true }); }
+    catch (_) { r = null; }
+    if (!r || !r.ok) {
+      setBusy(false);
+      setDone((r && r.error) || "Bulk extraction failed before it could start.", false);
+      return;
+    }
+    if (!r.running) {
+      const result = r.result || {};
+      setDone(`Extracted ${result.created || 0} file${(result.created || 0) === 1 ? "" : "s"}.`, true);
+      refresh();
+      renderBlendInfo(a);
+      return;
+    }
+    updateBulkExtractStatus(r.status);
+    pollBulkExtract();
+  };
 
   // Extract a marked datablock to its own .blend file. On success the file is
   // indexed and the tile flips to the green "own .blend" state.

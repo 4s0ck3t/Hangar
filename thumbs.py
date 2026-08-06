@@ -2314,6 +2314,54 @@ except Exception as e:
 '''
 
 
+_BULK_EXTRACT_ASSETS_SCRIPT = r'''
+import bpy, sys, os, json
+
+argv = sys.argv[sys.argv.index("--") + 1:]
+manifest_path, result_path = argv[0], argv[1]
+with open(manifest_path, "r", encoding="utf-8") as fh:
+    entries = json.load(fh)
+
+results = []
+total = len(entries)
+
+def get_db(kind, name):
+    if kind == "Collection":
+        return bpy.data.collections.get(name)
+    if kind == "Material":
+        return bpy.data.materials.get(name)
+    return bpy.data.objects.get(name)
+
+for i, entry in enumerate(entries, 1):
+    name = entry.get("name") or ""
+    kind = entry.get("kind") or "Object"
+    out_path = entry.get("out_path") or ""
+    print("HANGAR_BULK_EXTRACT_PROGRESS: %d %d %s" % (i, total, name), flush=True)
+    row = {"name": name, "kind": kind, "path": out_path, "ok": False}
+    try:
+        if not out_path:
+            row["error"] = "missing output path"
+        elif os.path.exists(out_path):
+            row["skipped"] = True
+            row["error"] = "target exists"
+        else:
+            db = get_db(kind, name)
+            if db is None:
+                row["error"] = "datablock not found"
+            else:
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                bpy.data.libraries.write(out_path, {db}, fake_user=True, compress=True)
+                row["ok"] = True
+    except Exception as e:
+        row["error"] = str(e)
+    results.append(row)
+
+with open(result_path, "w", encoding="utf-8") as fh:
+    json.dump(results, fh)
+print("HANGAR_BULK_EXTRACT_DONE: %d" % len(results), flush=True)
+'''
+
+
 def extract_blend_asset(blend_path, name, kind, out_path):
     """Write a single marked datablock (object or collection) from `blend_path`
     out to a new .blend at `out_path`, pulling its dependencies along. Leaves
@@ -2348,6 +2396,103 @@ def extract_blend_asset(blend_path, name, kind, out_path):
     if "not found" in (proc.stdout or ""):
         return {"ok": False, "error": f"Couldn't find “{name}” in the file."}
     return {"ok": False, "error": _render_failure_summary(proc)}
+
+
+def extract_blend_assets_bulk(blend_path, entries, progress=None):
+    """Write many marked datablocks from one .blend using one Blender process.
+
+    `entries` is [{"name", "kind", "out_path"}]. The source file is opened once
+    and left untouched. Returns {"ok", "results", "created", "failed"}.
+    """
+    blender = find_blender()
+    if not blender:
+        return {"ok": False, "error": "Blender wasn't found - set its path first."}
+    if not os.path.exists(blend_path):
+        return {"ok": False, "error": "Source file isn't accessible right now."}
+    entries = [e for e in (entries or []) if e.get("name") and e.get("out_path")]
+    if not entries:
+        return {"ok": True, "results": [], "created": 0, "failed": 0, "skipped": 0}
+
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        script = os.path.join(td, "hangar_bulk_extract_assets.py")
+        manifest = os.path.join(td, "assets.json")
+        result_file = os.path.join(td, "results.json")
+        with open(script, "w", encoding="utf-8") as fh:
+            fh.write(_BULK_EXTRACT_ASSETS_SCRIPT)
+        with open(manifest, "w", encoding="utf-8") as fh:
+            json.dump(entries, fh)
+        cmd = [
+            blender, "--background", "--factory-startup", "--disable-autoexec",
+            blend_path, "-P", script, "--", manifest, result_file,
+        ]
+        output = []
+        started = time.time()
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                env=_blender_env(), **_no_window(),
+            )
+            while True:
+                line = proc.stdout.readline() if proc.stdout else ""
+                if line:
+                    output.append(line)
+                    m = re.search(r"HANGAR_BULK_EXTRACT_PROGRESS:\s+(\d+)\s+(\d+)\s+(.*)", line)
+                    if m and progress:
+                        try:
+                            progress({
+                                "done": max(0, int(m.group(1)) - 1),
+                                "total": int(m.group(2)),
+                                "current": m.group(3).strip(),
+                            })
+                        except Exception:
+                            pass
+                if proc.poll() is not None:
+                    rest = proc.stdout.read() if proc.stdout else ""
+                    if rest:
+                        output.append(rest)
+                    break
+                if time.time() - started > RENDER_TIMEOUT:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
+                    raise subprocess.TimeoutExpired(cmd, RENDER_TIMEOUT)
+            class _Proc:
+                pass
+            logged = _Proc()
+            logged.args = cmd
+            logged.returncode = proc.returncode
+            logged.stdout = "".join(output)
+            logged.stderr = ""
+        except subprocess.TimeoutExpired as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Timed out after {RENDER_TIMEOUT}s."}
+        except Exception as e:
+            _record_render_log(blender, blend_path, None, exc=e)
+            return {"ok": False, "error": f"Couldn't launch Blender: {e}"}
+
+        _record_render_log(blender, blend_path, logged)
+        if "HANGAR_BULK_EXTRACT_DONE" not in (logged.stdout or ""):
+            return {"ok": False, "error": _render_failure_summary(logged)}
+        try:
+            with open(result_file, "r", encoding="utf-8") as fh:
+                results = json.load(fh)
+        except Exception:
+            return {"ok": False, "error": "Blender finished but did not write extraction results."}
+
+    created = sum(1 for r in results if r.get("ok"))
+    skipped = sum(1 for r in results if r.get("skipped"))
+    failed = len(results) - created - skipped
+    return {
+        "ok": True,
+        "results": results,
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+    }
 
 
 def extract_blend_asset_previews(blend_path):

@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.75"
+__version__ = "0.15.76"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1556,6 +1556,13 @@ CLEANUP = {
     "current_source": "",
 }
 CLEANUP_LOCK = threading.Lock()
+BLEND_EXTRACT = {
+    "running": False, "done": False, "error": None, "result": None,
+    "asset_id": None, "source": "", "output_dir": "", "started_at": None,
+    "updated_at": None, "done_count": 0, "total": 0, "current": "",
+    "created": 0, "failed": 0, "skipped": 0,
+}
+BLEND_EXTRACT_LOCK = threading.Lock()
 
 
 def _organise_snapshot():
@@ -1578,6 +1585,17 @@ def _cleanup_update(**changes):
     with CLEANUP_LOCK:
         CLEANUP.update(changes)
         CLEANUP["updated_at"] = time.time()
+
+
+def _blend_extract_snapshot():
+    with BLEND_EXTRACT_LOCK:
+        return dict(BLEND_EXTRACT)
+
+
+def _blend_extract_update(**changes):
+    with BLEND_EXTRACT_LOCK:
+        BLEND_EXTRACT.update(changes)
+        BLEND_EXTRACT["updated_at"] = time.time()
 
 
 def _run_organise_apply(target, limit):
@@ -2424,6 +2442,139 @@ def extract_asset(asset_id):
         pass
     result["extracted_name"] = safe
     return jsonify(result), 200
+
+
+def _safe_blend_stem(name):
+    safe = "".join("_" if c in '/\\:*?"<>|' else c for c in str(name or "")).strip()
+    safe = re.sub(r"\s+", " ", safe).strip(" .")
+    return safe or "asset"
+
+
+def _bulk_extract_output_dir(asset):
+    stem = _safe_blend_stem(asset.get("name") or Path(asset["path"]).stem)
+    return os.path.join(os.path.dirname(asset["path"]), stem)
+
+
+def _bulk_extract_entries(asset, only_missing=True):
+    info = _blend_info(asset)
+    if not info:
+        return [], "This .blend could not be inspected."
+    existing_names = store.existing_blend_names()
+    out_dir = _bulk_extract_output_dir(asset)
+    used = set()
+    entries = []
+    for item in info.get("assets") or []:
+        kind = item.get("kind") or "Object"
+        if kind not in ("Object", "Collection", "Material"):
+            continue
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+        if only_missing and item.get("has_individual"):
+            continue
+        if only_missing and name.lower() in existing_names:
+            continue
+        base = _safe_blend_stem(name)
+        candidate = base
+        n = 2
+        while candidate.lower() in used:
+            candidate = f"{base}_{n}"
+            n += 1
+        used.add(candidate.lower())
+        out_path = os.path.join(out_dir, candidate + ".blend")
+        if only_missing and os.path.exists(out_path):
+            continue
+        entries.append({"name": name, "kind": kind, "out_path": out_path})
+    return entries, ""
+
+
+def _run_bulk_extract(asset, entries, categories):
+    def progress(update):
+        update = update or {}
+        _blend_extract_update(
+            done_count=update.get("done", BLEND_EXTRACT.get("done_count", 0)),
+            total=update.get("total", BLEND_EXTRACT.get("total", 0)),
+            current=update.get("current", BLEND_EXTRACT.get("current", "")),
+        )
+
+    try:
+        result = thumbs.extract_blend_assets_bulk(asset["path"], entries, progress=progress)
+        indexed = 0
+        if result.get("ok"):
+            for row in result.get("results") or []:
+                if not row.get("ok"):
+                    continue
+                out_path = row.get("path")
+                try:
+                    st = os.stat(out_path)
+                    aid = store.upsert_asset({
+                        "path": out_path,
+                        "name": Path(out_path).stem,
+                        "ext": ".blend",
+                        "kind": scanner.EXT_KIND.get(".blend", "model"),
+                        "size": st.st_size,
+                        "mtime": st.st_mtime,
+                        "author": asset.get("author") or "",
+                    })
+                    store.replace_asset_categories(aid, categories)
+                    indexed += 1
+                except Exception:
+                    pass
+            result["indexed"] = indexed
+        _blend_extract_update(
+            running=False, done=True, error=None if result.get("ok") else result.get("error"),
+            result=result, done_count=result.get("created", 0),
+            total=len(entries), current="", created=result.get("created", 0),
+            failed=result.get("failed", 0), skipped=result.get("skipped", 0),
+        )
+    except Exception as e:
+        _blend_extract_update(running=False, done=False, error=str(e), current="")
+
+
+@app.post("/api/assets/<int:asset_id>/extract-assets")
+def extract_assets_bulk(asset_id):
+    asset = store.get_asset(asset_id)
+    if not asset:
+        return jsonify({"error": "Asset not found."}), 404
+    if asset["ext"] != ".blend":
+        return jsonify({"error": "Only .blend files can be extracted from."}), 400
+    if not thumbs.blender_available():
+        return jsonify({"ok": False, "blender": False,
+                        "error": "Blender wasn't found - set its path first."}), 200
+    body = request.get_json(silent=True) or {}
+    only_missing = body.get("only_missing", True) is not False
+    entries, error = _bulk_extract_entries(asset, only_missing=only_missing)
+    if error:
+        return jsonify({"ok": False, "error": error}), 200
+    if not entries:
+        return jsonify({"ok": True, "running": False,
+                        "result": {"ok": True, "created": 0, "failed": 0, "skipped": 0,
+                                   "indexed": 0, "results": []}})
+    out_dir = _bulk_extract_output_dir(asset)
+    with BLEND_EXTRACT_LOCK:
+        if BLEND_EXTRACT.get("running"):
+            return jsonify({"ok": True, "running": True, "status": dict(BLEND_EXTRACT)})
+        BLEND_EXTRACT.update({
+            "running": True, "done": False, "error": None, "result": None,
+            "asset_id": asset_id, "source": asset["path"], "output_dir": out_dir,
+            "started_at": time.time(), "updated_at": time.time(),
+            "done_count": 0, "total": len(entries), "current": "",
+            "created": 0, "failed": 0, "skipped": 0,
+        })
+    threading.Thread(
+        target=_run_bulk_extract,
+        args=(asset, entries, list(asset.get("categories") or [])),
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True, "running": True, "status": _blend_extract_snapshot()})
+
+
+@app.get("/api/assets/<int:asset_id>/extract-assets/status")
+def extract_assets_bulk_status(asset_id):
+    st = _blend_extract_snapshot()
+    if st.get("asset_id") not in (None, asset_id):
+        return jsonify({"ok": True, "running": False})
+    return jsonify({"ok": True, **st})
 
 
 @app.post("/api/assets/<int:asset_id>/generate-asset-previews")

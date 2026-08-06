@@ -1975,6 +1975,27 @@ def set_category_membership(category_name, asset_id, add=True):
             )
 
 
+def replace_asset_categories(asset_id, category_names):
+    names = []
+    seen = set()
+    for name in category_names or []:
+        name = (name or "").strip()
+        key = name.lower()
+        if name and key not in seen:
+            names.append(name)
+            seen.add(key)
+    with connect() as conn:
+        conn.execute("DELETE FROM asset_categories WHERE asset_id=?", (asset_id,))
+        for name in names:
+            conn.execute("INSERT OR IGNORE INTO categories(name) VALUES (?)", (name,))
+            cat = conn.execute("SELECT id FROM categories WHERE name=?", (name,)).fetchone()
+            if cat:
+                conn.execute(
+                    "INSERT OR IGNORE INTO asset_categories(category_id, asset_id) "
+                    "VALUES (?, ?)", (cat["id"], asset_id),
+                )
+
+
 def _clean_keywords(raw):
     """Normalise a keyword string/list into a comma-separated, lower-cased set."""
     if isinstance(raw, (list, tuple, set)):
