@@ -689,6 +689,17 @@ button, input, select { font-family: inherit; color: inherit; }
   margin-top: 3px; font-size: 10px; color: var(--mute);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.card-material-roles {
+  display: flex; gap: 4px; margin-top: 4px; min-height: 16px;
+  overflow: hidden; white-space: nowrap;
+}
+.card-material-roles span {
+  max-width: 64px; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--mono); font-size: 9px; color: var(--ink);
+  background: rgba(91, 141, 239, .14);
+  border: 1px solid rgba(91, 141, 239, .28);
+  border-radius: 4px; padding: 1px 5px;
+}
 /* "Fix missing textures from folder" bar (blend-missing-textures view) */
 .texfix-bar {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;

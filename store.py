@@ -380,6 +380,15 @@ def init_db():
                 pass
             conn.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES('material_kind_repair_v1','1')")
+        if not conn.execute(
+                "SELECT 1 FROM settings WHERE key='material_kind_repair_v2'").fetchone():
+            try:
+                _repair_model_dependency_materials(conn)
+                _repair_obvious_material_textures(conn)
+            except Exception:
+                pass
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('material_kind_repair_v2','1')")
         # One-time: after new default categories ship (e.g. the texture set),
         # back-fill auto-classification across the existing library so they're
         # populated without the user having to hit ⚡. Bumped flag = re-run once.
@@ -471,7 +480,7 @@ def _repair_obvious_material_textures(conn):
     ]
     by_set = {}
     for r in rows:
-        if scanner.is_model_pack_texture_sidecar(r["path"]):
+        if scanner.is_model_pack_dependency_map(r["path"]):
             continue
         folder = os.path.dirname(r["path"])
         name_noext = os.path.splitext(os.path.basename(r["path"]))[0]
@@ -485,16 +494,18 @@ def _repair_obvious_material_textures(conn):
         by_set.setdefault(set_key, set()).add(role)
 
     for r in rows:
-        if scanner.is_model_pack_texture_sidecar(r["path"]):
+        if scanner.is_model_pack_dependency_map(r["path"]):
             continue
         folder = os.path.dirname(r["path"])
         name_noext = os.path.splitext(os.path.basename(r["path"]))[0]
         role = r.get("map_role") or ""
         if not role:
             continue
-        folder_tokens = scanner._folder_tokens(folder)
-        role_count = len({x for x in by_set.get(r["set_key"], set()) if x})
-        if not (folder_tokens & scanner.MATERIAL_CONTAINER_DIRS or role_count >= 2):
+        try:
+            siblings = os.listdir(folder)
+        except OSError:
+            siblings = []
+        if not scanner.is_obvious_material_asset(r["ext"], folder, name_noext, siblings):
             continue
         subtype, resolution = scanner.texture_facets(folder, name_noext)
         conn.execute(
@@ -507,6 +518,40 @@ def _repair_obvious_material_textures(conn):
                 (r["id"], cid),
             )
         _auto_categorize(conn, r["id"], r["path"], "material")
+
+
+def _repair_model_dependency_materials(conn):
+    """Move dependency/non-material map sets out of Materials and back to Textures."""
+    import scanner  # lazy: avoids an import cycle at module load
+    material_cat_ids = [
+        r["id"] for r in conn.execute(
+            "SELECT id FROM categories WHERE kind='material'").fetchall()
+    ]
+    for r in conn.execute(
+            "SELECT id, path, ext FROM assets "
+            "WHERE missing=0 AND hidden=0 AND kind='material'").fetchall():
+        folder = os.path.dirname(r["path"])
+        name_noext = os.path.splitext(os.path.basename(r["path"]))[0]
+        if not scanner.is_model_pack_dependency_map(r["path"]):
+            try:
+                siblings = os.listdir(folder)
+            except OSError:
+                siblings = []
+            if scanner.is_obvious_material_asset(r["ext"], folder, name_noext, siblings):
+                continue
+        set_key, role, order = scanner.texture_set_info(folder, name_noext)
+        subtype, resolution = scanner.texture_facets(folder, name_noext)
+        conn.execute(
+            "UPDATE assets SET kind='texture', set_key=?, map_role=?, "
+            "map_order=?, subtype=?, resolution=? WHERE id=?",
+            (set_key, role, order, subtype, resolution, r["id"]),
+        )
+        for cid in material_cat_ids:
+            conn.execute(
+                "DELETE FROM asset_categories WHERE asset_id=? AND category_id=?",
+                (r["id"], cid),
+            )
+        _auto_categorize(conn, r["id"], r["path"], "texture")
 
 
 # ---- libraries ------------------------------------------------------------
@@ -1166,6 +1211,8 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
             f"SELECT g.* FROM ("
             f"  SELECT a.*, "
             f"    COUNT(*)    OVER (PARTITION BY {gkey}) AS set_count, "
+            f"    SUM(a.size)  OVER (PARTITION BY {gkey}) AS set_size, "
+            f"    GROUP_CONCAT(a.map_role, '|') OVER (PARTITION BY {gkey}) AS set_roles, "
             f"    ROW_NUMBER() OVER (PARTITION BY {gkey} "
             f"                       ORDER BY a.map_order, a.id) AS rn "
             f"  FROM assets a {joins} WHERE {where}"
@@ -1186,6 +1233,8 @@ def query_assets(search="", kind="", ext="", tag="", collection="", category="",
         for r in rows:
             d = dict(r)
             d.setdefault("set_count", 1)
+            if d.get("set_key"):
+                d["set_name"] = str(d.get("set_key") or "").split("|")[-1]
             d["tags"] = _tags_for(conn, r["id"])
             out.append(d)
         # Batch-attach each asset's categories (for the grouped grid view).

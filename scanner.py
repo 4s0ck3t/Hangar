@@ -185,6 +185,35 @@ def is_support_image(fname, folder, sibling_files):
     return False
 
 
+def is_model_pack_dependency_map(path):
+    """True when an image map lives inside a model asset pack.
+
+    These files are important, but they are dependencies of a model rather than
+    standalone Materials library entries. This catches both same-folder maps and
+    common pack sidecar folders such as textures/maps next to a .blend/.fbx.
+    """
+    folder = os.path.dirname(path or "")
+    if is_model_pack_texture_sidecar(path):
+        return True
+    try:
+        same_folder_names = os.listdir(folder)
+    except OSError:
+        same_folder_names = []
+    if (not (_folder_tokens(folder) & MATERIAL_CONTAINER_DIRS)
+            and any(os.path.splitext(n)[1].lower() in MODEL_EXTS
+                    for n in same_folder_names)):
+        return True
+    folder_tokens = _folder_tokens(os.path.basename(folder))
+    if not (folder_tokens & {"texture", "textures", "map", "maps"}):
+        return False
+    parent = os.path.dirname(folder)
+    try:
+        names = os.listdir(parent)
+    except OSError:
+        return False
+    return any(os.path.splitext(n)[1].lower() in MODEL_EXTS for n in names)
+
+
 def classify_kind(ext, folder, name_noext):
     """Choose an asset kind for extensions that can be ambiguous.
 
@@ -215,7 +244,7 @@ def is_obvious_material_asset(ext, folder, name_noext, sibling_files=()):
     """
     if ext not in TEXTURE_EXTS and ext not in HDRI_EXTS:
         return False
-    if is_model_pack_texture_sidecar(os.path.join(folder, name_noext + ext)):
+    if is_model_pack_dependency_map(os.path.join(folder, name_noext + ext)):
         return False
     set_key, role, _order = texture_set_info(folder, name_noext)
     if not role:
@@ -232,7 +261,8 @@ def is_obvious_material_asset(ext, folder, name_noext, sibling_files=()):
         sib_key, sib_role, _sib_order = texture_set_info(folder, sib_name)
         if sib_key == set_key and sib_role:
             roles.add(sib_role)
-    return len(roles) >= 2
+    color_roles = {"diffuse", "albedo", "basecolor", "color"}
+    return len(roles) >= 2 and bool(roles & color_roles)
 
 
 def is_redundant_hdri_blend(fname, sibling_files):

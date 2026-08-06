@@ -2662,9 +2662,20 @@ function buildCard(a, i) {
   // cards (grid-level handler), Enter/Space opens it like a click.
   card.tabIndex = 0;
   card.setAttribute("role", "button");
-  card.setAttribute("aria-label", a.name);
   const color = KIND_COLORS[a.kind] || "var(--mute)";
   const ext = a.ext.replace(".", "").toUpperCase();
+  const isMaterialSet = a.kind === "material" && (a.set_count || 0) > 1;
+  const displayName = isMaterialSet && a.set_name ? a.set_name : a.name;
+  const displaySize = isMaterialSet && a.set_size ? a.set_size : a.size;
+  const roleOrder = ["diffuse", "albedo", "basecolor", "normal", "roughness", "metallic", "ao", "height", "displacement", "opacity", "emission"];
+  const roleSet = new Set(String(a.set_roles || "").split("|").map((r) => r.trim()).filter(Boolean));
+  const materialRoles = isMaterialSet
+    ? roleOrder.filter((r) => roleSet.has(r)).concat([...roleSet].filter((r) => !roleOrder.includes(r))).slice(0, 4)
+    : [];
+  const materialRoleLine = materialRoles.length
+    ? `<div class="card-material-roles">${materialRoles.map((r) => `<span>${esc(r)}</span>`).join("")}</div>`
+    : "";
+  card.setAttribute("aria-label", displayName);
   const tagDots = (a.tags || []).slice(0, 4)
     .map((t) => `<span class="tdot" style="background:${safeColor(t.color)}"></span>`).join("");
   // Texture sets collapse many maps into one tile — show how many it represents.
@@ -2723,7 +2734,8 @@ function buildCard(a, i) {
       </div>
     </div>
     <div class="card-meta">
-      <div class="card-name">${esc(a.name)}</div>
+      <div class="card-name">${esc(displayName)}</div>
+      ${materialRoleLine}
       ${folderLine}
       ${authorLine}
       <div class="card-line">
@@ -4200,7 +4212,7 @@ async function openDrawer(id, idx) {
   renderTagEditor(a);
   renderDrawerCategoryEditor(a);
   renderDrawerDetails(a);
-  if (a.kind === "texture") renderTextureMaps(a);
+  if (a.kind === "texture" || a.kind === "material") renderTextureMaps(a);
 
   // Re-verify a file flagged inaccessible — a dropped USB/drive that's since been
   // reconnected re-checks live and clears the warning without reopening.

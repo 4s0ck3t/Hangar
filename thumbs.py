@@ -208,7 +208,7 @@ def get_or_make(asset):
         "texture": _from_image,
         "hdri": _from_image,
         "model": _from_model,
-        "material": lambda a, o: None,
+        "material": _from_image,
     }.get(asset["kind"], lambda a, o: None)
     try:
         ok = source_maker(asset, out)
