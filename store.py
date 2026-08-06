@@ -2673,7 +2673,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
     to the verified copy, and a receipt is written so later cleanup can be
     reviewed pack by pack.
     """
-    limit = max(1, min(1000, int(limit or 100)))
+    limit = max(1, min(10000, int(limit or 100)))
     copied = skipped = failed = updated_assets = bytes_copied = 0
     blends_relinked = texture_refs_relinked = 0
     results = []
@@ -3165,7 +3165,7 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
     This re-builds the cleanup plan immediately before deleting, so a stale UI
     cannot delete a folder that stopped being safe after the plan was shown.
     """
-    limit = max(1, min(1000, int(limit or 100)))
+    limit = max(1, min(10000, int(limit or 100)))
     wanted = {
         os.path.normcase(os.path.normpath(s))
         for s in (sources or []) if s

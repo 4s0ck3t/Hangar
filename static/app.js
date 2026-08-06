@@ -2257,7 +2257,7 @@ function renderOrganisePlan(data) {
     `<button id="organiseSpaceDetails" class="rescan" title="Toggle slower accurate disk-space figures for this plan">${state.organiseSpaceDetails ? "Fast preview" : "Calculate space"}</button>` +
     `<label class="organise-batch">Batch ` +
     `<select id="organiseBatchSize" class="organise-batch-select">` +
-    `${[100, 250, 500, 1000].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v}</option>`).join("")}` +
+    `${[100, 500, 1000, 5000, 10000].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v.toLocaleString()}</option>`).join("")}` +
     `</select></label>` +
     (spaceKnown ? `<span>${fmtSize(s.target_free || 0)} free</span>` : `<span title="Fast preview skips slower disk-space scanning">fast preview</span>`) +
     (s.bytes_to_organise ? `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` : "") +
@@ -2427,7 +2427,7 @@ function renderOrganisePlan(data) {
     const btn = e.currentTarget;
     const input = tools.querySelector("#organiseTargetRoot");
     const target = (input && input.value.trim()) || state.organiseTargetRoot || "D:\\Hangar";
-    const batch = Math.max(1, Math.min(1000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
+    const batch = Math.max(1, Math.min(10000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
     const n = s.move || 0;
     if (!n) {
       toast("There are no planned items ready to copy.", "success");
@@ -2508,7 +2508,7 @@ function renderOrganisePlan(data) {
   const cleanupBtn = grid.querySelector("#organiseCleanupApply");
   if (cleanupBtn) cleanupBtn.onclick = async () => {
     const target = state.organiseTargetRoot || "D:\\Hangar";
-    const batch = Math.max(1, Math.min(1000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
+    const batch = Math.max(1, Math.min(10000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
     const ready = cleanupSummary.ready || 0;
     const n = Math.min(batch, ready);
     if (!ready) {
