@@ -2209,10 +2209,18 @@ def _pack_parent_info(parent):
     return len(model_files), has_sidecars
 
 
-def _pack_parts_for_asset(path):
+def _pack_parts_for_asset(path, target_root=None):
     parent = os.path.dirname(path or "")
     stem = os.path.splitext(os.path.basename(path or ""))[0]
     leaf = os.path.basename(parent)
+    if target_root:
+        try:
+            rel = os.path.relpath(parent, os.path.join(os.path.normpath(target_root), "Models"))
+            parts = [p for p in rel.split(os.sep) if p and p != os.curdir]
+            if not rel.startswith("..") and len(parts) >= 4:
+                return parent, parts[-3], leaf
+        except (OSError, ValueError):
+            pass
     if parent and _looks_self_named_asset_folder(_norm_folder_token(leaf), _norm_folder_token(stem)):
         return parent, os.path.basename(os.path.dirname(parent)), leaf
     model_count, has_sidecars = _pack_parent_info(parent)
@@ -2241,7 +2249,7 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
 
     packs = {}
     for r in rows:
-        pack_folder, subfolder, pack_name = _pack_parts_for_asset(r["path"])
+        pack_folder, subfolder, pack_name = _pack_parts_for_asset(r["path"], target_root)
         if not pack_folder:
             continue
         cats = [c for c in (r["categories"] or "").split("|") if c]
@@ -2282,7 +2290,7 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
         status = "move"
         src_norm = os.path.normcase(os.path.normpath(p["source"]))
         dst_norm = os.path.normcase(os.path.normpath(target))
-        if src_norm == dst_norm or src_norm.startswith(os.path.normcase(os.path.normpath(target_root)) + os.sep):
+        if src_norm == dst_norm:
             status = "already_clean"
         elif dst_norm in seen_targets and seen_targets[dst_norm] != src_norm:
             status = "collision"
@@ -2827,6 +2835,8 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
             break
         source_key = os.path.normcase(os.path.normpath(item["source"]))
         if wanted and source_key not in wanted:
+            continue
+        if not wanted and item["status"] != "ready":
             continue
         attempted += 1
         result = {

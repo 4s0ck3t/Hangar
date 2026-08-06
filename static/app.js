@@ -2234,7 +2234,7 @@ function renderOrganisePlan(data) {
   const texBar = $("#texfixBar");
   if (texBar) texBar.classList.add("hidden");
 
-  const items = data.items || [];
+  const items = (data.items || []).filter((x) => (x.status || "move") !== "already_clean");
   const s = data.summary || {};
   const cleanup = data.cleanup || {};
   const cleanupSummary = cleanup.summary || {};
@@ -2294,9 +2294,9 @@ function renderOrganisePlan(data) {
       `<div class="organise-result-title">Last cleanup: ${lastCleanup.deleted || 0} old folder${(lastCleanup.deleted || 0) === 1 ? "" : "s"} deleted</div>` +
       `<div class="organise-result-meta">` +
       `${fmtSize(lastCleanup.bytes_deleted || 0)} reclaimed` +
-      ` Â· ${lastCleanup.index_deleted || 0} stale indexed row${(lastCleanup.index_deleted || 0) === 1 ? "" : "s"} removed` +
-      ` Â· ${lastCleanup.failed || 0} failed` +
-      ` Â· ${lastCleanup.skipped || 0} skipped</div>` +
+      ` - ${lastCleanup.index_deleted || 0} stale indexed row${(lastCleanup.index_deleted || 0) === 1 ? "" : "s"} removed` +
+      ` - ${lastCleanup.failed || 0} failed` +
+      ` - ${lastCleanup.skipped || 0} skipped</div>` +
       (problems ? `<div class="organise-result-list">${problems}</div>` : "");
     frag.appendChild(panel);
   }
@@ -2330,7 +2330,7 @@ function renderOrganisePlan(data) {
       `<div class="organise-result-meta">${esc(cleanup.error || "Hangar is checking which old source folders are safe to remove. You can still review/copy the main plan while this finishes.")}</div>`;
     frag.appendChild(panel);
   }
-  if ((cleanupSummary.ready || cleanupSummary.blocked || cleanupSummary.gone)) {
+  if ((cleanupSummary.ready || cleanupSummary.blocked)) {
     const panel = document.createElement("div");
     panel.className = "organise-result organise-cleanup";
     const readyRows = (cleanup.items || []).filter((x) => x.status === "ready");
@@ -2385,8 +2385,8 @@ function renderOrganisePlan(data) {
     const panel = document.createElement("div");
     panel.className = "organise-result";
     panel.innerHTML =
-      `<div class="organise-result-title">No packs waiting to copy</div>` +
-      `<div class="organise-result-meta">Hangar did not find model packs that need a clean disk target.</div>`;
+      `<div class="organise-result-title">No packs waiting to copy or review</div>` +
+      `<div class="organise-result-meta">Everything currently shown in this plan is already in the clean library layout.</div>`;
     frag.appendChild(panel);
   }
   const applyTarget = () => {
