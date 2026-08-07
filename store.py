@@ -2636,6 +2636,38 @@ def _update_asset_path(asset_id, old_path, new_path, kind="", mtime=0, on_path_m
     return 1
 
 
+def mark_organise_source_handled(source, target=None):
+    """Hide indexed rows for a reviewed organise source.
+
+    This is intentionally non-destructive: it only removes the old source from
+    Hangar's active index after the user decides the clean target should be kept.
+    Files on disk are left alone for the later verified cleanup workflow.
+    """
+    source = os.path.normpath(source or "")
+    target = os.path.normpath(target or "")
+    if not source:
+        return {"ok": False, "error": "No source path was provided."}
+    if target and os.path.normcase(source) == os.path.normcase(target):
+        return {"ok": False, "error": "Source and target are the same folder."}
+    if target and not os.path.exists(target):
+        return {"ok": False, "error": "The clean copy is not accessible."}
+    with connect() as conn:
+        if os.path.isdir(source):
+            rows = conn.execute(
+                "SELECT id FROM assets WHERE hidden=0 AND path LIKE ? ESCAPE '!'",
+                (_path_like(source),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id FROM assets WHERE hidden=0 AND path=?",
+                (source,),
+            ).fetchall()
+        ids = [int(r["id"]) for r in rows]
+        if ids:
+            conn.executemany("UPDATE assets SET hidden=1 WHERE id=?", [(i,) for i in ids])
+    return {"ok": True, "hidden": len(ids), "source": source, "target": target}
+
+
 def _copy_verified_file(source, target):
     source = os.path.normpath(source or "")
     target = os.path.normpath(target or "")

@@ -884,6 +884,15 @@ button, input, select { font-family: inherit; color: inherit; }
   color: var(--faint); font-family: var(--mono); font-size: 11px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.organise-review-actions {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-top: 10px; padding-top: 9px;
+  border-top: 1px solid rgba(160, 178, 210, .12);
+}
+.organise-review-actions .rescan {
+  min-height: 27px;
+  padding: 5px 10px;
+}
 .card-author { cursor: pointer; }
 .card-author:hover { text-decoration: underline; }
 .d-detail-link { cursor: pointer; }

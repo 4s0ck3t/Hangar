@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.81"
+__version__ = "0.15.82"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1706,6 +1706,52 @@ def organise_cleanup_apply():
 @app.get("/api/organise/cleanup-status")
 def organise_cleanup_status():
     return jsonify({"ok": True, **_cleanup_snapshot()})
+
+
+def _open_file_manager_path(path):
+    path = os.path.normpath(path or "")
+    if not path:
+        return False, "No path was provided."
+    if not os.path.exists(path):
+        return False, "That folder is not accessible right now."
+    sysname = platform.system()
+    devnull = subprocess.DEVNULL
+    try:
+        if sysname == "Darwin":
+            args = ["open", path] if os.path.isdir(path) else ["open", "-R", path]
+            subprocess.Popen(args, stdin=devnull, stdout=devnull, stderr=devnull)
+        elif sysname == "Windows":
+            args = ["explorer", os.path.normpath(path)] if os.path.isdir(path) else ["explorer", "/select,", os.path.normpath(path)]
+            subprocess.Popen(args, stdin=devnull, stdout=devnull, stderr=devnull)
+        else:
+            import shutil as _shutil
+            if os.path.isdir(path):
+                args = ["xdg-open", path]
+            else:
+                args = (["nautilus", "--select", path] if _shutil.which("nautilus") else
+                        ["dolphin", "--select", path] if _shutil.which("dolphin") else
+                        ["xdg-open", os.path.dirname(path)])
+            subprocess.Popen(args, stdin=devnull, stdout=devnull, stderr=devnull)
+    except Exception as e:
+        return False, f"Couldn't open the file manager: {e}"
+    return True, ""
+
+
+@app.post("/api/organise/reveal")
+def organise_reveal():
+    data = request.get_json(silent=True) or {}
+    ok, error = _open_file_manager_path(data.get("path") or "")
+    if not ok:
+        return jsonify({"ok": False, "error": error}), 400
+    return jsonify({"ok": True})
+
+
+@app.post("/api/organise/review/keep-target")
+def organise_review_keep_target():
+    data = request.get_json(silent=True) or {}
+    result = store.mark_organise_source_handled(data.get("source") or "", data.get("target") or "")
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
 
 
 @app.delete("/api/assets/missing")

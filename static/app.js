@@ -1463,10 +1463,11 @@ async function refresh() {
   if (organise) {
     const target = encodeURIComponent(state.organiseTargetRoot || "D:\\Hangar");
     const fast = state.organiseSpaceDetails ? "0" : "1";
+    const planLimit = Math.max(500, Math.min(100000, state.organiseBatchSize || 500));
     renderOrganiseLoading(state.organiseTargetRoot || "D:\\Hangar");
     let data;
     try {
-      data = await apiWithTimeout(`organise/plan?limit=500&fast=${fast}&target=${target}`, 90000);
+      data = await apiWithTimeout(`organise/plan?limit=${planLimit}&fast=${fast}&target=${target}`, 90000);
     } catch (e) {
       if (refreshSeq === _refreshSeq) renderOrganiseLoadError(e);
       return;
@@ -2432,6 +2433,7 @@ function renderOrganisePlan(data) {
   tools.querySelector("#organiseBatchSize").onchange = (e) => {
     state.organiseBatchSize = parseInt(e.target.value || "100", 10) || 100;
     localStorage.setItem("hangar_organise_batch_size", String(state.organiseBatchSize));
+    refresh();
   };
   tools.querySelector("#organiseTargetRoot").addEventListener("keydown", (e) => {
     if (e.key === "Enter") applyTarget();
@@ -2505,6 +2507,9 @@ function renderOrganisePlan(data) {
       for (const item of rows) {
         const row = document.createElement("div");
         row.className = `organise-row status-${esc(item.status || "move")}`;
+        row.dataset.source = item.source || "";
+        row.dataset.target = item.target || "";
+        row.dataset.pack = item.pack || baseName(item.source);
         const meta = [
           item.subcategory || "",
           item.author || "Unknown",
@@ -2513,11 +2518,19 @@ function renderOrganisePlan(data) {
           (item.formats || []).join(", "),
           item.status === "already_clean" ? "already clean" : item.status === "collision" ? "needs review: same clean path" : item.status === "target_exists" ? "needs review: target exists" : "planned",
         ].filter(Boolean).join(" · ");
+        const needsReview = ["collision", "target_exists"].includes(item.status || "");
         row.innerHTML =
           `<div class="organise-pack">${esc(item.pack || baseName(item.source))}</div>` +
           `<div class="organise-meta">${esc(meta)}</div>` +
           `<div class="organise-path"><span>From</span><code>${esc(item.source)}</code></div>` +
-          `<div class="organise-path"><span>To</span><code>${esc(item.target)}</code></div>`;
+          `<div class="organise-path"><span>To</span><code>${esc(item.target)}</code></div>` +
+          (needsReview
+            ? `<div class="organise-review-actions">` +
+              `<button class="rescan organise-open-source" title="Open the old source folder">Open source</button>` +
+              `<button class="rescan organise-open-target" title="Open the clean Hangar folder">Open clean copy</button>` +
+              `<button class="rescan organise-primary organise-keep-target" title="Hide the old source from Hangar's index. Files are not deleted.">Keep clean copy</button>` +
+              `</div>`
+            : "");
         body.appendChild(row);
       }
     }
@@ -2537,6 +2550,44 @@ function renderOrganisePlan(data) {
     data.cleanup_result = null;
     renderOrganisePlan(data);
   };
+  grid.querySelectorAll(".organise-open-source").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const row = btn.closest(".organise-row");
+      const r = await post("organise/reveal", { path: row?.dataset.source || "" });
+      if (!r || !r.ok) toast((r && r.error) || "Couldn't open the source folder.", "error");
+    };
+  });
+  grid.querySelectorAll(".organise-open-target").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const row = btn.closest(".organise-row");
+      const r = await post("organise/reveal", { path: row?.dataset.target || "" });
+      if (!r || !r.ok) toast((r && r.error) || "Couldn't open the clean folder.", "error");
+    };
+  });
+  grid.querySelectorAll(".organise-keep-target").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const row = btn.closest(".organise-row");
+      const source = row?.dataset.source || "";
+      const target = row?.dataset.target || "";
+      const pack = row?.dataset.pack || baseName(source);
+      if (!confirm(`Keep the clean Hangar copy for:\n${pack}\n\nThis hides the old source from Hangar's index only. It does not delete files from disk.\n\nOld source:\n${source}\n\nClean copy:\n${target}`)) return;
+      btn.disabled = true;
+      btn.textContent = "Keeping...";
+      const r = await post("organise/review/keep-target", { source, target });
+      if (!r || !r.ok) {
+        btn.disabled = false;
+        btn.textContent = "Keep clean copy";
+        toast((r && r.error) || "Couldn't apply that review decision.", "error");
+        return;
+      }
+      state.organiseLastResult = null;
+      toast(`Kept clean copy; ${r.hidden || 0} old indexed row${(r.hidden || 0) === 1 ? "" : "s"} hidden.`, "success");
+      refresh();
+    };
+  });
   const cleanupBtn = grid.querySelector("#organiseCleanupApply");
   if (cleanupBtn) cleanupBtn.onclick = async () => {
     const target = state.organiseTargetRoot || "D:\\Hangar";
