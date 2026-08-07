@@ -2156,7 +2156,9 @@ function startOrganisePolling(plan) {
       return;
     }
     if (st.result) {
-      applyOrganiseResultToPlan(_organisePlanData || {}, st.result);
+      state.organiseLastResult = st.result;
+      state.organiseProgress = null;
+      await refresh();
       loadState();
       toast(`Copied ${st.result.copied || 0} item${(st.result.copied || 0) === 1 ? "" : "s"}; ${st.result.updated_assets || 0} indexed row${(st.result.updated_assets || 0) === 1 ? "" : "s"} updated or retired.`, st.result.failed ? "error" : "success");
       return;
@@ -2240,11 +2242,10 @@ function renderOrganisePlan(data) {
 
   const items = (data.items || []).filter((x) => (x.status || "move") !== "already_clean");
   const s = data.summary || {};
-  const moveItems = items.filter((x) => (x.status || "move") === "move");
   const reviewItems = items.filter((x) => ["collision", "target_exists"].includes(x.status || ""));
-  const visibleMoveCount = moveItems.length || (s.move || 0);
-  const visiblePackMoves = moveItems.filter((x) => (x.mode || "pack") === "pack").length || (s.model_pack_moves || 0);
-  const visibleLooseMoves = moveItems.filter((x) => x.mode === "file").length || (s.loose_file_moves || 0);
+  const moveCount = s.move || 0;
+  const packMoves = s.model_pack_moves || 0;
+  const looseMoves = s.loose_file_moves || 0;
   const visibleReviewCount = reviewItems.length || ((s.collision || 0) + (s.target_exists || 0));
   const cleanup = data.cleanup || {};
   const cleanupSummary = cleanup.summary || {};
@@ -2262,14 +2263,14 @@ function renderOrganisePlan(data) {
     `<button id="organiseSpaceDetails" class="rescan" title="Toggle slower accurate disk-space figures for this plan">${state.organiseSpaceDetails ? "Fast preview" : "Calculate space"}</button>` +
     `<label class="organise-batch">Batch ` +
     `<select id="organiseBatchSize" class="organise-batch-select">` +
-    `${[100, 500, 1000, 5000, 10000].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v.toLocaleString()}</option>`).join("")}` +
+    `${[100, 500, 1000, 5000, 10000, 100000].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v.toLocaleString()}</option>`).join("")}` +
     `</select></label>` +
     (spaceKnown ? `<span>${fmtSize(s.target_free || 0)} free</span>` : `<span title="Fast preview skips slower disk-space scanning">fast preview</span>`) +
     (s.bytes_to_organise ? `<span>${fmtSize(s.bytes_to_organise || 0)} to organise</span>` : "") +
     (s.potential_duplicate_savings ? `<span title="Estimated space in duplicate pack folders that look safe to remove later after review. Nothing is deleted by this plan.">${fmtSize(s.potential_duplicate_savings || 0)} duplicate estimate</span>` : "") +
     (cleanupSummary.ready ? `<span title="Old copied source folders verified safe to remove">${fmtSize(cleanupSummary.bytes_ready || 0)} reclaimable</span>` : "") +
-    `<span>${visibleMoveCount || 0} to copy</span>` +
-    ((visiblePackMoves || visibleLooseMoves) ? `<span>${visiblePackMoves || 0} packs · ${visibleLooseMoves || 0} loose files</span>` : "") +
+    `<span>${moveCount || 0} to copy</span>` +
+    ((packMoves || looseMoves) ? `<span>${packMoves || 0} packs · ${looseMoves || 0} loose files</span>` : "") +
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${visibleReviewCount || 0} need review</span>`;
   frag.appendChild(tools);
@@ -2434,8 +2435,8 @@ function renderOrganisePlan(data) {
     const btn = e.currentTarget;
     const input = tools.querySelector("#organiseTargetRoot");
     const target = (input && input.value.trim()) || state.organiseTargetRoot || "D:\\Hangar";
-    const batch = Math.max(1, Math.min(10000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
-    const n = visibleMoveCount || 0;
+    const batch = Math.max(1, Math.min(100000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
+    const n = moveCount || 0;
     if (!n) {
       toast("There are no planned items ready to copy.", "success");
       return;
@@ -2527,7 +2528,7 @@ function renderOrganisePlan(data) {
   const cleanupBtn = grid.querySelector("#organiseCleanupApply");
   if (cleanupBtn) cleanupBtn.onclick = async () => {
     const target = state.organiseTargetRoot || "D:\\Hangar";
-    const batch = Math.max(1, Math.min(10000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
+    const batch = Math.max(1, Math.min(100000, parseInt(tools.querySelector("#organiseBatchSize")?.value || state.organiseBatchSize || "100", 10) || 100));
     const ready = cleanupSummary.ready || 0;
     const n = Math.min(batch, ready);
     if (!ready) {

@@ -2676,7 +2676,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
     to the verified copy, and a receipt is written so later cleanup can be
     reviewed pack by pack.
     """
-    limit = max(1, min(10000, int(limit or 100)))
+    limit = max(1, min(100000, int(limit or 100)))
     copied = skipped = failed = updated_assets = bytes_copied = 0
     blends_relinked = texture_refs_relinked = 0
     results = []
@@ -2684,7 +2684,7 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
     target_root = os.path.normpath(target_root or "D:\\Hangar")
     seen_targets = set()
 
-    plan = organise_disk_plan(target_root, limit=10000, include_sizes=False)
+    plan = organise_disk_plan(target_root, limit=limit, include_sizes=False)
     candidates = [i for i in plan.get("items", []) if i.get("status") == "move"]
     effective_limit = min(limit, len(candidates))
     if progress:
@@ -3172,12 +3172,12 @@ def apply_organise_cleanup(target_root="D:\\Hangar", limit=100, sources=None, pr
     This re-builds the cleanup plan immediately before deleting, so a stale UI
     cannot delete a folder that stopped being safe after the plan was shown.
     """
-    limit = max(1, min(10000, int(limit or 100)))
+    limit = max(1, min(100000, int(limit or 100)))
     wanted = {
         os.path.normcase(os.path.normpath(s))
         for s in (sources or []) if s
     }
-    plan = organise_cleanup_plan(target_root, limit=2000, progress=progress)
+    plan = organise_cleanup_plan(target_root, limit=max(limit, 2000), progress=progress)
     roots = [r["path"] for r in list_libraries()]
     target_root = os.path.normpath(target_root or "D:\\Hangar")
     ready_total = sum(1 for i in plan["items"] if i["status"] == "ready")
