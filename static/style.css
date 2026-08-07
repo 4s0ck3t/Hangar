@@ -803,10 +803,19 @@ button, input, select { font-family: inherit; color: inherit; }
   cursor: wait;
 }
 .organise-result {
+  position: relative;
   margin: 10px 22px 2px; padding: 10px 12px;
   border: 1px solid rgba(74, 183, 123, .42);
   border-radius: 8px; background: rgba(61, 190, 139, .09);
 }
+.organise-dismiss {
+  position: absolute; top: 7px; right: 8px;
+  width: 20px; height: 20px; display: grid; place-items: center;
+  border: 1px solid rgba(160, 178, 210, .22);
+  border-radius: 6px; background: rgba(13, 17, 24, .38);
+  color: var(--mute); cursor: pointer; font-size: 14px; line-height: 1;
+}
+.organise-dismiss:hover { color: var(--ink); border-color: rgba(160, 178, 210, .42); }
 .organise-result-title { color: var(--ink); font-weight: 700; font-size: 12.5px; }
 .organise-result-meta { margin-top: 4px; color: var(--mute); font-size: 11.5px; }
 .organise-result-list { margin-top: 8px; display: grid; gap: 5px; }
