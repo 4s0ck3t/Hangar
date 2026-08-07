@@ -2246,7 +2246,8 @@ function renderOrganisePlan(data) {
   const moveCount = s.move || 0;
   const packMoves = s.model_pack_moves || 0;
   const looseMoves = s.loose_file_moves || 0;
-  const visibleReviewCount = reviewItems.length || ((s.collision || 0) + (s.target_exists || 0));
+  const reviewCount = (s.collision || 0) + (s.target_exists || 0);
+  const visibleReviewCount = reviewCount || reviewItems.length;
   const cleanup = data.cleanup || {};
   const cleanupSummary = cleanup.summary || {};
   const cleanupProgress = state.organiseCleanupProgress;
@@ -2274,6 +2275,17 @@ function renderOrganisePlan(data) {
     `<span>${s.already_clean || 0} already clean</span>` +
     `<span>${visibleReviewCount || 0} need review</span>`;
   frag.appendChild(tools);
+  if (!moveCount && visibleReviewCount) {
+    const panel = document.createElement("div");
+    panel.className = "organise-result organise-warning";
+    const shown = reviewItems.length && reviewItems.length < visibleReviewCount
+      ? ` Showing ${reviewItems.length} in this preview.`
+      : "";
+    panel.innerHTML =
+      `<div class="organise-result-title">No files are ready to copy</div>` +
+      `<div class="organise-result-meta">${visibleReviewCount} item${visibleReviewCount === 1 ? "" : "s"} need review because Hangar found an existing destination or two sources mapping to the same clean folder.${shown}</div>`;
+    frag.appendChild(panel);
+  }
   const lastResult = data.organise_result || state.organiseLastResult;
   if (lastResult) {
     const copiedRows = (lastResult.results || []).filter((x) => x.result === "copied");
@@ -2499,7 +2511,7 @@ function renderOrganisePlan(data) {
           `${item.count || 0} file${(item.count || 0) === 1 ? "" : "s"}`,
           fmtSize(item.disk_size || item.size || 0),
           (item.formats || []).join(", "),
-          item.status === "already_clean" ? "already clean" : item.status === "collision" ? "collision" : item.status === "target_exists" ? "target exists" : "planned",
+          item.status === "already_clean" ? "already clean" : item.status === "collision" ? "needs review: same clean path" : item.status === "target_exists" ? "needs review: target exists" : "planned",
         ].filter(Boolean).join(" · ");
         row.innerHTML =
           `<div class="organise-pack">${esc(item.pack || baseName(item.source))}</div>` +
