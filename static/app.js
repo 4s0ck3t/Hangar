@@ -2158,7 +2158,7 @@ function startOrganisePolling(plan) {
     if (st.result) {
       applyOrganiseResultToPlan(_organisePlanData || {}, st.result);
       loadState();
-      toast(`Copied ${st.result.copied || 0} item${(st.result.copied || 0) === 1 ? "" : "s"}; ${st.result.updated_assets || 0} indexed file${(st.result.updated_assets || 0) === 1 ? "" : "s"} moved.`, st.result.failed ? "error" : "success");
+      toast(`Copied ${st.result.copied || 0} item${(st.result.copied || 0) === 1 ? "" : "s"}; ${st.result.updated_assets || 0} indexed row${(st.result.updated_assets || 0) === 1 ? "" : "s"} updated or retired.`, st.result.failed ? "error" : "success");
       return;
     }
     state.organiseProgress = null;
@@ -2285,7 +2285,7 @@ function renderOrganisePlan(data) {
       `<button class="organise-dismiss" id="organiseDismissCopy" title="Hide this result">×</button>` +
       `<div class="organise-result-title">Last copy: ${lastResult.copied || 0} item${(lastResult.copied || 0) === 1 ? "" : "s"} copied</div>` +
       `<div class="organise-result-meta">` +
-      `${lastResult.updated_assets || 0} indexed file${(lastResult.updated_assets || 0) === 1 ? "" : "s"} moved to the new paths` +
+      `${lastResult.updated_assets || 0} indexed row${(lastResult.updated_assets || 0) === 1 ? "" : "s"} updated or retired` +
       ` · ${fmtSize(lastResult.bytes_copied || 0)} copied` +
       ` · ${lastResult.failed || 0} failed` +
       ` · ${lastResult.skipped || 0} skipped</div>` +
@@ -2327,7 +2327,7 @@ function renderOrganisePlan(data) {
       `<div class="organise-result-title">Copying into Hangar: ${copied}/${limit || "?"}</div>` +
       `<div class="organise-result-meta">` +
       `${fmtSize(progress.bytes_copied || 0)} copied` +
-      ` · ${progress.updated_assets || 0} indexed files moved` +
+      ` · ${progress.updated_assets || 0} indexed rows updated` +
       ` · ${progress.skipped || 0} skipped` +
       ` · ${progress.failed || 0} failed` +
       ` · elapsed ${fmtDuration(elapsed)} · ETA ${eta}</div>` +

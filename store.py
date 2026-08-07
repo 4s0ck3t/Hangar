@@ -2594,6 +2594,8 @@ def _update_asset_paths_for_folder(source_folder, target_folder, on_path_moved=N
                 "SELECT id FROM assets WHERE path=? AND id<>?", (new_path, asset_id)
             ).fetchone()
             if existing:
+                conn.execute("UPDATE assets SET hidden=1 WHERE id=?", (asset_id,))
+                updated += 1
                 continue
             if on_path_moved:
                 try:
@@ -2620,7 +2622,8 @@ def _update_asset_path(asset_id, old_path, new_path, kind="", mtime=0, on_path_m
             "SELECT id FROM assets WHERE path=? AND id<>?", (new_path, asset_id)
         ).fetchone()
         if existing:
-            return 0
+            conn.execute("UPDATE assets SET hidden=1 WHERE id=?", (asset_id,))
+            return 1
         if on_path_moved:
             try:
                 on_path_moved(
@@ -2716,7 +2719,11 @@ def apply_organise_disk_plan(target_root="D:\\Hangar", limit=100, progress=None,
                 except OSError:
                     status = "target_exists"
             else:
-                status = "target_exists"
+                if os.path.isdir(source) and os.path.isdir(target):
+                    ok, _manifest = _folder_manifests_match(source, target)
+                    status = "move" if ok else "target_exists"
+                else:
+                    status = "target_exists"
         seen_targets.add(dst_key)
         result = {
             "mode": mode,
