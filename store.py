@@ -2288,6 +2288,8 @@ def _physical_subcategory(category, subfolder, pack_name):
     }
     sub = _clean_path_part(subfolder, "")
     pack = _clean_path_part(pack_name, "")
+    if _source_token(sub) == _source_token(pack):
+        return ""
     if _source_token(sub) in broad and pack:
         return pack
     return sub or pack or "General"
@@ -2298,6 +2300,63 @@ _PHYSICAL_KIND_ROOTS = {
     "hdri": "HDRIs",
     "material": "Materials",
 }
+
+
+def _recount_organise_summary(items, include_sizes):
+    summary = {
+        "packs": 0, "already_clean": 0, "collision": 0, "collisions": 0,
+        "target_exists": 0, "move": 0,
+        "model_packs": 0, "loose_files": 0, "model_pack_moves": 0,
+        "loose_file_moves": 0,
+        "bytes_to_organise": 0, "copy_stage_bytes": 0,
+        "potential_duplicate_savings": 0,
+    }
+    for item in items:
+        mode = item.get("mode") or "pack"
+        status = item.get("status") or "move"
+        summary["packs"] += 1
+        if mode == "file":
+            summary["loose_files"] += 1
+            if status == "move":
+                summary["loose_file_moves"] += 1
+        else:
+            summary["model_packs"] += 1
+            if status == "move":
+                summary["model_pack_moves"] += 1
+        summary[status if status in summary else "collisions"] = summary.get(status if status in summary else "collisions", 0) + 1
+        if status == "move" and include_sizes:
+            summary["bytes_to_organise"] += int(item.get("disk_size") or item.get("size") or 0)
+            summary["copy_stage_bytes"] += int(item.get("disk_size") or item.get("size") or 0)
+    return summary
+
+
+def _organise_candidate_score(item):
+    formats = set(item.get("formats") or [])
+    return (
+        1 if ".blend" in formats else 0,
+        len(formats),
+        int(item.get("count") or 0),
+        int(item.get("disk_size") or item.get("size") or 0),
+    )
+
+
+def _prefer_best_sources_for_duplicate_targets(items):
+    by_target = {}
+    for item in items:
+        if item.get("status") not in {"move", "collision"}:
+            continue
+        target = item.get("target") or ""
+        if not target:
+            continue
+        by_target.setdefault(os.path.normcase(os.path.normpath(target)), []).append(item)
+    for group in by_target.values():
+        if len(group) < 2:
+            continue
+        if os.path.exists(group[0].get("target") or ""):
+            continue
+        best = max(group, key=_organise_candidate_score)
+        for item in group:
+            item["status"] = "move" if item is best else "collision"
 
 
 def _physical_file_group(asset):
@@ -2382,6 +2441,8 @@ def _pack_parts_for_asset(path, target_root=None):
         try:
             rel = os.path.relpath(parent, os.path.join(os.path.normpath(target_root), "Models"))
             parts = [p for p in rel.split(os.sep) if p and p != os.curdir]
+            if not rel.startswith("..") and len(parts) == 3:
+                return parent, "", leaf
             if not rel.startswith("..") and len(parts) >= 4:
                 return parent, parts[-3], leaf
         except (OSError, ValueError):
@@ -2462,8 +2523,8 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True, 
         disk_size = (_folder_size(p["source"], size_cache) or p["size"]) if include_sizes else int(p["size"] or 0)
         target = os.path.join(
             target_root, "Models", _clean_path_part(_PHYSICAL_CATEGORY_NAMES.get(p["category"], p["category"])),
-            _clean_path_part(p["subcategory"]), _clean_path_part(p["author"]),
-            _clean_path_part(p["pack"]),
+            *([_clean_path_part(p["subcategory"])] if p.get("subcategory") else []),
+            _clean_path_part(p["author"]), _clean_path_part(p["pack"]),
         )
         status = "move"
         src_norm = os.path.normcase(os.path.normpath(p["source"]))
@@ -2562,6 +2623,9 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True, 
             "status": status,
             "kind": r["kind"],
         })
+
+    _prefer_best_sources_for_duplicate_targets(items)
+    summary = _recount_organise_summary(items, include_sizes)
 
     if include_sizes:
         saving_folders = set()
