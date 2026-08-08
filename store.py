@@ -691,19 +691,27 @@ def upsert_assets(metas):
     return ids
 
 
-def mark_missing(seen_ids, library_path):
+def mark_missing(seen_ids, library_path, exclude_roots=None):
     """Flag assets under a library that weren't seen in the latest scan."""
     prefix = os.path.normpath(library_path or "")
+    excludes = [
+        os.path.normcase(os.path.normpath(p))
+        for p in (exclude_roots or [])
+        if p
+    ]
     if prefix.endswith(os.sep):
         pattern = prefix + "%"
     else:
         pattern = prefix + os.sep + "%"
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id FROM assets WHERE path LIKE ?",
+            "SELECT id, path FROM assets WHERE path LIKE ?",
             (pattern,),
         ).fetchall()
         for r in rows:
+            path_key = os.path.normcase(os.path.normpath(r["path"]))
+            if any(path_key == ex or path_key.startswith(ex.rstrip(os.sep) + os.sep) for ex in excludes):
+                continue
             if r["id"] not in seen_ids:
                 conn.execute("UPDATE assets SET missing=1 WHERE id=?", (r["id"],))
 

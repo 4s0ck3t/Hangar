@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.84"
+__version__ = "0.15.85"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -90,9 +90,10 @@ def _run_scan(libs):
         SCAN.update(running=True, scanned=0, total=0, current="",
                     library="", indexed=0, unavailable=[])
     total = 0
+    library_paths = [path for path, _name in libs]
     for path, _ in libs:
         try:
-            total += scanner.count_files(path)
+            total += scanner.count_files(path, exclude_roots=library_paths)
         except Exception:
             pass
     with SCAN_LOCK:
@@ -111,7 +112,7 @@ def _run_scan(libs):
         with SCAN_LOCK:
             SCAN["library"] = name
         try:
-            n = scanner.scan_library(path, on_file=on_file)
+            n = scanner.scan_library(path, on_file=on_file, exclude_roots=library_paths)
             if n is None:
                 unavailable.append(name)  # folder unreachable — assets kept, not wiped
             else:

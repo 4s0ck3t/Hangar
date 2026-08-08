@@ -280,16 +280,44 @@ def is_redundant_hdri_blend(fname, sibling_files):
     return False
 
 
-def count_files(library_path):
+def _normalise_excludes(library_path, exclude_roots=None):
+    library_path = str(Path(library_path).expanduser().resolve())
+    excludes = []
+    lib_norm = os.path.normcase(library_path)
+    for p in exclude_roots or []:
+        try:
+            ex = str(Path(p).expanduser().resolve())
+        except OSError:
+            continue
+        ex_norm = os.path.normcase(ex)
+        if ex_norm != lib_norm and ex_norm.startswith(lib_norm.rstrip(os.sep) + os.sep):
+            excludes.append(ex_norm)
+    return library_path, excludes
+
+
+def _prune_excluded_dirs(root, dirs, exclude_norms):
+    if not exclude_norms:
+        return
+    kept = []
+    for d in dirs:
+        full_norm = os.path.normcase(os.path.abspath(os.path.join(root, d)))
+        if any(full_norm == ex or full_norm.startswith(ex.rstrip(os.sep) + os.sep) for ex in exclude_norms):
+            continue
+        kept.append(d)
+    dirs[:] = kept
+
+
+def count_files(library_path, exclude_roots=None):
     """Fast pre-pass: how many indexable files live under this root.
 
     Used to give the progress bar a real denominator before the slower
     stat/upsert pass runs.
     """
-    library_path = str(Path(library_path).expanduser().resolve())
+    library_path, exclude_norms = _normalise_excludes(library_path, exclude_roots)
     n = 0
     for root, dirs, files in os.walk(library_path):
         dirs[:] = [d for d in dirs if d.lower() not in IGNORE_DIRS]
+        _prune_excluded_dirs(root, dirs, exclude_norms)
         for fname in files:
             if is_redundant_hdri_blend(fname, files):
                 continue
@@ -300,13 +328,13 @@ def count_files(library_path):
     return n
 
 
-def scan_library(library_path, on_file=None):
+def scan_library(library_path, on_file=None, exclude_roots=None):
     """Walk one library root, upsert assets, flag anything that vanished.
 
     on_file(full_path) is called after each indexed file so callers can
     report progress.
     """
-    library_path = str(Path(library_path).expanduser().resolve())
+    library_path, exclude_norms = _normalise_excludes(library_path, exclude_roots)
     # If the folder isn't reachable (drive unplugged, share down, moved, no
     # permission), DON'T walk it — otherwise mark_missing would flag every asset
     # as gone and they'd silently disappear. Signal "unavailable" with None so
@@ -326,6 +354,7 @@ def scan_library(library_path, on_file=None):
 
     for root, dirs, files in os.walk(library_path):
         dirs[:] = [d for d in dirs if d.lower() not in IGNORE_DIRS]
+        _prune_excluded_dirs(root, dirs, exclude_norms)
         for fname in files:
             if is_redundant_hdri_blend(fname, files):
                 continue
@@ -379,14 +408,16 @@ def scan_library(library_path, on_file=None):
             if len(batch) >= UPSERT_BATCH_SIZE:
                 flush_batch()
     flush_batch()
-    store.mark_missing(seen, library_path)
+    store.mark_missing(seen, library_path, exclude_roots=exclude_norms)
     return found
 
 
 def scan_all(on_file=None):
     total = 0
-    for lib in store.list_libraries():
-        n = scan_library(lib["path"], on_file=on_file)
+    libs = store.list_libraries()
+    paths = [lib["path"] for lib in libs]
+    for lib in libs:
+        n = scan_library(lib["path"], on_file=on_file, exclude_roots=paths)
         if n:  # None = unavailable folder; skip
             total += n
     return total
