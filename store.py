@@ -2265,11 +2265,11 @@ _PHYSICAL_CATEGORY_PRIORITY = [
 
 def _preferred_category_for_path(path, categories):
     present = {c for c in categories if c}
-    for name in _PHYSICAL_CATEGORY_PRIORITY:
-        if name in present:
-            return name
     for name, kws in _ROOM_CATEGORY_RULES:
         if _path_has_keyword(path, kws):
+            return name
+    for name in _PHYSICAL_CATEGORY_PRIORITY:
+        if name in present:
             return name
     preferred = [c for c in categories if c not in {"Architecture", "Props"}]
     return preferred[0] if preferred else (categories[0] if categories else "Uncategorised")
@@ -2292,7 +2292,7 @@ def _physical_subcategory(category, subfolder, pack_name):
         return ""
     if _source_token(sub) in broad and pack:
         return pack
-    return sub or pack or "General"
+    return sub
 
 
 _PHYSICAL_KIND_ROOTS = {
