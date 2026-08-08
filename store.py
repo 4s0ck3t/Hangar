@@ -2386,7 +2386,7 @@ def _pack_parts_for_asset(path, target_root=None):
     return parent, os.path.basename(parent), stem
 
 
-def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
+def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True, review_only=False):
     """Read-only plan for a clean physical disk layout.
 
     Proposes Models/Category/Author/Subfolder/PackName targets from the current
@@ -2577,7 +2577,16 @@ def organise_disk_plan(target_root="D:\\Hangar", limit=500, include_sizes=True):
         summary["target_free"] = disk["free"]
         summary["target_probe"] = disk["path"]
     items.sort(key=lambda x: (x["status"] != "move", x["category"].lower(), x["subcategory"].lower(), x["author"].lower(), x["pack"].lower()))
-    return {"target_root": target_root, "summary": summary, "items": items[:max(1, int(limit or 500))], "total": len(items)}
+    review_items = [i for i in items if i.get("status") in ("collision", "target_exists")]
+    visible_items = review_items if review_only else items
+    return {
+        "target_root": target_root,
+        "summary": summary,
+        "items": visible_items[:max(1, int(limit or 500))],
+        "total": len(items),
+        "review_total": len(review_items),
+        "review_only": bool(review_only),
+    }
 
 
 def _update_asset_paths_for_folder(source_folder, target_folder, on_path_moved=None):

@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.83"
+__version__ = "0.15.84"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1645,7 +1645,8 @@ def organise_plan():
     target = request.args.get("target", "D:\\Hangar").strip() or "D:\\Hangar"
     limit = int(request.args.get("limit", 500))
     fast = request.args.get("fast") in ("1", "true", "yes")
-    return jsonify(store.organise_disk_plan(target, limit, include_sizes=not fast))
+    review_only = request.args.get("review") in ("1", "true", "yes")
+    return jsonify(store.organise_disk_plan(target, limit, include_sizes=not fast, review_only=review_only))
 
 
 @app.post("/api/organise/apply")

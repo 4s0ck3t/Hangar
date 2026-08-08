@@ -75,6 +75,7 @@ const state = {
   organiseTargetRoot: localStorage.getItem("hangar_organise_target_root") || "D:\\Hangar",
   organiseBatchSize: parseInt(localStorage.getItem("hangar_organise_batch_size") || "100", 10) || 100,
   organiseSpaceDetails: localStorage.getItem("hangar_organise_space_details") === "1",
+  organiseReviewOnly: localStorage.getItem("hangar_organise_review_only") === "1",
   organiseLastResult: null,
   organiseLastCleanupResult: null,
   organiseProgress: null,
@@ -1463,11 +1464,12 @@ async function refresh() {
   if (organise) {
     const target = encodeURIComponent(state.organiseTargetRoot || "D:\\Hangar");
     const fast = state.organiseSpaceDetails ? "0" : "1";
-    const planLimit = Math.max(500, Math.min(100000, state.organiseBatchSize || 500));
+    const review = state.organiseReviewOnly ? "1" : "0";
+    const planLimit = state.organiseReviewOnly ? 100000 : Math.max(500, Math.min(100000, state.organiseBatchSize || 500));
     renderOrganiseLoading(state.organiseTargetRoot || "D:\\Hangar");
     let data;
     try {
-      data = await apiWithTimeout(`organise/plan?limit=${planLimit}&fast=${fast}&target=${target}`, 90000);
+      data = await apiWithTimeout(`organise/plan?limit=${planLimit}&fast=${fast}&review=${review}&target=${target}`, 90000);
     } catch (e) {
       if (refreshSeq === _refreshSeq) renderOrganiseLoadError(e);
       return;
@@ -2249,6 +2251,7 @@ function renderOrganisePlan(data) {
   const looseMoves = s.loose_file_moves || 0;
   const reviewCount = (s.collision || 0) + (s.target_exists || 0);
   const visibleReviewCount = reviewCount || reviewItems.length;
+  const reviewOnly = !!data.review_only;
   const cleanup = data.cleanup || {};
   const cleanupSummary = cleanup.summary || {};
   const cleanupProgress = state.organiseCleanupProgress;
@@ -2263,6 +2266,7 @@ function renderOrganisePlan(data) {
     `<button id="organiseTargetApply" class="rescan" title="Recalculate the plan for this target root">Apply</button>` +
     `<button id="organiseCopyVerified" class="rescan organise-primary" ${state.organiseProgress?.running ? "disabled" : ""} title="Copy the next verified folders and loose files into the clean Hangar library. Old source files are kept.">${state.organiseProgress?.running ? "Copying..." : "Copy into Hangar"}</button>` +
     `<button id="organiseSpaceDetails" class="rescan" title="Toggle slower accurate disk-space figures for this plan">${state.organiseSpaceDetails ? "Fast preview" : "Calculate space"}</button>` +
+    (visibleReviewCount ? `<button id="organiseReviewOnly" class="rescan${reviewOnly ? " active" : ""}" title="Show only the items that need a decision">${reviewOnly ? "Show normal plan" : "Show all review items"}</button>` : "") +
     `<label class="organise-batch">Batch ` +
     `<select id="organiseBatchSize" class="organise-batch-select">` +
     `${[100, 500, 1000, 5000, 10000, 100000].map((v) => `<option value="${v}"${v === state.organiseBatchSize ? " selected" : ""}>${v.toLocaleString()}</option>`).join("")}` +
@@ -2279,7 +2283,9 @@ function renderOrganisePlan(data) {
   if (!moveCount && visibleReviewCount) {
     const panel = document.createElement("div");
     panel.className = "organise-result organise-warning";
-    const shown = reviewItems.length && reviewItems.length < visibleReviewCount
+    const shown = reviewOnly
+      ? ` Showing all ${reviewItems.length} review item${reviewItems.length === 1 ? "" : "s"}.`
+      : reviewItems.length && reviewItems.length < visibleReviewCount
       ? ` Showing ${reviewItems.length} in this preview.`
       : "";
     panel.innerHTML =
@@ -2428,6 +2434,12 @@ function renderOrganisePlan(data) {
   tools.querySelector("#organiseSpaceDetails").onclick = () => {
     state.organiseSpaceDetails = !state.organiseSpaceDetails;
     localStorage.setItem("hangar_organise_space_details", state.organiseSpaceDetails ? "1" : "0");
+    refresh();
+  };
+  const reviewOnlyBtn = tools.querySelector("#organiseReviewOnly");
+  if (reviewOnlyBtn) reviewOnlyBtn.onclick = () => {
+    state.organiseReviewOnly = !state.organiseReviewOnly;
+    localStorage.setItem("hangar_organise_review_only", state.organiseReviewOnly ? "1" : "0");
     refresh();
   };
   tools.querySelector("#organiseBatchSize").onchange = (e) => {
