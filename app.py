@@ -26,7 +26,7 @@ import store
 import scanner
 import thumbs
 
-__version__ = "0.15.82"
+__version__ = "0.15.83"
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HANGAR_PORT", "7575"))
@@ -1750,6 +1750,14 @@ def organise_reveal():
 def organise_review_keep_target():
     data = request.get_json(silent=True) or {}
     result = store.mark_organise_source_handled(data.get("source") or "", data.get("target") or "")
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
+
+
+@app.post("/api/organise/review/copy-missing")
+def organise_review_copy_missing():
+    data = request.get_json(silent=True) or {}
+    result = store.copy_missing_organise_files(data.get("source") or "", data.get("target") or "")
     status = 200 if result.get("ok") else 400
     return jsonify(result), status
 

@@ -1665,16 +1665,24 @@ def _folder_manifests_match(source_folder, target_folder):
     target = _folder_manifest(target_folder)
     if source is None or target is None:
         return False, {"source_files": 0, "target_files": 0, "missing": 0, "extra": 0, "changed": 0}
-    missing = [rel for rel in source if rel not in target]
-    extra = [rel for rel in target if rel not in source]
-    changed = [rel for rel, size in source.items() if rel in target and target[rel] != size]
-    return not missing and not extra and not changed, {
+    diff = _folder_manifest_diff(source, target)
+    return not diff["missing"] and not diff["extra"] and not diff["changed"], {
         "source_files": len(source),
         "target_files": len(target),
-        "missing": len(missing),
-        "extra": len(extra),
-        "changed": len(changed),
+        "missing": len(diff["missing"]),
+        "extra": len(diff["extra"]),
+        "changed": len(diff["changed"]),
         "bytes": sum(source.values()),
+    }
+
+
+def _folder_manifest_diff(source, target):
+    source = source or {}
+    target = target or {}
+    return {
+        "missing": [rel for rel in source if rel not in target],
+        "extra": [rel for rel in target if rel not in source],
+        "changed": [rel for rel, size in source.items() if rel in target and target[rel] != size],
     }
 
 
@@ -2666,6 +2674,101 @@ def mark_organise_source_handled(source, target=None):
         if ids:
             conn.executemany("UPDATE assets SET hidden=1 WHERE id=?", [(i,) for i in ids])
     return {"ok": True, "hidden": len(ids), "source": source, "target": target}
+
+
+def copy_missing_organise_files(source, target):
+    """Copy source files that are absent from the clean target, then hide source.
+
+    Existing target files are never overwritten here. If any shared file has a
+    different size, the user still needs to review the two folders manually.
+    """
+    source = os.path.normpath(source or "")
+    target = os.path.normpath(target or "")
+    if not source or not target:
+        return {"ok": False, "error": "Source and clean-copy paths are required."}
+    if os.path.normcase(source) == os.path.normcase(target):
+        return {"ok": False, "error": "Source and target are the same folder."}
+    if not os.path.isdir(source):
+        return {"ok": False, "error": "The source folder is not accessible."}
+    if not os.path.isdir(target):
+        return {"ok": False, "error": "The clean copy is not accessible."}
+    src_abs = os.path.normcase(os.path.abspath(source))
+    dst_abs = os.path.normcase(os.path.abspath(target))
+    if dst_abs == src_abs or dst_abs.startswith(src_abs + os.sep):
+        return {"ok": False, "error": "The clean copy is inside the source folder, so Hangar will not merge it automatically."}
+
+    source_manifest = _folder_manifest(source)
+    target_manifest = _folder_manifest(target)
+    if source_manifest is None or target_manifest is None:
+        return {"ok": False, "error": "Hangar could not read one of the folders."}
+    diff = _folder_manifest_diff(source_manifest, target_manifest)
+    if diff["changed"]:
+        return {
+            "ok": False,
+            "error": f"{len(diff['changed'])} existing file changed. Open both folders and decide which version to keep.",
+            "missing": len(diff["missing"]),
+            "extra": len(diff["extra"]),
+            "changed": len(diff["changed"]),
+        }
+    if not diff["missing"]:
+        handled = mark_organise_source_handled(source, target)
+        handled.update({"copied": 0, "bytes_copied": 0, "missing": 0, "extra": len(diff["extra"]), "changed": 0})
+        return handled
+
+    source_paths = {}
+    for root, _dirs, files in os.walk(source):
+        for name in files:
+            full = os.path.join(root, name)
+            rel = os.path.relpath(full, source).replace("\\", "/")
+            source_paths[rel.lower()] = (rel, full)
+
+    copied = 0
+    bytes_copied = 0
+    copied_files = []
+    for rel_key in diff["missing"]:
+        rel, src_file = source_paths.get(rel_key, (rel_key, None))
+        if not src_file or not os.path.isfile(src_file):
+            return {"ok": False, "error": f"Missing source file disappeared while copying: {rel}"}
+        dst_file = os.path.normpath(os.path.join(target, *rel.split("/")))
+        dst_parent = os.path.dirname(dst_file)
+        os.makedirs(dst_parent, exist_ok=True)
+        tmp = dst_file + ".hangar-copy"
+        try:
+            shutil.copy2(src_file, tmp)
+            if os.path.getsize(src_file) != os.path.getsize(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                return {"ok": False, "error": f"Verification failed while copying: {rel}"}
+            os.replace(tmp, dst_file)
+            size = int(os.path.getsize(dst_file) or 0)
+            copied += 1
+            bytes_copied += size
+            copied_files.append(rel)
+        except OSError as e:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return {"ok": False, "error": f"Could not copy {rel}: {e}"}
+
+    ok, manifest = _folder_manifests_match(source, target)
+    if not ok and manifest.get("changed"):
+        return {"ok": False, "error": "Copied missing files, but changed files still need review.", "copied": copied, **manifest}
+    if not ok and manifest.get("missing"):
+        return {"ok": False, "error": "Some source files are still missing from the clean copy.", "copied": copied, **manifest}
+
+    handled = mark_organise_source_handled(source, target)
+    handled.update({
+        "copied": copied,
+        "bytes_copied": bytes_copied,
+        "files": copied_files[:20],
+        "extra": manifest.get("extra", 0),
+        "changed": manifest.get("changed", 0),
+        "missing": manifest.get("missing", 0),
+    })
+    return handled
 
 
 def _copy_verified_file(source, target):

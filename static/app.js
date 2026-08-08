@@ -2528,6 +2528,7 @@ function renderOrganisePlan(data) {
             ? `<div class="organise-review-actions">` +
               `<button class="rescan organise-open-source" title="Open the old source folder">Open source</button>` +
               `<button class="rescan organise-open-target" title="Open the clean Hangar folder">Open clean copy</button>` +
+              `<button class="rescan organise-copy-missing" title="Copy files that exist in source but are missing from the clean copy. Existing files are not overwritten.">Copy missing files</button>` +
               `<button class="rescan organise-primary organise-keep-target" title="Hide the old source from Hangar's index. Files are not deleted.">Keep clean copy</button>` +
               `</div>`
             : "");
@@ -2564,6 +2565,28 @@ function renderOrganisePlan(data) {
       const row = btn.closest(".organise-row");
       const r = await post("organise/reveal", { path: row?.dataset.target || "" });
       if (!r || !r.ok) toast((r && r.error) || "Couldn't open the clean folder.", "error");
+    };
+  });
+  grid.querySelectorAll(".organise-copy-missing").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const row = btn.closest(".organise-row");
+      const source = row?.dataset.source || "";
+      const target = row?.dataset.target || "";
+      const pack = row?.dataset.pack || baseName(source);
+      if (!confirm(`Copy missing files into the clean Hangar folder for:\n${pack}\n\nHangar will only copy files that are absent from the clean copy. Existing files will not be overwritten.\n\nSource:\n${source}\n\nClean copy:\n${target}`)) return;
+      btn.disabled = true;
+      btn.textContent = "Copying...";
+      const r = await post("organise/review/copy-missing", { source, target });
+      if (!r || !r.ok) {
+        btn.disabled = false;
+        btn.textContent = "Copy missing files";
+        toast((r && r.error) || "Couldn't copy the missing files.", "error");
+        return;
+      }
+      state.organiseLastResult = null;
+      toast(`Copied ${r.copied || 0} missing file${(r.copied || 0) === 1 ? "" : "s"}; ${r.hidden || 0} old indexed row${(r.hidden || 0) === 1 ? "" : "s"} hidden.`, "success");
+      refresh();
     };
   });
   grid.querySelectorAll(".organise-keep-target").forEach((btn) => {
